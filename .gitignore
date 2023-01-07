@@ -1,0 +1,11 @@
+*.bin
+test/bin/*
+*.vim
+lib/link/**
+lib/include/**
+etc
+tags
+vgcore*
+*.o
+*.a
+a.out
