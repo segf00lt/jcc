@@ -192,6 +192,167 @@
 	tab.count = tab.static_count = tab.this_count = tab.arg_count = tab.local_count = 0;\
 }
 
+enum TOKENS {
+	T_ASSIGNPLUS = 256,
+	T_ASSIGNSUB,
+	T_ASSIGNMUL,
+	T_ASSIGNDIV,
+	T_ASSIGNMOD,
+	T_ASSIGNNOT,
+	T_ASSIGNAND,
+	T_ASSIGNOR,
+	T_ASSIGNXOR,
+	T_INC,
+	T_DEC,
+	T_NEQ,
+	T_LTEQ,
+	T_GTEQ,
+	T_EQ,
+	T_LSHIFT,
+	T_RSHIFT,
+	T_AND,
+	T_OR,
+	T_STATIC,
+	T_INT, T_SHORT, T_CHAR, T_LONG, T_FLOAT, T_DOUBLE, T_UNSIGN, T_VOID,
+	T_NULL,
+	T_IF, T_ELSE, T_WHILE, T_RETURN,
+	T_NUMBER = 600,
+	T_STRING,
+	T_ID,
+	T_END = -1,
+	T_ILLEGAL = -2,
+};
+
+enum SEGMENTS {
+	S_ARGUMENT,
+	S_LOCAL,
+	S_TEMP,
+	S_STATIC,
+	S_CONSTANT,
+};
+
+char *segments[] = {
+	"argument",
+	"local",
+	"temp",
+	"static",
+	"constant",
+};
+
+enum NODES {
+	N_SUBROUTINEDEC = 1,
+	N_PARAMETERLIST,
+	N_SUBROUTINEBODY,
+	N_VARDEC,
+	N_STATEMENTS,
+	N_IFSTATEMENT,
+	N_ELSESTATEMENT,
+	N_WHILESTATEMENT,
+	N_RETURNSTATEMENT,
+	N_EXPRESSIONLIST,
+	N_EXPRESSION,
+	N_TERM,
+	N_SUBROUTINECALL,
+	N_OP,
+	N_UNOP,
+	N_INTCONST,
+	N_STRINGCONST,
+	N_KEYCONST,
+	N_STORAGEQUALIFIER,
+	N_TYPE,
+	N_VARNAME,
+	N_SUBROUTINENAME,
+};
+
+char *nodes[] = {
+	0,
+	"SUBROUTINEDEC",
+	"PARAMETERLIST",
+	"SUBROUTINEBODY",
+	"VARDEC",
+	"STATEMENTS",
+	"IFSTATEMENT",
+	"ELSESTATEMENT",
+	"WHILESTATEMENT",
+	"RETURNSTATEMENT",
+	"EXPRESSIONLIST",
+	"EXPRESSION",
+	"TERM",
+	"SUBROUTINECALL",
+	"OP",
+	"UNOP",
+	"INTCONST",
+	"STRINGCONST",
+	"KEYCONST",
+	"STORAGEQUALIFIER",
+	"TYPE",
+	"VARNAME",
+	"SUBROUTINENAME",
+};
+
+char *keyword[] = {
+	"const",
+	"do",
+	"enum",
+	"intern",
+	"extern",
+	"register",
+	"sizeof",
+	"struct",
+	"typedef",
+	"union",
+	"static",
+	"int", "char", "void",
+	"double", "float", "long", "short",
+	"unsigned",
+	"signed",
+	"null",
+	"if", "else",
+	"while", "return",
+	"for", "goto", "continue", "break",
+	"switch", "case", "default",
+};
+
+size_t keyword_length[] = {
+	STRLEN("const"),
+	STRLEN("do"),
+	STRLEN("enum"),
+	STRLEN("intern"),
+	STRLEN("extern"),
+	STRLEN("register"),
+	STRLEN("sizeof"),
+	STRLEN("struct"),
+	STRLEN("typedef"),
+	STRLEN("union"),
+	STRLEN("static"),
+	STRLEN("int"), STRLEN("char"), STRLEN("void"),
+	STRLEN("double"), STRLEN("float"), STRLEN("long"), STRLEN("short"),
+	STRLEN("unsigned"),
+	STRLEN("signed"),
+	STRLEN("null"),
+	STRLEN("if"), STRLEN("else"),
+	STRLEN("while"), STRLEN("return"),
+	STRLEN("for"), STRLEN("goto"), STRLEN("continue"), STRLEN("break"),
+	STRLEN("switch"), STRLEN("case"), STRLEN("default"),
+};
+
+enum OPERATORS {
+	OP_ADD = 0,
+	OP_SUB,
+	OP_MUL,
+	OP_DIV,
+	OP_AND,
+	OP_OR,
+	OP_LT,
+	OP_GT,
+	OP_EQ,
+	OP_NOT,
+	OP_NEG,
+	OP_INDEX,
+	OP_COMMA,
+};
+
+char *operators[] = { "+", "-", "*", "/", "&", "|", "<", ">", "=", "~", "-", "[", "," };
 typedef struct {
 	char *base;
 	char *free;
@@ -199,8 +360,6 @@ typedef struct {
 	size_t cur;
 	size_t cap;
 } Strpool;
-
-/* TODO how do we give good compiler feedback? (errors, warnings, hints etc) */
 
 typedef struct {
 	char *src;
@@ -265,30 +424,120 @@ int lex(void) {
 	char *tp, *s;
 	int check;
 
+	lexer.text_s = lexer.text_e = 0;
+
 	if(lexer.ptr[0] == '/' && lexer.ptr[1] == '/') { /* single-line comments */
 		while(*lexer.ptr != '\n') ++lexer.ptr;
+		lexer.col = 1;
+		++lexer.line;
 		++lexer.ptr;
+		lexer.line_s = lexer.ptr;
 	} else if(lexer.ptr[0] == '/' && lexer.ptr[1] == '*') { /* multi-line comments */
-		while(!(lexer.ptr[0] == '*' && lexer.ptr[1] == '/')) ++lexer.ptr;
+		while(!(lexer.ptr[0] == '*' && lexer.ptr[1] == '/')) lexer.line += (*lexer.ptr++ == '\n');
 		lexer.ptr += 2;
-	} else if(isspace(*lexer.ptr)) { /* whitespace */
-		while(isspace(*lexer.ptr)) ++lexer.ptr;
 	}
+
+	while(isspace(*lexer.ptr)) { /* whitespace */
+		if(*lexer.ptr != '\n') {
+			++lexer.col;
+		} else {
+			lexer.col = 1;
+			++lexer.line;
+			lexer.line_s = lexer.ptr + 1;
+		}
+		++lexer.ptr;
+	}
+
+	for(s = lexer.ptr; *s && *s != '\n'; ++s);
+	lexer.line_e = s + 1;
 
 	tp = lexer.unget = lexer.ptr;
 
 	if(*lexer.ptr == 0)
 		return T_END;
 
-	lexer.text_s = lexer.text_e = 0;
 	lexer.token = 0;
 
 	/* symbol */
+	if(tp[1] == '=') {
+		switch(*tp) {
+		case '+':
+			lexer.token = T_ASSIGNPLUS;
+			break;
+		case '-':
+			lexer.token = T_ASSIGNSUB;
+			break;
+		case '*':
+			lexer.token = T_ASSIGNMUL;
+			break;
+		case '/':
+			lexer.token = T_ASSIGNDIV;
+			break;
+		case '%':
+			lexer.token = T_ASSIGNMOD;
+			break;
+		case '&':
+			lexer.token = T_ASSIGNAND;
+			break;
+		case '|':
+			lexer.token = T_ASSIGNOR;
+			break;
+		case '~':
+			lexer.token = T_ASSIGNNOT;
+			break;
+		case '!':
+			lexer.token = T_NEQ;
+			break;
+		case '<':
+			lexer.token = T_LTEQ;
+			break;
+		case '>':
+			lexer.token = T_GTEQ;
+			break;
+		case '=':
+			lexer.token = T_EQ;
+			break;
+		}
+		lexer.ptr += 2;
+		lexer.col += 2;
+		return lexer.token;
+	}
+
 	switch(*tp) {
-	case '{': case '}': case '(': case ')': case '[': case ']': case '.': case ',': case ';':
-	case '+': case '-': case '*': case '/': case '&': case '|': case '<': case '>': case '=': case '~':
+	case '{': case '}': case '(': case ')': case '[': case ']': case '.':
+	case ',': case ';': case '=': case '~': case '*': case '/': case '<':
+	case '>': case '&': case '|': case '+': case '-':
+		++lexer.col;
 		++lexer.ptr;
-		return (lexer.token = *tp);
+		lexer.token = *tp;
+	}
+
+	if(lexer.token) {
+		if(tp[1] == tp[0]) {
+			++lexer.col;
+			++lexer.ptr;
+			switch(*tp) {
+			case '<':
+				lexer.token = T_LSHIFT;
+				break;
+			case '>':
+				lexer.token = T_RSHIFT;
+				break;
+			case '&':
+				lexer.token = T_AND;
+				break;
+			case '|':
+				lexer.token = T_OR;
+				break;
+			case '+':
+				lexer.token = T_INC;
+				break;
+			case '-':
+				lexer.token = T_DEC;
+				break;
+			}
+		}
+		return lexer.token;
 	}
 
 	/* keyword */
@@ -296,6 +545,8 @@ int lex(void) {
 		check = tp[keyword_length[i]];
 		if(strstr(tp,keyword[i]) == tp &&
 				(check == ' ' ||
+				 check == '\t'||
+				 check == '\n'||
 				 check == ';' ||
 				 check == '(' ||
 				 check == ')' ||
