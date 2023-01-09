@@ -212,15 +212,80 @@ enum TOKENS {
 	T_RSHIFT,
 	T_AND,
 	T_OR,
+	T_CONST,
+	T_DO,
+	T_ENUM,
+	T_INTERN,
+	T_EXTERN,
+	T_REGISTER,
+	T_SIZEOF,
+	T_STRUCT,
+	T_TYPEDEF,
+	T_UNION,
 	T_STATIC,
-	T_INT, T_SHORT, T_CHAR, T_LONG, T_FLOAT, T_DOUBLE, T_UNSIGN, T_VOID,
+	T_INT, T_CHAR, T_VOID,
+	T_DOUBLE, T_FLOAT, T_LONG, T_SHORT,
+	T_UNSIGNED,
+	T_SIGNED,
 	T_NULL,
-	T_IF, T_ELSE, T_WHILE, T_RETURN,
-	T_NUMBER = 600,
+	T_IF, T_ELSE,
+	T_WHILE, T_RETURN,
+	T_FOR, T_GOTO, T_CONTINUE, T_BREAK,
+	T_SWITCH, T_CASE, T_DEFAULT,
+	T_NUMBER,
 	T_STRING,
+	T_CHARCONST,
 	T_ID,
-	T_END = -1,
-	T_ILLEGAL = -2,
+	T_END,
+	T_ILLEGAL,
+};
+
+char *tokens[] = {
+	"T_ASSIGNPLUS",
+	"T_ASSIGNSUB",
+	"T_ASSIGNMUL",
+	"T_ASSIGNDIV",
+	"T_ASSIGNMOD",
+	"T_ASSIGNNOT",
+	"T_ASSIGNAND",
+	"T_ASSIGNOR",
+	"T_ASSIGNXOR",
+	"T_INC",
+	"T_DEC",
+	"T_NEQ",
+	"T_LTEQ",
+	"T_GTEQ",
+	"T_EQ",
+	"T_LSHIFT",
+	"T_RSHIFT",
+	"T_AND",
+	"T_OR",
+	"T_CONST",
+	"T_DO",
+	"T_ENUM",
+	"T_INTERN",
+	"T_EXTERN",
+	"T_REGISTER",
+	"T_SIZEOF",
+	"T_STRUCT",
+	"T_TYPEDEF",
+	"T_UNION",
+	"T_STATIC",
+	"T_INT", "T_CHAR", "T_VOID",
+	"T_DOUBLE", "T_FLOAT", "T_LONG", "T_SHORT",
+	"T_UNSIGNED",
+	"T_SIGNED",
+	"T_NULL",
+	"T_IF", "T_ELSE",
+	"T_WHILE", "T_RETURN",
+	"T_FOR", "T_GOTO", "T_CONTINUE", "T_BREAK",
+	"T_SWITCH", "T_CASE", "T_DEFAULT",
+	"T_NUMBER",
+	"T_STRING",
+	"T_CHARCONST",
+	"T_ID",
+	"T_END",
+	"T_ILLEGAL",
 };
 
 enum SEGMENTS {
@@ -353,6 +418,7 @@ enum OPERATORS {
 };
 
 char *operators[] = { "+", "-", "*", "/", "&", "|", "<", ">", "=", "~", "-", "[", "," };
+
 typedef struct {
 	char *base;
 	char *free;
@@ -416,6 +482,8 @@ typedef struct {
 	size_t local_count;
 } Sym_tab;
 
+Lexer lexer;
+
 /* parsing */
 int lex(void);
 void parse(void);
@@ -448,8 +516,11 @@ int lex(void) {
 		++lexer.ptr;
 	}
 
-	for(s = lexer.ptr; *s && *s != '\n'; ++s);
-	lexer.line_e = s + 1;
+	if(lexer.ptr >= lexer.line_e) {
+		lexer.line_s = lexer.line_e;
+		for(s = lexer.ptr; *s && *s != '\n'; ++s);
+		lexer.line_e = s + 1;
+	}
 
 	tp = lexer.unget = lexer.ptr;
 
@@ -513,7 +584,7 @@ int lex(void) {
 	}
 
 	if(lexer.token) {
-		if(tp[1] == tp[0]) {
+		if(tp[1] == tp[0] && *tp != '*') {
 			++lexer.col;
 			++lexer.ptr;
 			switch(*tp) {
@@ -543,7 +614,7 @@ int lex(void) {
 	/* keyword */
 	for(int i = 0; i < ARRLEN(keyword); ++i) {
 		check = tp[keyword_length[i]];
-		if(strstr(tp,keyword[i]) == tp &&
+		if(strstr(tp, keyword[i]) == tp &&
 				(check == ' ' ||
 				 check == '\t'||
 				 check == '\n'||
@@ -551,19 +622,37 @@ int lex(void) {
 				 check == '(' ||
 				 check == ')' ||
 				 check == ',' ||
+				 check == '.' ||
 				 check == '{' ||
 				 check == '}')
 		  )
 		{
 			lexer.ptr += keyword_length[i];
-			return (lexer.token = T_CLASS + i);
+			lexer.col += keyword_length[i];
+			return (lexer.token = T_CONST + i);
 		}
 	}
 
 	/* numbers, strings and identifiers */
-	for(check = 0, s = tp; *s && isdigit(*s); ++s)
-		++check;
+	s = tp;
+	if(s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { /* hex */
+		s += 2;
+		for(check = 0; *s && (isdigit(*s) || (*s >= 'a' && *s <= 'f') || (*s >= 'A' && *s <= 'F')); ++s)
+			++check;
+	} else if(s[0] == '0' && (s[1] == 'b' || s[1] == 'B')) { /* binary */
+		s += 2;
+		for(check = 0; *s && (*s == '0' || *s == '1'); ++s)
+			++check;
+	} else if(s[0] == '0' && isdigit(s[1])) { /* octal */
+		++s;
+		for(check = 0; *s && *s >= '0' && *s <= '7'; ++s)
+			++check;
+	} else {
+		for(check = 0, s = tp; *s && isdigit(*s); ++s)
+			++check;
+	}
 	if(check) {
+		lexer.col += s - tp;
 		lexer.text_s = tp;
 		lexer.text_e = lexer.ptr = s;
 		return (lexer.token = T_NUMBER);
@@ -571,23 +660,61 @@ int lex(void) {
 
 	if(*tp == '"') {
 		for(s = tp + 1; (check = *s) && *s != '"'; ++s);
-		if(!check)
-			error(1, 0, "mismatched quotes");
+		if(!check) // TODO
+			error(1, 0, "mismatched double quotes");
+		lexer.col += s - tp;
 		lexer.text_s = tp + 1;
 		lexer.text_e = s;
 		lexer.ptr = s + 1;
 		return (lexer.token = T_STRING);
 	}
 
+	if(*tp == '\'') {
+		for(s = tp + 1; (check = *s) && *s != '\''; ++s);
+		if(!check) // TODO
+			error(1, 0, "mismatched single quotes");
+		lexer.col += s - tp;
+		lexer.text_s = tp + 1;
+		lexer.text_e = s;
+		lexer.ptr = s + 1;
+		return (lexer.token = T_CHARCONST);
+	}
+
 	if(!(isalpha(*tp) || *tp == '_')) return (lexer.token = T_ILLEGAL);
 
 	for(s = tp; *s && (isalnum(*s) || *s == '_'); ++s);
 
+	lexer.col += s - tp;
 	lexer.text_s = tp;
 	lexer.text_e = lexer.ptr = s;
 	return (lexer.token = T_ID);
 }
 
 int main(void) {
+	Fmap fm;
+	fmapopen("test.c", O_RDONLY, &fm);
+	fmapread(&fm);
+	lexer.ptr = lexer.src = fm.buf;
+	lexer.line = lexer.col = 1;
+	lexer.line_s = lexer.ptr;
+	for(lexer.line_e = lexer.ptr; *lexer.line_e != '\n'; ++lexer.line_e);
+	++lexer.line_e;
+
+	while(lex() != T_END) {
+		printf("TOKEN\n");
+		if(lexer.token < T_ASSIGNPLUS)
+			printf("\ttoken: %c\n", lexer.token);
+		else
+			printf("\ttoken: %s\n", tokens[lexer.token - T_ASSIGNPLUS]);
+		printf("\tline_num: %i\n", lexer.line);
+		printf("\tcol_num: %i\n", lexer.col - (int)(lexer.ptr - lexer.unget));
+		printf("\ttoken_text: ");
+		fwrite(lexer.text_s, 1, lexer.text_e - lexer.text_s, stdout);
+		printf("\n");
+		printf("\tline_text: ");
+		fwrite(lexer.line_s, 1, lexer.line_e - lexer.line_s, stdout);
+		printf("\n\n");
+	}
+	fmapclose(&fm);
 	return 0;
 }
