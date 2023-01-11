@@ -1,4 +1,6 @@
 *.bin
+jcc
+test.c
 test/bin/*
 *.vim
 lib/link/**

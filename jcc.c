@@ -485,6 +485,7 @@ typedef struct {
 Lexer lexer;
 
 /* parsing */
+int cpp(char *src);
 int lex(void);
 void parse(void);
 
@@ -494,26 +495,28 @@ int lex(void) {
 
 	lexer.text_s = lexer.text_e = 0;
 
-	if(lexer.ptr[0] == '/' && lexer.ptr[1] == '/') { /* single-line comments */
-		while(*lexer.ptr != '\n') ++lexer.ptr;
-		lexer.col = 1;
-		++lexer.line;
-		++lexer.ptr;
-		lexer.line_s = lexer.ptr;
-	} else if(lexer.ptr[0] == '/' && lexer.ptr[1] == '*') { /* multi-line comments */
-		while(!(lexer.ptr[0] == '*' && lexer.ptr[1] == '/')) lexer.line += (*lexer.ptr++ == '\n');
-		lexer.ptr += 2;
-	}
-
-	while(isspace(*lexer.ptr)) { /* whitespace */
-		if(*lexer.ptr != '\n') {
-			++lexer.col;
-		} else {
-			lexer.col = 1;
-			++lexer.line;
-			lexer.line_s = lexer.ptr + 1;
+	while(1) {
+		while(isspace(*lexer.ptr)) { /* whitespace */
+			if(*lexer.ptr != '\n') {
+				++lexer.col;
+			} else {
+				lexer.col = 1;
+				++lexer.line;
+				lexer.line_e = lexer.line_s = lexer.ptr + 1;
+			}
+			++lexer.ptr;
 		}
-		++lexer.ptr;
+
+		if(lexer.ptr[0] == '/' && lexer.ptr[1] == '/') { /* single-line comments */
+			while(*lexer.ptr != '\n')
+				++lexer.ptr;
+			lexer.col = 1;
+		} else if(lexer.ptr[0] == '/' && lexer.ptr[1] == '*') { /* multi-line comments */
+			while(!(lexer.ptr[0] == '*' && lexer.ptr[1] == '/'))
+				lexer.line += (*lexer.ptr++ == '\n');
+			lexer.ptr += 2;
+		} else
+			break;
 	}
 
 	if(lexer.ptr >= lexer.line_e) {
@@ -660,8 +663,6 @@ int lex(void) {
 
 	if(*tp == '"') {
 		for(s = tp + 1; (check = *s) && *s != '"'; ++s);
-		if(!check) // TODO
-			error(1, 0, "mismatched double quotes");
 		lexer.col += s - tp;
 		lexer.text_s = tp + 1;
 		lexer.text_e = s;
@@ -671,8 +672,6 @@ int lex(void) {
 
 	if(*tp == '\'') {
 		for(s = tp + 1; (check = *s) && *s != '\''; ++s);
-		if(!check) // TODO
-			error(1, 0, "mismatched single quotes");
 		lexer.col += s - tp;
 		lexer.text_s = tp + 1;
 		lexer.text_e = s;
@@ -690,6 +689,9 @@ int lex(void) {
 	return (lexer.token = T_ID);
 }
 
+void parse(void) {
+}
+
 int main(void) {
 	Fmap fm;
 	fmapopen("test.c", O_RDONLY, &fm);
@@ -700,7 +702,7 @@ int main(void) {
 	for(lexer.line_e = lexer.ptr; *lexer.line_e != '\n'; ++lexer.line_e);
 	++lexer.line_e;
 
-	while(lex() != T_END) {
+	while(lex() != T_END && lexer.token != T_ILLEGAL) {
 		printf("TOKEN\n");
 		if(lexer.token < T_ASSIGNPLUS)
 			printf("\ttoken: %c\n", lexer.token);
@@ -713,7 +715,6 @@ int main(void) {
 		printf("\n");
 		printf("\tline_text: ");
 		fwrite(lexer.line_s, 1, lexer.line_e - lexer.line_s, stdout);
-		printf("\n\n");
 	}
 	fmapclose(&fm);
 	return 0;
