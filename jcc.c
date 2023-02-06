@@ -1026,14 +1026,14 @@ AST_node* declaration(void) {
  */
 AST_node* type(void) {
 	register int t, prevt, loop;
-	AST_node *root, *firstchild, *child;
+	AST_node *root, *child;
 	char *s, *e;
 
 	loop = prevt = 0;
 	t = lex();
 
 	if(t == '*') {
-		firstchild = child = ast_alloc_node(&ast, N_POINTER, NULL, &lexer.info);
+		root = child = ast_alloc_node(&ast, N_POINTER, NULL, &lexer.info);
 		loop = 1;
 	} else if(t == '[') {
 		prevt = t = lex();
@@ -1046,10 +1046,10 @@ AST_node* type(void) {
 		if(prevt != ']' && t != ']')
 			parse_error(&lexer, "']'");
 
-		firstchild = child = ast_alloc_node(&ast, N_ARRAY, NULL, &lexer.info);
+		root = child = ast_alloc_node(&ast, N_ARRAY, NULL, &lexer.info);
 
 		if(prevt != ']')
-			child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+			root->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 		loop = 1;
 	}
 
@@ -1085,12 +1085,12 @@ AST_node* type(void) {
 	if(!(t >= T_INT && t <= T_S64) && t != T_ID && t != '(')
 		parse_error(&lexer, "type");
 
-	root = ast_alloc_node(&ast, N_TYPE, NULL, &lexer.info);
-	root->down = firstchild;
+	child->next = ast_alloc_node(&ast, N_TYPE, NULL, &lexer.info);
+	child = child->next;
 	if(t != T_ID && t != '(')
-		root->val = keyword[t - T_ENUM];
+		child->val = keyword[t - T_ENUM];
 	else if(t != '(')
-		root->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 	else {
 		/* no one in their right mind would ever make a function pointer to a function
 		 * that takes a function pointer 
@@ -1157,19 +1157,18 @@ AST_node* type(void) {
 				parse_error(&lexer, "builtin type, struct or union");
 		}
 		e = lexer.text_e;
-		root->val = strpool_alloc(&spool, e - s, s);
+		child->val = strpool_alloc(&spool, e - s, s);
 	}
 
+	return root;
 }
 
 /*
  * function: '(' paramlist ')' ('->' type)? ('inline'? '{' block '}')
  */
 AST_node* function(void) {
-	register int t, prevt;
+	register int t;
 	AST_node *root, *child;
-
-	prevt = 0;
 
 	t = lex();
 
@@ -1219,10 +1218,9 @@ AST_node* function(void) {
  * paramlist: identifier (',' identifier)* ':' type((',' identifier)+ ':' type)*
  */
 AST_node* paramlist(void) {
-	register int t, prevt;
+	register int t;
 	AST_node *root, *child;
 
-	prevt = 0;
 	root = ast_alloc_node(&ast, N_PARAMLIST, NULL, &lexer.info);
 
 	t = lex();
