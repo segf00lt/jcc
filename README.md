@@ -1,3 +1,3 @@
 # jcc
 
-A somewhat K&Rish C compiler.
+A poorly named JAI implementation (not quite the same as John Blow's but close).

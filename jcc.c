@@ -1421,17 +1421,72 @@ AST_node* unionation(void) {
 }
 
 /*
- * enumeration: 'enum' identifier? '{' identifier ('=' (intconst|identifier))? (',' identifier ('=' (intconst|identifier))?) ','? '}' ';'
+ * enumeration: 'enum' builtintype '{' identifier ('=' (intconst|identifier))? (',' identifier ('=' (intconst|identifier))?) ','? '}' ';'
  */
 AST_node* enumeration(void) {
-	return NULL;
+	register int t;
+	AST_node *root, *child;
+
+	t = lex();
+	if(t != T_ENUM)
+		return NULL;
+
+	root = ast_alloc_node(&ast, N_ENUM, NULL, &lexer.info);
+
+	t = lex();
+	if(t >= T_INT && t <= T_S64) {
+		root->down = child = ast_alloc_node(&ast, N_TYPE, NULL, &lexer.info);
+		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+	}
+
+	t = lex();
+	if(t != '{')
+		parse_error(&lexer, "'{'");
+	t = lex();
+	while(t != '}') {
+		if(t != T_ID)
+			parse_error(&lexer, "identifier");
+		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
+		child = child->next;
+		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		t = lex();
+		if(t == '=') {
+			t = lex();
+			if(t != T_NUMBER && t != T_CHARACTER)
+				parse_error(&lexer, "numerical or character constant");
+			child->next = ast_alloc_node(&ast, N_INTCONST, NULL, &lexer.info);
+			child = child->next;
+			if(t == T_CHARACTER)
+				child->kind = N_CHARCONST;
+			child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		}
+		t = lex();
+		if(t != ',' && t != '}')
+			parse_error(&lexer, "',' or '}'");
+	}
+
+	return root;
 }
 
 /*
- * statement: (expression|expressionlist) ';'
+ * statement: expression (',' expression)* ';'
  */
 AST_node* statement(void) {
-	return NULL;
+	register int t;
+	AST_node *root, *child;
+
+	root = ast_alloc_node(&ast, N_STATEMENT, NULL, &lexer.info);
+
+	root->down = child = expression();
+	while((t = lex()) == ',') {
+		child->next = expression();
+		child = child->next;
+	}
+
+	if(t != ';')
+		parse_error(&lexer, "';'");
+
+	return root;
 }
 
 /*
@@ -1439,7 +1494,26 @@ AST_node* statement(void) {
  * 	'if' '(' expression ')' '{' block '}'
  */
 AST_node* ifstatement(void) {
-	return NULL;
+	AST_node *root, *child;
+	
+	if(lex() != T_IF)
+		return NULL;
+
+	root = ast_alloc_node(&ast, N_IFSTATEMENT, NULL, &lexer.info);
+
+	if(lex() != '(')
+		parse_error(&lexer, "'('");
+	root->down = child = expression();
+	if(lex() != ')')
+		parse_error(&lexer, "')'");
+
+	if(lex() != '{')
+		parse_error(&lexer, "'{'");
+	child->next = block();
+	if(lex() != '}')
+		parse_error(&lexer, "'}'");
+
+	return root;
 }
 
 /*
@@ -1447,7 +1521,45 @@ AST_node* ifstatement(void) {
  * 	'while' '(' expression ')' '{' block '}'
  */
 AST_node* whilestatement(void) {
-	return NULL;
+	AST_node *root, *child;
+	
+	if(lex() != T_WHILE)
+		return NULL;
+
+	root = ast_alloc_node(&ast, N_WHILESTATEMENT, NULL, &lexer.info);
+
+	if(lex() != '(')
+		parse_error(&lexer, "'('");
+	root->down = child = expression();
+	if(lex() != ')')
+		parse_error(&lexer, "')'");
+
+	if(lex() != '{')
+		parse_error(&lexer, "'{'");
+	child->next = block();
+	if(lex() != '}')
+		parse_error(&lexer, "'}'");
+
+	return root;
+}
+
+/*
+ * returnstatement: 'return' expression ';'
+ */
+AST_node* returnstatement(void) {
+	AST_node *root;
+	
+	if(lex() != T_RETURN)
+		return NULL;
+
+	root = ast_alloc_node(&ast, N_RETURNSTATEMENT, NULL, &lexer.info);
+
+	root->down = child = expression();
+
+	if(lex() != ';')
+		parse_error(&lexer, "';'");
+
+	return root;
 }
 
 /*
@@ -1458,29 +1570,50 @@ AST_node* forstatement(void) {
 	return NULL;
 }
 
-/*
- * returnstatement: 'return' expression ';'
- */
-AST_node* returnstatement(void) {
-	return NULL;
-}
-
-/*
- * expressionlist: expression (',' expression)?
- */
-AST_node* expressionlist(void) {
-	return NULL;
-}
-
 AST_node* expression(void) {
 	return NULL;
 }
 
 /*
- * call: identifier '(' expressionlist ')'
+ * call: identifier '(' expression ')'
  */
 AST_node* call(void) {
-	return NULL;
+	register int t;
+	AST_node *root, *child;
+	char *s, *e, *unget;
+
+	t = lex();
+	
+	if(t != T_ID) {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		return NULL;
+	}
+
+	s = lexer.text_s;
+	e = lexer.text_e;
+	unget = lexer.unget;
+
+	if(lex() != '(') {
+		lexer.info.col -= lexer.ptr - unget;
+		lexer.ptr = unget;
+		return NULL;
+	}
+		
+
+	root = ast_alloc_node(&ast, N_CALL, NULL, &lexer.info);
+	root->val = strpool_alloc(&spool, e - s, s);
+
+	root->down = child = expression();
+	while((t = lex()) == ',') {
+		child->next = expression();
+		child = child->next;
+	}
+
+	if(t != ')')
+		parse_error(&lexer, "')'");
+
+	return root;
 }
 
 void lexer_init(Lexer *l, char *buf) {
