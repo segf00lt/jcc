@@ -1,3 +1,5 @@
+jcc.dSYM/
+c_grammar
 *.bin
 jcc
 test.c

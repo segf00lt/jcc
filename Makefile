@@ -1,4 +1,3 @@
-CC = cc
 FLAGS = -g -Wall -Wpedantic -Werror
 TARGET = jcc.c
 
