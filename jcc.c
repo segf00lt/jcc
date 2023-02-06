@@ -1324,14 +1324,100 @@ AST_node* block(void) {
  * structure: 'struct' '{' (vardec|structure|unionation)+ '}'
  */
 AST_node* structure(void) {
-	return NULL;
+	register int t;
+	AST_node *root, *child;
+
+	t = lex();
+	if(t != T_STRUCT)
+		return NULL;
+
+	root = ast_alloc_node(&ast, N_STRUCTURE, NULL, &lexer.info);
+
+	t = lex();
+	if(t != '{')
+		parse_error(&lexer, "'{'");
+
+	if(t != T_ID)
+		parse_error(&lexer, "identifier");
+	child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
+	child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+
+	t = lex();
+	if(t != ':')
+		parse_error(&lexer, "':'");
+	child->next = type();
+
+	t = lex();
+	if(t != ';')
+		parse_error(&lexer, "';'");
+
+	while((t = lex()) != '}') {
+		if(t != T_ID)
+			parse_error(&lexer, "identifier");
+		child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
+		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+
+		t = lex();
+		if(t != ':')
+			parse_error(&lexer, "':'");
+		child->next = type();
+
+		t = lex();
+		if(t != ';')
+			parse_error(&lexer, "';'");
+	}
+
+	return root;
 }
 
 /*
  * unionation: 'union' '{' (declaration)+ '}'
  */
 AST_node* unionation(void) {
-	return NULL;
+	register int t;
+	AST_node *root, *child;
+
+	t = lex();
+	if(t != T_UNION)
+		return NULL;
+
+	root = ast_alloc_node(&ast, N_STRUCTURE, NULL, &lexer.info);
+
+	t = lex();
+	if(t != '{')
+		parse_error(&lexer, "'{'");
+
+	if(t != T_ID)
+		parse_error(&lexer, "identifier");
+	child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
+	child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+
+	t = lex();
+	if(t != ':')
+		parse_error(&lexer, "':'");
+	child->next = type();
+
+	t = lex();
+	if(t != ';')
+		parse_error(&lexer, "';'");
+
+	while((t = lex()) != '}') {
+		if(t != T_ID)
+			parse_error(&lexer, "identifier");
+		child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
+		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+
+		t = lex();
+		if(t != ':')
+			parse_error(&lexer, "':'");
+		child->next = type();
+
+		t = lex();
+		if(t != ';')
+			parse_error(&lexer, "';'");
+	}
+
+	return root;
 }
 
 /*
