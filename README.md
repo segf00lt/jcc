@@ -1,3 +1,3 @@
 # jcc
 
-A poorly named JAI implementation (not quite the same as John Blow's but close).
+A poorly named JAI style language.
