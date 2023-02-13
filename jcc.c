@@ -65,6 +65,7 @@ enum TOKENS {
 	T_RSHIFT,
 	T_AND,
 	T_OR,
+	T_NOT,
 
 	T_ARROW,
 
@@ -98,7 +99,6 @@ enum TOKENS {
 };
 
 char *tokens_debug[] = {
-	"T_ARROW",
 	"T_ASSIGNPLUS",
 	"T_ASSIGNSUB",
 	"T_ASSIGNMUL",
@@ -118,6 +118,8 @@ char *tokens_debug[] = {
 	"T_RSHIFT",
 	"T_AND",
 	"T_OR",
+	"T_NOT",
+	"T_ARROW",
 	"T_ENUM",
 	"T_REGISTER",
 	"T_SIZEOF",
@@ -308,6 +310,7 @@ enum OPERATORS {
 	OP_MOD,
 	OP_AND,
 	OP_OR,
+	OP_XOR,
 	OP_NOT,
 	OP_NEG,
 	OP_DOT,
@@ -1968,19 +1971,21 @@ AST_node* forstatement(void) {
  * 	term
  *
  * term:
- * 	'*' term
+ *	literal
+ * 	call
  * 	term '[' expression ']'
- * 	term T_INC
- * 	term T_DEC
- * 	'(' type ')' term
+ * 	term '.' identifier
+ *
+ * 	'*' term
  * 	'&' term
  * 	T_NOT term
  * 	'-' term
  * 	'~' term
- * 	term '.' term
+ * 	T_INC term
+ * 	T_DEC term
  * 	'(' expression ')'
- * 	call
- *	literal
+ *
+ * 	'(' type ')' term
  *
  */
 AST_node* expression(void) {
@@ -2108,24 +2113,226 @@ AST_node* shift(void) {
 AST_node* bitwise(void) {
 	register int t;
 	AST_node *root, *child;
+
+	child = arith();
+
+	if(!child)
+		return NULL;
+
+	t = lex();
+	if(t != '&' && t != '|' && t != '^') {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		return child;
+	}
+
+	root = ast_alloc_node(&ast, N_BITWISE, NULL, &lexer.info);
+	root->down = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+	switch(t) {
+	case '&':
+		root->down->op = OP_AND;
+		break;
+	case '|':
+		root->down->op = OP_OR;
+		break;
+	case '^':
+		root->down->op = OP_XOR;
+		break;
+	}
+	root->down->down = child;
+	root->down->next = bitwise();
+
+	if(!root->down->next)
+		parse_error(&lexer, "right operand");
+	
 	return root;
 }
 
 AST_node* arith(void) {
 	register int t;
 	AST_node *root, *child;
+
+	child = factor();
+
+	if(!child)
+		return NULL;
+
+	t = lex();
+	if(t != '+' && t != '-') {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		return child;
+	}
+
+	root = ast_alloc_node(&ast, N_ARITH, NULL, &lexer.info);
+	root->down = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+	root->down->op = (t == '+') ? OP_ADD : OP_SUB;
+	root->down->down = child;
+	root->down->next = arith();
+
+	if(!root->down->next)
+		parse_error(&lexer, "right operand");
+	
 	return root;
 }
 
 AST_node* factor(void) {
 	register int t;
 	AST_node *root, *child;
+
+	child = term();
+
+	if(!child)
+		return NULL;
+
+	t = lex();
+	if(t != '*' && t != '/' && t != '%') {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		return child;
+	}
+
+	root = ast_alloc_node(&ast, N_FACTOR, NULL, &lexer.info);
+	root->down = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+	switch(t) {
+	case '*':
+		root->down->op = OP_MUL;
+		break;
+	case '/':
+		root->down->op = OP_DIV;
+		break;
+	case '%':
+		root->down->op = OP_MOD;
+		break;
+	}
+	root->down->down = child;
+	root->down->next = factor();
+
+	if(!root->down->next)
+		parse_error(&lexer, "right operand");
+	
 	return root;
 }
 
 AST_node* term(void) {
 	register int t;
 	AST_node *root, *child;
+
+	child = literal();
+	if(child) {
+		root = ast_alloc_node(&ast, N_TERM, NULL, &lexer.info);
+		root->down = child;
+		return root;
+	}
+
+	child = call();
+	if(child) {
+		root = ast_alloc_node(&ast, N_TERM, NULL, &lexer.info);
+		root->down = child;
+		return root;
+	}
+
+	child = term();
+	if(child) {
+		t = lex();
+		if(t == '[') {
+			child->next = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+			child->next->op = OP_INDEX;
+			child = child->next;
+			child = expression();
+			if(!child)
+				parse_error(&lexer, "expression");
+			t = lex();
+			if(t != ']')
+				parse_error(&lexer, "']'");
+		} else if(t == '.') {
+			child->next = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+			child->next->op = OP_DOT;
+			child = child->next;
+			t = lex();
+			if(t != T_ID)
+				parse_error(&lexer, "identifier");
+			child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
+			child->next->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		} else
+			parse_error(&lexer, "'[' or '.'");
+	}
+
+	t = lex();
+	switch(t) {
+	case '*':
+		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+		child->op = OP_DEREF;
+		child->next = term();
+		if(!child)
+			parse_error(&lexer, "term");
+		break;
+	case '&':
+		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+		child->op = OP_ADDR;
+		child->next = term();
+		if(!child)
+			parse_error(&lexer, "term");
+		break;
+	case T_NOT:
+		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+		child->op = OP_LNOT;
+		child->next = term();
+		if(!child)
+			parse_error(&lexer, "term");
+		break;
+	case '-':
+		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+		child->op = OP_NEG;
+		child->next = term();
+		if(!child)
+			parse_error(&lexer, "term");
+		break;
+	case '~':
+		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+		child->op = OP_NOT;
+		child->next = term();
+		if(!child)
+			parse_error(&lexer, "term");
+		break;
+	case T_INC:
+		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+		child->op = OP_INC;
+		child->next = term();
+		if(!child)
+			parse_error(&lexer, "term");
+		break;
+	case T_DEC:
+		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+		child->op = OP_DEC;
+		child->next = term();
+		if(!child)
+			parse_error(&lexer, "term");
+		break;
+	case '(':
+		child = expression();
+		if(!child) {
+			child = type();
+			if(!child)
+				parse_error(&lexer, "expression or type");
+		}
+		t = lex();
+		if(t != '(')
+			parse_error(&lexer, "')'");
+		break;
+	default:
+		parse_error(&lexer, "'*', '&', 'not', '-', '~', '++', '--' or '('");
+	}
+
+	if(!child) {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		return NULL;
+	}
+
+	root = ast_alloc_node(&ast, N_TERM, NULL, &lexer.info);
+	root->down = child;
+
 	return root;
 }
 
