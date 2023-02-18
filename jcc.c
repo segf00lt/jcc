@@ -65,11 +65,11 @@ enum TOKENS {
 	T_LSHIFT,
 	T_RSHIFT,
 
-	T_ARROW,
 
 	T_ENUM,
 	T_REGISTER,
 	T_SIZEOF,
+	T_FUNC,
 	T_STRUCT,
 	T_UNION,
 	T_INLINE,
@@ -118,10 +118,10 @@ char *tokens_debug[] = {
 	"T_AND",
 	"T_OR",
 	"T_NOT",
-	"T_ARROW",
 	"T_ENUM",
 	"T_REGISTER",
 	"T_SIZEOF",
+	"T_FUNC",
 	"T_STRUCT",
 	"T_UNION",
 	"T_INLINE",
@@ -184,6 +184,7 @@ enum NODES {
 	N_BITWISE,
 	N_ARITH,
 	N_FACTOR,
+	N_UNARY,
 	N_TERM,
 	N_CALL,
 	N_POINTER,
@@ -227,6 +228,7 @@ char *nodes_debug[] = {
 	"N_BITWISE",
 	"N_ARITH",
 	"N_FACTOR",
+	"N_UNARY",
 	"N_TERM",
 	"N_CALL",
 	"N_POINTER",
@@ -250,6 +252,7 @@ char *keyword[] = {
 	"enum",
 	"register",
 	"sizeof",
+	"func",
 	"struct",
 	"union",
 	"inline",
@@ -265,10 +268,16 @@ char *keyword[] = {
 	"switch", "case", "default",
 };
 
+char *constant[] = {
+	"true",
+	"false",
+};
+
 size_t keyword_length[] = {
 	STRLEN("enum"),
 	STRLEN("register"),
 	STRLEN("sizeof"),
+	STRLEN("func"),
 	STRLEN("struct"),
 	STRLEN("union"),
 	STRLEN("inline"),
@@ -480,6 +489,7 @@ AST_node* shift(void);
 AST_node* bitwise(void);
 AST_node* arith(void);
 AST_node* factor(void);
+AST_node* unary(void);
 AST_node* term(void);
 AST_node* call(void);
 
@@ -824,12 +834,6 @@ int lex(void) {
 		return (lexer.token = T_BAR);
 	}
 
-	if(tp[0] == '-' && tp[1] == '>') {
-		lexer.info.col += 2;
-		lexer.ptr += 2;
-		return (lexer.token = T_ARROW);
-	}
-
 	/* symbol */
 	if(tp[1] == '=' && *tp != ':') {
 		switch(*tp) {
@@ -940,7 +944,21 @@ int lex(void) {
 		}
 	}
 
-	/* numbers, strings and identifiers */
+	/* true, false, numbers, strings and identifiers */
+	if(strstr(tp, "true") == tp) {
+		lexer.text_e = tp + STRLEN("true");
+		lexer.ptr += STRLEN("true");
+		lexer.info.col += STRLEN("true");
+		return (lexer.token = T_TRUE);
+	}
+
+	if(strstr(tp, "false") == tp) {
+		lexer.text_e = tp + STRLEN("false");
+		lexer.ptr += STRLEN("false");
+		lexer.info.col += STRLEN("false");
+		return (lexer.token = T_FALSE);
+	}
+
 	s = tp;
 	if(s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { /* hex */
 		s += 2;
@@ -1015,19 +1033,39 @@ void parse(void) {
 AST_node* declaration(void) {
 	register int t, prevt;
 	AST_node *root, *child;
-
-	prevt = 0;
+	char *unget1, *unget2, *s, *e;
+	int col1, col2;
 
 	t = lex();
 
-	if(t == T_END)
-		return NULL;
+	unget1 = lexer.ptr;
+	col1 = lexer.info.col;
+	s = lexer.text_s;
+	e = lexer.text_e;
+	unget2 = lexer.unget;
+	col2 = lexer.info.col - (int)(lexer.ptr - lexer.unget);
 
-	if(t != T_ID)
-		parse_error(&lexer, "identifier");
+	if(t != T_ID) {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		return NULL;
+	}
+
+	prevt = lex();
+	t = lex();
+	lexer.info.col = col1;
+	lexer.ptr = unget1;
+	lexer.text_s = s;
+	lexer.text_e = e;
+
+	if(!(t == '=' && prevt == ':') && !(t == ':' && prevt == ':') &&
+			!(((t >= T_INT && t <= T_S64) || t == T_ID) && prevt == ':')) {
+		lexer.info.col = col2;
+		lexer.ptr = unget2;
+		return NULL;
+	}
 
 	root = ast_alloc_node(&ast, N_DECLARATION, NULL, &lexer.info);
-
 	root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
 	child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 
@@ -1042,47 +1080,18 @@ AST_node* declaration(void) {
 
 	if(t != ':')
 		parse_error(&lexer, "':'");
+	
+	child->next = type();
 
-	while(1) {
-		t = lex();
+	t = lex();
 
-		if(t == '*') {
-			child->next = ast_alloc_node(&ast, N_POINTER, NULL, &lexer.info);
-			child = child->next;
-			continue;
-		}
+	if(child->next && t == ';')
+		return root;
+	else if(!child->next && t == ';')
+		parse_error(&lexer, "type");
 
-		if(t != '[' && t != T_NUMBER && t != T_ID)
-			break;
-
-		prevt = t = lex();
-
-		if(t != ']' && t != T_NUMBER && t != T_ID)
-			parse_error(&lexer, "']', integer constant, or identifier");
-
-		t = lex();
-
-		if(prevt != ']' && t != ']')
-			parse_error(&lexer, "']'");
-
-		child->next = ast_alloc_node(&ast, N_ARRAY, NULL, &lexer.info);
+	if(child->next)
 		child = child->next;
-
-		if(prevt != ']')
-			child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
-	}
-
-	if((t >= T_INT && t <= T_S64) || t == T_ID) {
-		child->next = ast_alloc_node(&ast, N_TYPE, NULL, &lexer.info);
-		child = child->next;
-
-		if(t == T_ID)
-			child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
-		else
-			child->val = keyword[t - T_ENUM];
-
-		t = lex();
-	}
 
 	if(t == ':') {
 		child->next = ast_alloc_node(&ast, N_CONSTANT, NULL, &lexer.info);
@@ -1090,50 +1099,14 @@ AST_node* declaration(void) {
 	} else if(t != '=')
 		parse_error(&lexer, "'=' or ':'");
 
-	t = lex();
+	child->next = expression();
 
-	if((t >= T_NUMBER  && t <= T_FALSE) || t == T_BAR || t == T_ID) {
-		child->next = ast_alloc_node(&ast, 0, NULL, &lexer.info);
-		child = child->next;
-	} else if(t != ';') {
-		lexer.info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-	}
-
-	switch(t) {
-	case T_NUMBER:
-		child->kind = N_INTLIT;
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+	if(child->next) {
 		t = lex();
-		break;
-	case T_STRING:
-		child->kind = N_STRLIT;
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
-		t = lex();
-		break;
-	case T_CHARACTER:
-		child->kind = N_CHARLIT;
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
-		t = lex();
-		break;
-	case T_TRUE: case T_FALSE:
-		child->kind = N_BOOLLIT;
-		child->val = keyword[t - T_ENUM];
-		t = lex();
-		break;
-	case T_BAR:
-		child->kind = N_UNINIT;
-		t = lex();
-		break;
-	case T_ID:
-		child->kind = N_ID;
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
-		t = lex();
-		break;
-	}
-
-	if(t == ';')
+		if(t != ';')
+			parse_error(&lexer, "';'");
 		return root;
+	}
 
 	/* body */
 	if((child->next = function())) return root;
@@ -1141,7 +1114,7 @@ AST_node* declaration(void) {
 	if((child->next = unionation())) return root;
 	if((child->next = enumeration())) return root;
 
-	parse_error(&lexer, "literal or body");
+	parse_error(&lexer, "expression or body");
 
 	return NULL;
 }
@@ -1230,6 +1203,13 @@ AST_node* vardec(void) {
 		parse_error(&lexer, "'=' or ':'");
 
 	child->next = literal();
+	if(!child->next) {
+		t = lex();
+		if(t != T_ID)
+			parse_error(&lexer, "identifier or literal");
+		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
+		child->next->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+	}
 
 	if(t != ';')
 		parse_error(&lexer, "';'");
@@ -1247,10 +1227,13 @@ AST_node* literal(void) {
 
 	t = lex();
 
-	if((t >= T_NUMBER  && t <= T_FALSE) || t == T_BAR || t == T_ID || t == '(' || t == '{')
+	if((t >= T_NUMBER  && t <= T_FALSE) || t == T_BAR || t == '{')
 		root = ast_alloc_node(&ast, 0, NULL, &lexer.info);
-	else
+	else {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
 		root = NULL;
+	}
 
 	switch(t) {
 	case T_NUMBER:
@@ -1267,7 +1250,7 @@ AST_node* literal(void) {
 		break;
 	case T_TRUE: case T_FALSE:
 		root->kind = N_BOOLLIT;
-		root->val = keyword[t - T_ENUM];
+		root->val = constant[t - T_TRUE];
 		break;
 	case T_BAR:
 		root->kind = N_UNINIT;
@@ -1286,14 +1269,7 @@ AST_node* literal(void) {
 	//	break;
 	//case '{':
 	//	break;
-	case T_ID:
-		root->kind = N_ID;
-		root->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
-		break;
 	}
-
-	if(!root)
-		parse_error(&lexer, "literal");
 
 	return root;
 }
@@ -1364,8 +1340,14 @@ AST_node* type(void) {
 		}
 	}
 
-	if(!(t >= T_INT && t <= T_S64) && t != T_ID && t != '(')
-		parse_error(&lexer, "type");
+	if(!(t >= T_INT && t <= T_S64) && t != T_ID && t != '(') {
+		if(indirect)
+			parse_error(&lexer, "type");
+
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		return NULL;
+	}
 
 	if(indirect) {
 		child->next = ast_alloc_node(&ast, N_TYPE, NULL, &lexer.info);
@@ -1384,65 +1366,31 @@ AST_node* type(void) {
 		 * if you think you would do something like that go away
 		 */
 		s = lexer.text_s;
-		while(1) {
-			while(1) {
-				t = lex();
-
-				if(t == '*')
-					continue;
-
-				if(t != '[')
-					break;
-
-				prevt = t = lex();
-
-				if(t != ']' && t != T_NUMBER & t != T_ID)
-					parse_error(&lexer, "']', integer constant, or identifier");
-
-				t = lex();
-
-				if(prevt != ']' && t != ']')
-					parse_error(&lexer, "']'");
-			}
-
-			if(!(t >= T_INT && t <= T_S64) && t != T_ID)
-				parse_error(&lexer, "builtin type, struct or union");
-
+		t = lex();
+		if(t != T_FUNC) {
+			lexer.info.col -= lexer.ptr - lexer.unget;
+			lexer.ptr = lexer.unget;
+			return NULL;
+		}
+		t = lex();
+		if(t != '(')
+			parse_error(&lexer, "'('");
+		child->next = type();
+		while(child->next) {
+			child = child->next;
+			child->next = type();
 			t = lex();
-
-			if(t == ',')
-				continue;
 			if(t == ')')
 				break;
-
-			parse_error(&lexer, "',' or ')'");
+			if(t != ',')
+				parse_error(&lexer, "','");
 		}
+		if(t != ')')
+			parse_error(&lexer, "')'");
 
-		t = lex();
-		if(t == T_ARROW) {
-			while(1) {
-				t = lex();
+		/* return type */
+		child->next = type();
 
-				if(t == '*')
-					continue;
-
-				if(t != '[')
-					break;
-
-				prevt = t = lex();
-
-				if(t != ']' && t != T_NUMBER & t != T_ID)
-					parse_error(&lexer, "']', integer constant, or identifier");
-
-				t = lex();
-
-				if(prevt != ']' && t != ']')
-					parse_error(&lexer, "']'");
-			}
-
-			if(!(t >= T_INT && t <= T_S64) && t != T_ID)
-				parse_error(&lexer, "builtin type, struct or union");
-		}
 		e = lexer.text_e;
 		child->val = strpool_alloc(&spool, e - s, s);
 	}
@@ -1451,7 +1399,7 @@ AST_node* type(void) {
 }
 
 /*
- * function: '(' paramlist ')' ('->' type)? ('inline'? '{' block '}')
+ * function: 'func' '(' paramlist ')' (type)? ('inline'? '{' block '}')
  */
 AST_node* function(void) {
 	register int t;
@@ -1459,7 +1407,7 @@ AST_node* function(void) {
 
 	t = lex();
 
-	if(t != '(') {
+	if(t != T_FUNC) {
 		lexer.info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
 		return NULL;
@@ -1467,17 +1415,17 @@ AST_node* function(void) {
 
 	root = ast_alloc_node(&ast, N_FUNCTION, NULL, &lexer.info);
 
+	t = lex();
+	if(t != '(')
+		parse_error(&lexer, "'('");
 	root->down = child = paramlist();
 	t = lex();
 	if(t != ')')
 		parse_error(&lexer, "')'");
 
-	t = lex();
-
-	if(t == T_ARROW) {
-		child->next = type();
+	child->next = type();
+	if(child)
 		child = child->next;
-	}
 
 	t = lex();
 
@@ -1616,6 +1564,9 @@ AST_node* block(void) {
 			continue;
 		}
 
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+
 		break;
 	}
 
@@ -1663,8 +1614,14 @@ AST_node* structure(void) {
 	t = lex();
 
 	if(t == '=') {
-		if(!(child->next = literal()))
-			parse_error(&lexer, "literal");
+		child->next = literal();
+		if(!child->next) {
+			t = lex();
+			if(t != T_ID)
+				parse_error(&lexer, "identifier or literal");
+			child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
+			child->next->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		}
 		child = child->next;
 	}
 
@@ -1694,8 +1651,14 @@ AST_node* structure(void) {
 		t = lex();
 
 		if(t == '=') {
-			if(!(child->next = literal()))
-				parse_error(&lexer, "literal");
+			child->next = literal();
+			if(!child->next) {
+				t = lex();
+				if(t != T_ID)
+					parse_error(&lexer, "identifier or literal");
+				child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
+				child->next->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+			}
 			child = child->next;
 		}
 
@@ -1817,9 +1780,15 @@ AST_node* statement(void) {
 	register int t;
 	AST_node *root, *child;
 
+	t = lex();
+	if(t == ';' || t == '}' || t == T_END) {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		return NULL;
+	}
+
 	root = ast_alloc_node(&ast, N_STATEMENT, NULL, &lexer.info);
 
-	t = lex();
 	if(t == T_DEFER) {
 		root->down = child = ast_alloc_node(&ast, N_DEFER, NULL, &lexer.info);
 		child->next = expression();
@@ -2038,23 +2007,24 @@ AST_node* forstatement(void) {
  * 	term '%' factor
  * 	term
  *
+ * unary:
+ * 	'*' unary
+ * 	'&' unary
+ * 	T_NOT unary
+ * 	'-' unary
+ * 	'~' unar
+ * 	T_INC unary
+ * 	T_DEC unary
+ * 	'(' type ')' unary
+ * 	unary '[' expression ']'
+ * 	unary '.' identifier
+ * 	term
+ *
  * term:
  *	literal
  * 	call
  * 	identifier
- * 	term '[' expression ']'
- * 	term '.' identifier
- *
- * 	'*' term
- * 	'&' term
- * 	T_NOT term
- * 	'-' term
- * 	'~' term
- * 	T_INC term
- * 	T_DEC term
  * 	'(' expression ')'
- *
- * 	'(' type ')' term
  *
  */
 AST_node* expression(void) {
@@ -2283,38 +2253,86 @@ AST_node* factor(void) {
 	return root;
 }
 
-AST_node* term(void) {
+AST_node* unary(void) {
 	register int t;
 	AST_node *root, *child;
 
-	child = call();
-	if(child) {
-		root = ast_alloc_node(&ast, N_TERM, NULL, &lexer.info);
-		root->down = child;
-		return root;
-	}
-
-	child = literal();
-	if(child) {
-		root = ast_alloc_node(&ast, N_TERM, NULL, &lexer.info);
-		root->down = child;
-		return root;
-	}
-
 	t = lex();
-	if(t != T_ID) {
-		lexer.info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-	} else {
-		root = ast_alloc_node(&ast, N_TERM, NULL, &lexer.info);
-		root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+
+	switch(t) {
+		case '*':
+			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+			child->op = OP_DEREF;
+			child->next = unary();
+			if(!child)
+				parse_error(&lexer, "term");
+			break;
+		case '&':
+			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+			child->op = OP_ADDR;
+			child->next = unary();
+			if(!child)
+				parse_error(&lexer, "term");
+			break;
+		case T_NOT:
+			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+			child->op = OP_LNOT;
+			child->next = unary();
+			if(!child)
+				parse_error(&lexer, "term");
+			break;
+		case '-':
+			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+			child->op = OP_NEG;
+			child->next = unary();
+			if(!child)
+				parse_error(&lexer, "term");
+			break;
+		case '~':
+			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+			child->op = OP_NOT;
+			child->next = unary();
+			if(!child)
+				parse_error(&lexer, "term");
+			break;
+		case T_INC:
+			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+			child->op = OP_INC;
+			child->next = unary();
+			if(!child)
+				parse_error(&lexer, "term");
+			break;
+		case T_DEC:
+			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+			child->op = OP_DEC;
+			child->next = unary();
+			if(!child)
+				parse_error(&lexer, "term");
+			break;
+		case '(':
+			child = type();
+			if(!child)
+				parse_error(&lexer, "type");
+			t = lex();
+			if(t != ')')
+				parse_error(&lexer, "')'");
+			child->next = unary();
+			break;
+	}
+
+	if(child) {
+		root = ast_alloc_node(&ast, N_UNARY, NULL, &lexer.info);
+		root->down = child;
 		return root;
 	}
 
 	child = term();
-	if(child) {
-		t = lex();
+
+	if(!child)
+		return NULL;
+
+	t = lex();
+	while(t == '[' || t == '.') {
 		if(t == '[') {
 			child->next = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
 			child->next->op = OP_INDEX;
@@ -2334,86 +2352,48 @@ AST_node* term(void) {
 				parse_error(&lexer, "identifier");
 			child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
 			child->next->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
-		} else
-			parse_error(&lexer, "'[' or '.'");
-	}
-
-	t = lex();
-	switch(t) {
-	case '*':
-		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
-		child->op = OP_DEREF;
-		child->next = term();
-		if(!child)
-			parse_error(&lexer, "term");
-		break;
-	case '&':
-		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
-		child->op = OP_ADDR;
-		child->next = term();
-		if(!child)
-			parse_error(&lexer, "term");
-		break;
-	case T_NOT:
-		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
-		child->op = OP_LNOT;
-		child->next = term();
-		if(!child)
-			parse_error(&lexer, "term");
-		break;
-	case '-':
-		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
-		child->op = OP_NEG;
-		child->next = term();
-		if(!child)
-			parse_error(&lexer, "term");
-		break;
-	case '~':
-		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
-		child->op = OP_NOT;
-		child->next = term();
-		if(!child)
-			parse_error(&lexer, "term");
-		break;
-	case T_INC:
-		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
-		child->op = OP_INC;
-		child->next = term();
-		if(!child)
-			parse_error(&lexer, "term");
-		break;
-	case T_DEC:
-		child = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
-		child->op = OP_DEC;
-		child->next = term();
-		if(!child)
-			parse_error(&lexer, "term");
-		break;
-	case '(':
-		child = expression();
-		if(!child) {
-			child = type();
-			if(!child)
-				parse_error(&lexer, "expression or type");
 		}
-		t = lex();
-		if(t != '(')
-			parse_error(&lexer, "')'");
-		break;
-	default:
-		parse_error(&lexer, "'*', '&', 'not', '-', '~', '++', '--' or '('");
-	}
 
-	if(!child) {
-		lexer.info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		return NULL;
+		t = lex();
 	}
 
 	root = ast_alloc_node(&ast, N_TERM, NULL, &lexer.info);
 	root->down = child;
 
 	return root;
+}
+
+AST_node* term(void) {
+	register int t;
+	AST_node *node;
+
+	node = call();
+	if(node)
+		return node;
+
+	node = literal();
+	if(node)
+		return node;
+
+	t = lex();
+	if(t == T_ID) {
+		node = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
+		node->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		return node;
+	}
+
+	if(t == '(') {
+		node = expression();
+		t = lex();
+		if(t != ')')
+			parse_error(&lexer, "')'");
+		return node;
+	}
+
+	lexer.info.col -= lexer.ptr - lexer.unget;
+	lexer.ptr = lexer.unget;
+
+	return NULL;
 }
 
 
