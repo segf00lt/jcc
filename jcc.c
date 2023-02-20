@@ -76,6 +76,7 @@ enum TOKENS {
 	T_UNION,
 	T_INLINE,
 	T_DEFER,
+	T_CAST,
 
 	T_AND, T_OR, T_NOT, T_XOR,
 	T_INT, T_CHAR, T_VOID, T_BOOL,
@@ -130,6 +131,7 @@ char *tokens_debug[] = {
 	"T_UNION",
 	"T_INLINE",
 	"T_DEFER",
+	"T_CAST",
 	"T_AND", "T_OR", "T_NOT", "T_XOR",
 	"T_INT", "T_CHAR", "T_VOID", "T_BOOL",
 	"T_DOUBLE", "T_FLOAT",
@@ -261,6 +263,7 @@ char *keyword[] = {
 	"union",
 	"inline",
 	"defer",
+	"cast",
 	"and", "or", "not", "xor",
 	"int", "char", "void", "bool",
 	"double", "float",
@@ -286,6 +289,7 @@ size_t keyword_length[] = {
 	STRLEN("union"),
 	STRLEN("inline"),
 	STRLEN("defer"),
+	STRLEN("cast"),
 	STRLEN("and"), STRLEN("or"), STRLEN("not"), STRLEN("xor"),
 	STRLEN("int"), STRLEN("char"), STRLEN("void"), STRLEN("bool"),
 	STRLEN("double"), STRLEN("float"),
@@ -2052,7 +2056,7 @@ AST_node* forstatement(void) {
  * 	'~' unar
  * 	T_INC unary
  * 	T_DEC unary
- * 	'(' type ')' unary
+ * 	'cast' '(' type ')' unary
  * 	unary '[' expression ']'
  * 	unary '.' identifier
  * 	term
@@ -2349,20 +2353,21 @@ AST_node* unary(void) {
 			if(!child)
 				parse_error(&lexer, "term");
 			break;
-		case '(':
+		case T_CAST:
+			t = lex();
 			col = lexer.info.col;
 			unget = lexer.unget;
 
 			child = type();
 			if(!child) {
 				lexer.info.col = col;
-				lexer.unget = unget;
+				lexer.ptr = unget;
 				return term();
 			}
 			t = lex();
 			if(t != ')') {
 				lexer.info.col = col;
-				lexer.unget = unget;
+				lexer.ptr = unget;
 				return term();
 			}
 			child->next = unary();

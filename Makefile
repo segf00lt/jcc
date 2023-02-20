@@ -6,3 +6,4 @@ all:
 
 #test: all
 #	cd test/; ./unittest; cd ..;
+.PHONY: all
