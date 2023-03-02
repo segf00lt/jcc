@@ -167,14 +167,13 @@ char *segments[] = {
 };
 
 enum NODES {
-	N_DECLARATION = 1,
-	N_CONSTANT,
+	N_DEC = 1,
+	N_CONSTDEC,
 	N_DEFER,
 	N_FUNCTION,
 	N_STRUCTURE,
 	N_UNIONATION,
 	N_ENUMERATION,
-	N_PARAMLIST,
 	N_BLOCK,
 	N_STATEMENT,
 	N_IFSTATEMENT,
@@ -211,14 +210,13 @@ enum NODES {
 
 char *nodes_debug[] = {
 	0,
-	"N_DECLARATION",
-	"N_CONSTANT",
+	"N_DEC",
+	"N_CONSTDEC",
 	"N_DEFER",
 	"N_FUNCTION",
 	"N_STRUCTURE",
 	"N_UNIONATION",
 	"N_ENUMERATION",
-	"N_PARAMLIST",
 	"N_BLOCK",
 	"N_STATEMENT",
 	"N_IFSTATEMENT",
@@ -1042,7 +1040,7 @@ AST_node* declaration(void) {
 	lexer.ptr = unget2;
 	t = lex();
 
-	root = ast_alloc_node(&ast, N_DECLARATION, NULL, &lexer.info);
+	root = ast_alloc_node(&ast, N_DEC, NULL, &lexer.info);
 	root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
 	child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 
@@ -1070,10 +1068,9 @@ AST_node* declaration(void) {
 	if(child->next)
 		child = child->next;
 
-	if(t == ':') {
-		child->next = ast_alloc_node(&ast, N_CONSTANT, NULL, &lexer.info);
-		child = child->next;
-	} else if(t != '=')
+	if(t == ':')
+		root->kind = N_CONSTDEC;
+	else if(t != '=')
 		parse_error(&lexer, "'=' or ':'");
 
 	/* body */
@@ -1116,7 +1113,7 @@ AST_node* vardec(void) {
 	if(t != T_ID)
 		parse_error(&lexer, "identifier");
 
-	root = ast_alloc_node(&ast, N_DECLARATION, NULL, &lexer.info);
+	root = ast_alloc_node(&ast, N_DEC, NULL, &lexer.info);
 
 	root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
 	child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
@@ -1506,7 +1503,7 @@ AST_node* structure(void) {
 	} else if(t == T_UNION) {
 		lexer.info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
-		child = ast_alloc_node(&ast, N_DECLARATION, NULL, &lexer.info);
+		child = ast_alloc_node(&ast, N_DEC, NULL, &lexer.info);
 		child->down = unionation();
 		t = lex();
 		if(t == '=') {
@@ -1532,7 +1529,7 @@ AST_node* structure(void) {
 		} else if(t == T_UNION) {
 			lexer.info.col -= lexer.ptr - lexer.unget;
 			lexer.ptr = lexer.unget;
-			child->next = ast_alloc_node(&ast, N_DECLARATION, NULL, &lexer.info);
+			child->next = ast_alloc_node(&ast, N_DEC, NULL, &lexer.info);
 			child = child->next;
 			child->down = unionation();
 			t = lex();
