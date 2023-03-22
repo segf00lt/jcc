@@ -11,7 +11,11 @@
 #include <sys/stat.h>
 #include <libgen.h>
 #include <assert.h>
+#if defined(__MACH__)
 #include <err.h>
+#else
+#include <error.h>
+#endif
 #include "fmap.c"
 
 #define ARRLEN(x) (sizeof(x) / sizeof(*x))
@@ -2441,7 +2445,11 @@ int main(int argc, char **argv) {
 		return 1;
 	Fmap fm;
 	if(fmapopen(argv[1], O_RDONLY, &fm) < 0)
+#if defined(__MACH__)
 		err(1, "%s: no such file or directory", argv[1]);
+#else
+		error(1, 0, "%s: no such file or directory", argv[1]);
+#endif
 	fmapread(&fm);
 	lexer_init(&lexer, fm.buf);
 	AST_INIT(ast);
