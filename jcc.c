@@ -46,7 +46,7 @@
 #define SYM_TAB_INIT(tab) {\
 	tab.cap = 128;\
 	tab.data = calloc(tab.cap, sizeof(Sym));\
-	tab.count = tab.static_count = = tab.arg_count = tab.local_count = 0;\
+	tab.count = tab.global_count = = tab.arg_count = tab.local_count = 0;\
 }
 
 enum TOKENS {
@@ -82,7 +82,7 @@ enum TOKENS {
 
 	T_AND, T_OR, T_NOT, T_XOR,
 	T_INT, T_CHAR, T_VOID, T_BOOL,
-	T_DOUBLE, T_FLOAT,
+	T_FLOAT, T_F32, T_F64,
 	T_U8, T_U16, T_U32, T_U64,
 	T_S8, T_S16, T_S32, T_S64,
 
@@ -136,7 +136,8 @@ char *tokens_debug[] = {
 	"T_CAST",
 	"T_AND", "T_OR", "T_NOT", "T_XOR",
 	"T_INT", "T_CHAR", "T_VOID", "T_BOOL",
-	"T_DOUBLE", "T_FLOAT",
+	"T_FLOAT",
+	"T_F32", "T_F64",
 	"T_U8", "T_U16", "T_U32", "T_U64",
 	"T_S8", "T_S16", "T_S32", "T_S64",
 	"T_IF", "T_ELIF", "T_ELSE",
@@ -266,7 +267,7 @@ char *keyword[] = {
 	"cast",
 	"and", "or", "not", "xor",
 	"int", "char", "void", "bool",
-	"double", "float",
+	"float", "f32", "f64",
 	"u8", "u16", "u32", "u64",
 	"s8", "s16", "s32", "s64",
 	"if", "elif", "else",
@@ -292,7 +293,7 @@ size_t keyword_length[] = {
 	STRLEN("cast"),
 	STRLEN("and"), STRLEN("or"), STRLEN("not"), STRLEN("xor"),
 	STRLEN("int"), STRLEN("char"), STRLEN("void"), STRLEN("bool"),
-	STRLEN("double"), STRLEN("float"),
+	STRLEN("float"), STRLEN("f32"), STRLEN("f64"),
 	STRLEN("u8"), STRLEN("u16"), STRLEN("u32"), STRLEN("u64"),
 	STRLEN("s8"), STRLEN("s16"), STRLEN("s32"), STRLEN("s64"),
 	STRLEN("if"), STRLEN("elif"), STRLEN("else"),
@@ -443,10 +444,14 @@ struct AST {
 	size_t nodecount; /* debug */
 };
 
+/* TODO build type system
+ *
+ * type_info_alloc()
+ */
 enum Type_tag {
-	INT, BOOL, FLOAT, ARRAY, POINTER,
-	FUNC, STRUCT, ENUM, UNION,
-	VOID,
+	TY_INT = 0, TY_BOOL, TY_FLOAT, TY_ARRAY, TY_POINTER,
+	TY_FUNC, TY_STRUCT, TY_ENUM, TY_UNION,
+	TY_VOID,
 };
 typedef enum Type_tag Type_tag;
 
@@ -462,7 +467,7 @@ typedef struct Type_info_Enum Type_info_Enum;
 typedef struct Type_info_Union Type_info_Union;
 
 struct Type_info_Int {
-	unsigned int bits : 6;
+	unsigned int bits : 8;
 	unsigned int sign : 1;
 };
 
@@ -480,7 +485,7 @@ struct Type_info_Array {
 };
 
 struct Type_info_Func {
-	Type_info *return_type;
+	Type_info **return_types;
 	Type_info **arg_types;
 };
 
@@ -521,6 +526,23 @@ struct Type_info {
 	};
 };
 
+/* builtin types */
+Type_info builtin_Int = { .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } };
+Type_info builtin_Char = { .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 1 } };
+Type_info builtin_U8 = { .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 0 } };
+Type_info builtin_U16 = { .tag = TY_INT, .bytes = 2u, .Int = { .bits = 16u, .sign = 0 } };
+Type_info builtin_U32 = { .tag = TY_INT, .bytes = 4u, .Int = { .bits = 32u, .sign = 0 } };
+Type_info builtin_U64 = { .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 0 } };
+Type_info builtin_S8 = { .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 1 } };
+Type_info builtin_S16 = { .tag = TY_INT, .bytes = 2u, .Int = { .bits = 16u, .sign = 1 } };
+Type_info builtin_S32 = { .tag = TY_INT, .bytes = 4u, .Int = { .bits = 32u, .sign = 1 } };
+Type_info builtin_S64 = { .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } };
+Type_info builtin_Float = { .tag = TY_FLOAT, .bytes = 4u, .Int = { .bits = 32u } };
+Type_info builtin_F32 = { .tag = TY_FLOAT, .bytes = 4u, .Int = { .bits = 32u, .sign = 1 } };
+Type_info builtin_F64 = { .tag = TY_FLOAT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } };
+Type_info builtin_Bool = { .tag = TY_BOOL, .bytes = 1u };
+Type_info builtin_Void = { .tag = TY_VOID };
+
 typedef struct Sym Sym;
 struct Sym {
 	size_t pos; /* position in memory segment */
@@ -540,7 +562,7 @@ struct Sym_tab {
 	size_t cap;
 	size_t count;
 	/* TODO segment count union */
-	size_t static_count;
+	size_t global_count;
 	size_t arg_count;
 	size_t local_count;
 };
@@ -824,7 +846,7 @@ Sym* sym_tab_look(Sym_tab *tab, char *name) {
 
 void sym_tab_clear(Sym_tab *tab) {
 	/* NOTE make sure you still have a pointer to the string pool when you call this */
-	tab->count = tab->static_count = tab->arg_count = tab->local_count = 0;
+	tab->count = tab->global_count = tab->arg_count = tab->local_count = 0;
 	for(size_t i = 0; i < tab->cap; ++i) tab->data[i].name = 0;
 }
 
@@ -1397,7 +1419,7 @@ AST_node* type(void) {
 		}
 	}
 
-	if(!(t >= T_INT && t <= T_S64) && t != T_ID && t != '(') {
+	if(!(t >= T_INT && t <= T_S64) && t != T_ID && t != T_FUNC) {
 		if(indirect)
 			parse_error(&lexer, "type");
 
@@ -1413,11 +1435,15 @@ AST_node* type(void) {
 		root = child = ast_alloc_node(&ast, N_TYPE, NULL, &lexer.info);
 	}
 
-	if(t != T_ID && t != '(')
+	if(t != T_ID && t != T_FUNC)
 		child->val = keyword[t - T_ENUM];
-	else if(t != '(')
+	else if(t != T_FUNC)
 		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 	else {
+		child->val = keyword[t - T_ENUM];
+		t = lex();
+		if(t != '(')
+			parse_error(&lexer, "'('");
 		child->down = arg = type();
 		t = lex();
 		while(t != ')') {
@@ -2569,8 +2595,9 @@ void cleanup(void) {
 */
 
 int main(int argc, char **argv) {
-	if(argc == 1)
+	if(argc == 1) {
 		return 1;
+	}
 	Fmap fm;
 	if(fmapopen(argv[1], O_RDONLY, &fm) < 0)
 #if defined(__MACH__)
