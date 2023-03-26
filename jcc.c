@@ -70,7 +70,6 @@ enum TOKENS {
 	T_LSHIFT,
 	T_RSHIFT,
 
-
 	T_ENUM,
 	T_REGISTER,
 	T_SIZEOF,
@@ -155,7 +154,7 @@ char *tokens_debug[] = {
 };
 
 enum SEGMENTS {
-	S_ARGUMENT,
+	S_ARGUMENT = 0,
 	S_LOCAL,
 	S_TEMP,
 	S_STATIC,
@@ -389,8 +388,8 @@ char *operators_debug[] = {
 };
 
 
-typedef struct Info Info;
-struct Info {
+typedef struct Debug_info Debug_info;
+struct Debug_info {
 	int line;
 	int col;
 	char *line_s;
@@ -414,7 +413,7 @@ struct Lexer {
 	char *text_e;
 	char *unget;
 	int token;
-	Info info;
+	Debug_info info;
 };
 
 typedef struct AST_node AST_node;
@@ -427,7 +426,8 @@ struct AST_node {
 	};
 	AST_node *down; /* down */
 	AST_node *next; /* across */
-	Info info;
+	Debug_info info;
+	//Type_info *type;
 };
 
 typedef struct AST AST;
@@ -443,18 +443,94 @@ struct AST {
 	size_t nodecount; /* debug */
 };
 
+enum Type_tag {
+	INT, BOOL, FLOAT, ARRAY, POINTER,
+	FUNC, STRUCT, ENUM, UNION,
+	VOID,
+};
+typedef enum Type_tag Type_tag;
+
+typedef struct Type_info Type_info;
+typedef struct Type_info_Int Type_info_Int;
+typedef struct Type_info_Float Type_info_Float;
+typedef struct Type_info_Pointer Type_info_Pointer;
+typedef struct Type_info_Array Type_info_Array;
+typedef struct Type_info_Func Type_info_Func;
+typedef struct Type_info_Struct Type_info_Struct;
+typedef struct Type_info_Member Type_info_Member; /* struct, enum or union member */
+typedef struct Type_info_Enum Type_info_Enum;
+typedef struct Type_info_Union Type_info_Union;
+
+struct Type_info_Int {
+	unsigned int bits : 6;
+	unsigned int sign : 1;
+};
+
+struct Type_info_Float {
+	unsigned int bits;
+};
+
+struct Type_info_Pointer {
+	Type_info *pointer_to;
+};
+
+struct Type_info_Array {
+	Type_info *element_type;
+	size_t max_index;
+};
+
+struct Type_info_Func {
+	Type_info *return_type;
+	Type_info **arg_types;
+};
+
+struct Type_info_Struct {
+	char *name;
+	Type_info_Member *members;
+};
+
+struct Type_info_Member {
+	char *name;
+	Type_info *type;
+	size_t byte_offset;
+};
+
+struct Type_info_Enum {
+	char *name;
+	Type_info *type;
+};
+
+struct Type_info_Union {
+	char *name;
+	Type_info_Member *members;
+};
+
+struct Type_info {
+	Type_tag tag;
+	size_t bytes;
+	union {
+		Type_info_Int Int;
+		Type_info_Float Float;
+		Type_info_Pointer Pointer;
+		Type_info_Array Array;
+		Type_info_Func Func;
+		Type_info_Struct Struct;
+		Type_info_Member Member;
+		Type_info_Enum Enum;
+		Type_info_Union Union;
+	};
+};
+
 typedef struct Sym Sym;
 struct Sym {
-	int pos; /* position in memory segment */
-	int seg; /* memory segment */
-	char *type; /* data type string */
+	size_t pos; /* position in memory segment */
+	size_t size; /* size in bytes */
+	unsigned int seg : 3; /* memory segment */
+	unsigned int constant : 1;
 	char *name;
-	/* NOTE scalar types use val, struct union and enum use tab */
-	union {
-		char *val;
-		struct Sym_tab *tab;
-	};
-	Info info;
+	char *type;
+	AST_node *val; /* initial value */
+	Debug_info info;
 };
 
 typedef struct Sym_tab Sym_tab;
@@ -473,7 +549,6 @@ Lexer lexer;
 AST ast;
 Strpool spool;
 Sym_tab globaltab;
-Sym_tab filetab;
 Sym_tab functab;
 Sym_tab blocktab[8]; /* hard limit on amount of nesting that can be done */
 size_t depth;
@@ -489,7 +564,7 @@ char* strpool_alloc(Strpool *pool, size_t len, char *s);
 void strpool_free(Strpool *pool);
 
 /* AST functions */
-AST_node* ast_alloc_node(AST *ast, int kind, char *val, Info *info);
+AST_node* ast_alloc_node(AST *ast, int kind, char *val, Debug_info *info);
 void ast_free(AST *ast);
 
 /* parsing */
@@ -624,7 +699,7 @@ void debug_parser(AST_node *node, size_t depth) {
 	}
 }
 
-AST_node* ast_alloc_node(AST *ast, int kind, char *val, Info *info) {
+AST_node* ast_alloc_node(AST *ast, int kind, char *val, Debug_info *info) {
 	if(ast->free - ast->base >= AST_PAGE_SIZE) {
 		++ast->cur;
 		if(ast->cur >= ast->cap) {
@@ -653,13 +728,56 @@ void ast_free(AST *ast) {
 	free(ast->pages);
 }
 
-/*
 void sym_tab_build(Sym_tab *tab, AST_node *node) {
-	AST_node *child;
-	Sym symbol;
-	size_t *tmp;
+	AST_node *child, *tmp;
+	Sym sym;
 
-	switch(node->kind) {
+	for(; node; node = node->next) {
+		sym = (Sym){0};
+		switch(node->kind) {
+		case N_STRUCTURE: case N_UNIONATION:
+			break;
+		case N_ENUMERATION:
+			child = node->down;
+			sym.seg = S_CONSTANT;
+			sym.type = keyword[T_U64 - T_ENUM];
+			if(child->kind == N_TYPE) {
+				sym.type = child->val;
+				child = child->next;
+			}
+			if(child->next->kind >= N_INTLIT && child->next->kind <= N_BOOLLIT) {
+				sym.val = child->next;
+				/* TODO check type */
+			}
+			while(child) {
+				sym.name = child->val;
+				sym.info = child->info;
+				sym_tab_def(tab, &sym);
+				child = child->next;
+			}
+			break;
+		case N_CONSTDEC:
+			sym.constant = 1;
+			tmp = child;
+			while(tmp->kind == N_ID)
+				tmp = tmp->next;
+			switch(tmp->kind) {
+			case N_TYPE:
+				sym.type = tmp->val;
+				break;
+			case N_FUNCTION: /* TODO think about function types */
+				break;
+			case N_STRUCTURE:
+				break;
+			case N_UNIONATION:
+				break;
+			case N_ENUMERATION:
+				break;
+			}
+			break;
+		case N_DEC:
+			break;
+		}
 	}
 }
 
@@ -705,20 +823,19 @@ Sym* sym_tab_look(Sym_tab *tab, char *name) {
 }
 
 void sym_tab_clear(Sym_tab *tab) {
-	/ * NOTE make sure you still have a pointer to the string pool when you call this * /
-	tab->count = tab->static_count = tab->this_count = tab->arg_count = tab->local_count = 0;
+	/* NOTE make sure you still have a pointer to the string pool when you call this */
+	tab->count = tab->static_count = tab->arg_count = tab->local_count = 0;
 	for(size_t i = 0; i < tab->cap; ++i) tab->data[i].name = 0;
 }
 
 void sym_tab_print(Sym_tab *tab) {
 	for(size_t i = 0; i < tab->cap; ++i) {
 		if(tab->data[i].name == 0) continue;
-		fprintf(stderr, "SYMBOL\n\tname: %s\n\ttype: %s\n\tseg: %s\n\tpos: %i\n\n",
+		fprintf(stderr, "SYMBOL\n\tname: %s\n\ttype: %s\n\tseg: %s\n\tpos: %zu\n\n",
 				tab->data[i].name, tab->data[i].type,
 				segments[tab->data[i].seg], tab->data[i].pos);
 	}
 }
-*/
 
 void parse_error(Lexer *l, char *expect) {
 	fprintf(stderr, "jcc: parse error: expected %s got '", expect);
@@ -856,7 +973,10 @@ int lex(void) {
 	}
 
 	if(lexer.token) {
-		if(tp[1] == tp[0] && *tp != '*' && *tp != ':') {
+		if(tp[1] == tp[0] &&
+				(*tp == '<' || *tp == '>' ||
+				 *tp == '&' || *tp == '|' ||
+				 *tp == '+' || *tp == '-')) {
 			++lexer.info.col;
 			++lexer.ptr;
 			switch(*tp) {
@@ -1219,8 +1339,7 @@ AST_node* literal(void) {
  */
 AST_node* type(void) {
 	register int t, prevt, loop, indirect;
-	AST_node *root, *child;
-	char *s, *e;
+	AST_node *root, *child, *arg, *ret;
 
 	loop = prevt = indirect = 0;
 	t = lex();
@@ -1299,27 +1418,30 @@ AST_node* type(void) {
 	else if(t != '(')
 		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 	else {
-		/* no one in their right mind would ever make a function pointer to a function
-		 * that takes a function pointer 
-		 * if you think you would do something like that go away
-		 */
-		s = lexer.text_s;
+		child->down = arg = type();
 		t = lex();
-		if(t != T_FUNC) {
-			lexer.info.col -= lexer.ptr - lexer.unget;
-			lexer.ptr = lexer.unget;
-			return NULL;
+		while(t != ')') {
+			arg->next = type();
+			arg = arg->next;
+			t = lex();
+			if(t != ',' && t != ')')
+				parse_error(&lexer, "',' or ')'");
 		}
 		t = lex();
-		if(t != '(')
-			parse_error(&lexer, "'('");
-		// TODO refactor function pointers
-		if(t != ')')
-			parse_error(&lexer, "')'");
-
-
-		e = lexer.text_e;
-		child->val = strpool_alloc(&spool, e - s, s);
+		if(t != '(') {
+			lexer.info.col -= lexer.ptr - lexer.unget;
+			lexer.ptr = lexer.unget;
+		} else {
+			child->next = ret = type();
+			t = lex();
+			while(t != ')') {
+				ret->next = type();
+				ret = ret->next;
+				t = lex();
+				if(t != ',' && t != ')')
+					parse_error(&lexer, "',' or ')'");
+			}
+		}
 	}
 
 	return root;
@@ -2424,9 +2546,15 @@ void lexer_init(Lexer *l, char *buf) {
 	l->token = 0;
 	l->text_s = l->text_e = l->unget = NULL;
 	l->ptr = l->src = buf;
-	l->info = (Info){ .line = 1, .col = 1, .line_s = buf };
+	l->info = (Debug_info){ .line = 1, .col = 1, .line_s = buf };
 	for(l->info.line_e = l->ptr; *(l->info.line_e) != '\n'; ++(l->info.line_e));
 	++(l->info.line_e);
+}
+
+void compile(void) {
+	//AST_node *root = ast.root;
+
+	/* build global tab */
 }
 
 /*

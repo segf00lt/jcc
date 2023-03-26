@@ -14,7 +14,7 @@ Array :: struct {
 }
 
 // variable struct
-foo := struct {
+foo, foo2 := struct {
 	bar: float;
 	kiss: Array;
 }
