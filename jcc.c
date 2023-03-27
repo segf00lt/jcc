@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -17,6 +18,7 @@
 #include <error.h>
 #endif
 #include "fmap.c"
+#include "mempool.c"
 
 #define ARRLEN(x) (sizeof(x) / sizeof(*x))
 #define STRLEN(x) (sizeof(x) / sizeof(*x)) - 1 /* compile-time strlen */
@@ -83,6 +85,7 @@ enum TOKENS {
 	T_AND, T_OR, T_NOT, T_XOR,
 	T_INT, T_CHAR, T_VOID, T_BOOL,
 	T_FLOAT, T_F32, T_F64,
+	T_TYPE,
 	T_U8, T_U16, T_U32, T_U64,
 	T_S8, T_S16, T_S32, T_S64,
 
@@ -136,8 +139,8 @@ char *tokens_debug[] = {
 	"T_CAST",
 	"T_AND", "T_OR", "T_NOT", "T_XOR",
 	"T_INT", "T_CHAR", "T_VOID", "T_BOOL",
-	"T_FLOAT",
-	"T_F32", "T_F64",
+	"T_FLOAT", "T_F32", "T_F64",
+	"T_TYPE",
 	"T_U8", "T_U16", "T_U32", "T_U64",
 	"T_S8", "T_S16", "T_S32", "T_S64",
 	"T_IF", "T_ELIF", "T_ELSE",
@@ -268,6 +271,7 @@ char *keyword[] = {
 	"and", "or", "not", "xor",
 	"int", "char", "void", "bool",
 	"float", "f32", "f64",
+	"Type",
 	"u8", "u16", "u32", "u64",
 	"s8", "s16", "s32", "s64",
 	"if", "elif", "else",
@@ -294,6 +298,7 @@ size_t keyword_length[] = {
 	STRLEN("and"), STRLEN("or"), STRLEN("not"), STRLEN("xor"),
 	STRLEN("int"), STRLEN("char"), STRLEN("void"), STRLEN("bool"),
 	STRLEN("float"), STRLEN("f32"), STRLEN("f64"),
+	STRLEN("Type"),
 	STRLEN("u8"), STRLEN("u16"), STRLEN("u32"), STRLEN("u64"),
 	STRLEN("s8"), STRLEN("s16"), STRLEN("s32"), STRLEN("s64"),
 	STRLEN("if"), STRLEN("elif"), STRLEN("else"),
@@ -388,7 +393,6 @@ char *operators_debug[] = {
 	"OP_INDEX",
 };
 
-
 typedef struct Debug_info Debug_info;
 struct Debug_info {
 	int line;
@@ -414,6 +418,7 @@ struct Lexer {
 	char *text_e;
 	char *unget;
 	int token;
+	int eof;
 	Debug_info info;
 };
 
@@ -451,7 +456,7 @@ struct AST {
 enum Type_tag {
 	TY_INT = 0, TY_BOOL, TY_FLOAT, TY_ARRAY, TY_POINTER,
 	TY_FUNC, TY_STRUCT, TY_ENUM, TY_UNION,
-	TY_VOID,
+	TY_VOID, TY_TYPE,
 };
 typedef enum Type_tag Type_tag;
 
@@ -542,6 +547,17 @@ Type_info builtin_F32 = { .tag = TY_FLOAT, .bytes = 4u, .Int = { .bits = 32u, .s
 Type_info builtin_F64 = { .tag = TY_FLOAT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } };
 Type_info builtin_Bool = { .tag = TY_BOOL, .bytes = 1u };
 Type_info builtin_Void = { .tag = TY_VOID };
+Type_info builtin_Type = { .tag = TY_TYPE };
+
+typedef struct Type_tab Type_tab;
+struct Type_tab {
+	Type_info *free;
+	Type_info *base; /* base of current page */
+	Type_info **pages;
+	size_t cur; /* index of current page */
+	size_t cap; /* capacity of **pages */
+	size_t typecount; /* debug */
+};
 
 typedef struct Sym Sym;
 struct Sym {
@@ -550,8 +566,12 @@ struct Sym {
 	unsigned int seg : 3; /* memory segment */
 	unsigned int constant : 1;
 	char *name;
-	char *type;
-	AST_node *val; /* initial value */
+	Type_info *type;
+	union { /* initial value may be Type_info*, char*, AST_node* */
+		Type_info *t;
+		char *s;
+		AST_node *a;
+	} val;
 	Debug_info info;
 };
 
@@ -570,6 +590,7 @@ struct Sym_tab {
 Lexer lexer;
 AST ast;
 Strpool spool;
+Type_info *type_table;
 Sym_tab globaltab;
 Sym_tab functab;
 Sym_tab blocktab[8]; /* hard limit on amount of nesting that can be done */
@@ -617,6 +638,9 @@ AST_node* unary(void);
 AST_node* member(void);
 AST_node* term(void);
 AST_node* call(void);
+
+/* type system funcitons */
+Type_info* type_info_alloc();
 
 /* symbol table functions */
 void sym_tab_build(Sym_tab *tab, AST_node *node);
@@ -751,56 +775,56 @@ void ast_free(AST *ast) {
 }
 
 void sym_tab_build(Sym_tab *tab, AST_node *node) {
-	AST_node *child, *tmp;
-	Sym sym;
+	//AST_node *child, *tmp;
+	//Sym sym;
 
-	for(; node; node = node->next) {
-		sym = (Sym){0};
-		switch(node->kind) {
-		case N_STRUCTURE: case N_UNIONATION:
-			break;
-		case N_ENUMERATION:
-			child = node->down;
-			sym.seg = S_CONSTANT;
-			sym.type = keyword[T_U64 - T_ENUM];
-			if(child->kind == N_TYPE) {
-				sym.type = child->val;
-				child = child->next;
-			}
-			if(child->next->kind >= N_INTLIT && child->next->kind <= N_BOOLLIT) {
-				sym.val = child->next;
-				/* TODO check type */
-			}
-			while(child) {
-				sym.name = child->val;
-				sym.info = child->info;
-				sym_tab_def(tab, &sym);
-				child = child->next;
-			}
-			break;
-		case N_CONSTDEC:
-			sym.constant = 1;
-			tmp = child;
-			while(tmp->kind == N_ID)
-				tmp = tmp->next;
-			switch(tmp->kind) {
-			case N_TYPE:
-				sym.type = tmp->val;
-				break;
-			case N_FUNCTION: /* TODO think about function types */
-				break;
-			case N_STRUCTURE:
-				break;
-			case N_UNIONATION:
-				break;
-			case N_ENUMERATION:
-				break;
-			}
-			break;
-		case N_DEC:
-			break;
-		}
-	}
+	//for(; node; node = node->next) {
+	//	sym = (Sym){0};
+	//	switch(node->kind) {
+	//	case N_STRUCTURE: case N_UNIONATION:
+	//		break;
+	//	case N_ENUMERATION:
+	//		child = node->down;
+	//		sym.seg = S_CONSTANT;
+	//		sym.type = keyword[T_U64 - T_ENUM];
+	//		if(child->kind == N_TYPE) {
+	//			sym.type = child->val;
+	//			child = child->next;
+	//		}
+	//		if(child->next->kind >= N_INTLIT && child->next->kind <= N_BOOLLIT) {
+	//			sym.val = child->next;
+	//			/* TODO check type */
+	//		}
+	//		while(child) {
+	//			sym.name = child->val;
+	//			sym.info = child->info;
+	//			sym_tab_def(tab, &sym);
+	//			child = child->next;
+	//		}
+	//		break;
+	//	case N_CONSTDEC:
+	//		sym.constant = 1;
+	//		tmp = child;
+	//		while(tmp->kind == N_ID)
+	//			tmp = tmp->next;
+	//		switch(tmp->kind) {
+	//		case N_TYPE:
+	//			sym.type = tmp->val;
+	//			break;
+	//		case N_FUNCTION: /* TODO think about function types */
+	//			break;
+	//		case N_STRUCTURE:
+	//			break;
+	//		case N_UNIONATION:
+	//			break;
+	//		case N_ENUMERATION:
+	//			break;
+	//		}
+	//		break;
+	//	case N_DEC:
+	//		break;
+	//	}
+	//}
 }
 
 void sym_tab_grow(Sym_tab *tab) {
@@ -853,9 +877,10 @@ void sym_tab_clear(Sym_tab *tab) {
 void sym_tab_print(Sym_tab *tab) {
 	for(size_t i = 0; i < tab->cap; ++i) {
 		if(tab->data[i].name == 0) continue;
-		fprintf(stderr, "SYMBOL\n\tname: %s\n\ttype: %s\n\tseg: %s\n\tpos: %zu\n\n",
-				tab->data[i].name, tab->data[i].type,
-				segments[tab->data[i].seg], tab->data[i].pos);
+		/* TODO print Type_info */
+		//fprintf(stderr, "SYMBOL\n\tname: %s\n\ttype: %p\n\tseg: %s\n\tpos: %zu\n\n",
+		//		tab->data[i].name, tab->data[i].type,
+		//		segments[tab->data[i].seg], tab->data[i].pos);
 	}
 }
 
@@ -915,8 +940,10 @@ int lex(void) {
 
 	tp = lexer.text_s = lexer.unget = lexer.ptr;
 
-	if(*lexer.ptr == 0)
+	if(*lexer.ptr == 0) {
+		lexer.eof = 1;
 		return T_END;
+	}
 
 	lexer.token = 0;
 
@@ -1130,9 +1157,18 @@ void parse(void) {
 	AST_node *node;
 
 	ast.root = node = declaration();
-	for(node->next = declaration(); node->next; node->next = declaration())
-		node = node->next;
+	if(node)
+		for(node->next = declaration(); node->next; node->next = declaration())
+			node = node->next;
+	if(!lexer.eof) {
+		parse_error(&lexer, "end of file");
+	}
 }
+
+/*
+ * TODO
+ * topdeclaration
+ */
 
 /*
  * declaration: identifier (',' identifier)* ':' type? ('='|':') (literal';'|function|structure|unionation|enumeration)
@@ -1316,7 +1352,9 @@ AST_node* literal(void) {
 	else {
 		lexer.info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
-		root = NULL;
+		/* try looking for a type */
+		root = type();
+		//root = NULL;
 	}
 
 	switch(t) {
@@ -1360,12 +1398,13 @@ AST_node* literal(void) {
  * NOTE function pointers are NOT allowed for functions that take or return function pointers
  */
 AST_node* type(void) {
-	register int t, prevt, loop, indirect;
+	register int t;
+	bool loop, indirect;
 	AST_node *root, *child, *arg, *ret;
 
-	loop = prevt = indirect = 0;
 	t = lex();
 
+	loop = indirect = false;
 	if(t == '*' || t == '[') {
 		indirect = 1;
 
@@ -1441,6 +1480,9 @@ AST_node* type(void) {
 		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 	else {
 		child->val = keyword[t - T_ENUM];
+		/* extra node to let me arrange args and rets */
+		child->down = ast_alloc_node(&ast, 0, NULL, &lexer.info);
+		child = child->down;
 		t = lex();
 		if(t != '(')
 			parse_error(&lexer, "'('");

@@ -1,0 +1,3 @@
+main() :: {
+	i am broken
+}

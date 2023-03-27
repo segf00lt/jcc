@@ -1,0 +1,3 @@
+replace use Mempool for allocating AST_node, strings and Type_info
+print Type_info
+sym_tab_build()
