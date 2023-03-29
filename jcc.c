@@ -433,7 +433,6 @@ struct AST_node {
 	AST_node *down; /* down */
 	AST_node *next; /* across */
 	Debug_info info;
-	//Type_info *type;
 };
 
 typedef struct AST AST;
@@ -449,10 +448,6 @@ struct AST {
 	size_t nodecount; /* debug */
 };
 
-/* TODO build type system
- *
- * type_info_build()
- */
 enum Type_tag {
 	TY_INT = 0, TY_BOOL, TY_FLOAT, TY_ARRAY, TY_POINTER,
 	TY_FUNC, TY_STRUCT, TY_ENUM, TY_UNION,
@@ -467,9 +462,9 @@ typedef struct Type_info_Pointer Type_info_Pointer;
 typedef struct Type_info_Array Type_info_Array;
 typedef struct Type_info_Func Type_info_Func;
 typedef struct Type_info_Struct Type_info_Struct;
-typedef struct Type_info_Member Type_info_Member; /* struct, enum or union member */
 typedef struct Type_info_Enum Type_info_Enum;
 typedef struct Type_info_Union Type_info_Union;
+typedef struct Type_Member Type_Member; /* struct, enum or union member */
 
 struct Type_info_Int {
 	unsigned int bits : 8;
@@ -486,23 +481,21 @@ struct Type_info_Pointer {
 
 struct Type_info_Array {
 	Type_info *array_of;
+	union {
+		AST_node *max_index_expr;
+		//Inst *max_index_inst;
+	};
 	size_t max_index;
 };
 
 struct Type_info_Func {
-	Type_info **return_types;
-	Type_info **arg_types;
+	Type_Member *return_types;
+	Type_Member *arg_types;
 };
 
 struct Type_info_Struct {
 	char *name;
-	Type_info_Member *members;
-};
-
-struct Type_info_Member {
-	char *name;
-	Type_info *type;
-	size_t byte_offset;
+	Type_Member *members;
 };
 
 struct Type_info_Enum {
@@ -512,7 +505,13 @@ struct Type_info_Enum {
 
 struct Type_info_Union {
 	char *name;
-	Type_info_Member *members;
+	Type_Member *members;
+};
+
+struct Type_Member {
+	char *name;
+	Type_info *type;
+	size_t byte_offset;
 };
 
 struct Type_info {
@@ -525,10 +524,10 @@ struct Type_info {
 		Type_info_Array Array;
 		Type_info_Func Func;
 		Type_info_Struct Struct;
-		Type_info_Member Member;
 		Type_info_Enum Enum;
 		Type_info_Union Union;
 	};
+	Type_info *pending_next;
 };
 
 /* builtin types */
@@ -551,15 +550,8 @@ Type_info builtin_types[] = {
 	{ .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } },
 };
 
-typedef struct Type_tab Type_tab;
-struct Type_tab {
-	Type_info *free;
-	Type_info *base; /* base of current page */
-	Type_info **pages;
-	size_t cur; /* index of current page */
-	size_t cap; /* capacity of **pages */
-	size_t typecount; /* debug */
-};
+/* TODO put all typedefs at top of file */
+typedef struct Type_info_pending Type_info_pending;
 
 typedef struct Sym Sym;
 struct Sym {
@@ -568,13 +560,30 @@ struct Sym {
 	unsigned int seg : 3; /* memory segment */
 	unsigned int constant : 1;
 	char *name;
-	Type_info *type;
-	union { /* initial value may be Type_info*, char*, AST_node* */
-		Type_info *t;
-		AST_node *a;
-		// Inst *i;
-	} val;
+	union {
+		struct {
+			Type_info *type;
+			union { /* initial value may be Type_info*, char*, AST_node* */
+				Type_info *t;
+				AST_node *a;
+				// Inst *i;
+			} val;
+		};
+		struct {
+			Type_info_pending *pend_head; /* head of linked list of pending  */
+			Type_info_pending *pend_tail; /* tail of linked list of pending */
+		};
+	};
 	Debug_info info;
+};
+
+struct Type_info_pending {
+	bool ismember;
+	union {
+		Sym *symbol;
+		Type_Member *member;
+	};
+	Type_info_pending *next;
 };
 
 typedef struct Sym_tab Sym_tab;
@@ -592,7 +601,6 @@ struct Sym_tab {
 Lexer lexer;
 AST ast;
 Strpool spool;
-Type_info *type_table;
 Sym_tab globaltab;
 Sym_tab functab;
 Sym_tab blocktab[8]; /* hard limit on amount of nesting that can be done */
@@ -793,8 +801,8 @@ Type_info* type_info_build(Mempool *pool, AST_node *node) {
 		break;
 	case N_ARRAY:
 		tinfo = mempool_alloc(pool);
-		// TODO tinfo->Array.max_index = resolve_expression(node->down->next);
-		tinfo->Array.array_of = type_info_build(pool, node->down->next); 
+		tinfo->Array.max_index_expr = node->down->next; /* resolve later */
+		tinfo->Array.array_of = type_info_build(pool, node->down->next->next); 
 		break;
 	case N_FUNCTION:
 		break;
@@ -805,7 +813,9 @@ Type_info* type_info_build(Mempool *pool, AST_node *node) {
 	case N_UNIONATION:
 		break;
 	case N_ID:
-		/* lookup identifier in symbol table, expect a Type */
+		/* lookup identifier in symbol table, expect a Type
+		 * if it isn't in the table, create the symbol and append tinfo to the pending list
+		 */
 		break;
 	default:
 		assert(0);
@@ -852,7 +862,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *node) {
 	//		case N_TYPE:
 	//			sym.type = tmp->val;
 	//			break;
-	//		case N_FUNCTION: /* TODO think about function types */
+	//		case N_FUNCTION:
 	//			break;
 	//		case N_STRUCTURE:
 	//			break;
