@@ -1,7 +1,3 @@
-one :: func() int {
-	return 1;
-}
-
 two :: func() int {
 	return cast(int)2;
 }
@@ -63,3 +59,8 @@ main :: func() {
 	bob.x[9].ptr = 2;
 	**a[0] = 64;
 }
+
+one :: func(i: int) int {
+	return 1;
+}
+
