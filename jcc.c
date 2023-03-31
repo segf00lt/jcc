@@ -85,6 +85,7 @@ enum TOKENS {
 	T_INT, T_CHAR, T_VOID, T_BOOL,
 	T_FLOAT, T_F32, T_F64,
 	T_TYPE,
+	T_STRING,
 	T_U8, T_U16, T_U32, T_U64,
 	T_S8, T_S16, T_S32, T_S64,
 
@@ -95,7 +96,7 @@ enum TOKENS {
 	T_AND, T_OR, T_NOT,
 
 	T_NUMBER,
-	T_STRING,
+	T_STR,
 	T_CHARACTER,
 	T_TRUE, T_FALSE,
 	T_BAR,
@@ -137,6 +138,7 @@ char *tokens_debug[] = {
 	"T_INT", "T_CHAR", "T_VOID", "T_BOOL",
 	"T_FLOAT", "T_F32", "T_F64",
 	"T_TYPE",
+	"T_STRING",
 	"T_U8", "T_U16", "T_U32", "T_U64",
 	"T_S8", "T_S16", "T_S32", "T_S64",
 	"T_IF", "T_ELIF", "T_ELSE",
@@ -145,7 +147,7 @@ char *tokens_debug[] = {
 	"T_SWITCH", "T_CASE", "T_DEFAULT",
 	"T_AND", "T_OR", "T_NOT",
 	"T_NUMBER",
-	"T_STRING",
+	"T_STR",
 	"T_CHARACTER",
 	"T_TRUE", "T_FALSE",
 	"T_BAR",
@@ -274,6 +276,7 @@ char *keyword[] = {
 	"int", "char", "void", "bool",
 	"float", "f32", "f64",
 	"Type",
+	"string",
 	"u8", "u16", "u32", "u64",
 	"s8", "s16", "s32", "s64",
 	"if", "elif", "else",
@@ -301,6 +304,7 @@ size_t keyword_length[] = {
 	STRLEN("int"), STRLEN("char"), STRLEN("void"), STRLEN("bool"),
 	STRLEN("float"), STRLEN("f32"), STRLEN("f64"),
 	STRLEN("Type"),
+	STRLEN("string"),
 	STRLEN("u8"), STRLEN("u16"), STRLEN("u32"), STRLEN("u64"),
 	STRLEN("s8"), STRLEN("s16"), STRLEN("s32"), STRLEN("s64"),
 	STRLEN("if"), STRLEN("elif"), STRLEN("else"),
@@ -552,9 +556,9 @@ Type_info builtin_types[] = {
 	{ .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 1 } },
 	{ .tag = TY_VOID },
 	{ .tag = TY_BOOL, .bytes = 1u },
-	{ .tag = TY_FLOAT, .bytes = 4u, .Int = { .bits = 32u } },
-	{ .tag = TY_FLOAT, .bytes = 4u, .Int = { .bits = 32u, .sign = 1 } },
-	{ .tag = TY_FLOAT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } },
+	{ .tag = TY_FLOAT, .bytes = 4u, .Float = { .bits = 32u } },
+	{ .tag = TY_FLOAT, .bytes = 4u, .Float = { .bits = 32u} },
+	{ .tag = TY_FLOAT, .bytes = 8u, .Float = { .bits = 64u} },
 	{ .tag = TY_TYPE },
 	{ .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 0 } },
 	{ .tag = TY_INT, .bytes = 2u, .Int = { .bits = 16u, .sign = 0 } },
@@ -817,7 +821,6 @@ Type_info* build_type(Mempool *type_pool, Mempool *member_pool, AST_node *node) 
 		tinfo->Array.array_of = build_type(type_pool, member_pool, node->down->next); 
 		break;
 	case N_FUNCTION:
-		// TODO make sure this works
 		node = node->down;
 		assert(node->kind == N_TYPE);
 		tinfo = mempool_alloc(type_pool);
@@ -919,8 +922,119 @@ Type_info* build_type(Mempool *type_pool, Mempool *member_pool, AST_node *node) 
 	return tinfo;
 }
 
-Type_info* infer_type(Mempool *pool, Mempool *member_pool, AST_node *node) {
-	return NULL;
+Type_info* infer_type(Mempool *type_pool, Mempool *member_pool, AST_node *node) {
+	AST_node *child;
+	Type_info *tinfo;
+	Type_member *member;
+	Sym *symptr;
+	Sym symbol = {0};
+
+	switch(node->kind) {
+	//TODO use a table
+	case N_STRLIT:
+		//tinfo = builtin_types + TY_TYPE; TODO create string type
+		break;
+	case N_BOOLLIT:
+		tinfo = builtin_types + 3;
+		break;
+	case N_INTLIT:
+		tinfo = builtin_types + 0;
+		break;
+	case N_FLOATLIT:
+		tinfo = builtin_types + 4;
+		break;
+	case N_CHARLIT:
+		tinfo = builtin_types + 1;
+		break;
+	case N_TYPE:
+		tinfo = builtin_types + 7;
+		break;
+	case N_POINTER:
+		tinfo = mempool_alloc(type_pool);
+		tinfo->Pointer.pointer_to = build_type(type_pool, member_pool, node->down); 
+		break;
+	case N_ARRAY:
+		tinfo = mempool_alloc(type_pool);
+		tinfo->Array.max_index_expr = node->down; /* resolve later */
+		tinfo->Array.array_of = build_type(type_pool, member_pool, node->down->next); 
+		break;
+	case N_FUNCTION:
+		/*TODO
+		node = node->down;
+		assert(node->kind == N_TYPE);
+		tinfo = mempool_alloc(type_pool);
+		tinfo->Func.arg_types = member = mempool_alloc(member_pool);
+		member->type = build_type(type_pool, member_pool, node);
+		node = node->next;
+
+		do {
+			member->next = mempool_alloc(member_pool);
+			member = member->next;
+			member->type = build_type(type_pool, member_pool, node);
+			member = member->next;
+			node = node->next;
+		} while(node && (node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY));
+
+		assert(node && node->kind == N_RETURNTYPE);
+
+		tinfo->Func.arg_types = member = mempool_alloc(member_pool);
+		member->type = build_type(type_pool, member_pool, node);
+		node = node->next;
+
+		do {
+			member->next = mempool_alloc(member_pool);
+			member = member->next;
+			member->type = build_type(type_pool, member_pool, node);
+			member = member->next;
+			node = node->next;
+		} while(node && (node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY));
+
+		assert(node == NULL);
+		*/
+
+		break;
+	case N_STRUCTURE: case N_UNIONATION:
+		node = node->down;
+		assert(node->kind == N_DEC || node->kind == N_CONSTDEC || node->kind == N_STRUCTURE || node->kind == N_UNIONATION);
+		tinfo = mempool_alloc(type_pool);
+		tinfo->Struct.members = member = mempool_alloc(member_pool);
+
+		while(node) {
+			if(node->kind == N_DEC || node->kind == N_CONSTDEC) {
+				child = node->down;
+				assert(child->kind == N_ID);
+				member->name = child->val;
+				child = child->next;
+				if(child->kind != N_TYPE)
+					myerror("jcc: error: struct or union member missing explicit type\nline: %i, col: %i\n",
+							child->info.line, child->info.col);
+				member->type = build_type(type_pool, member_pool, child);
+				child = child->next;
+				if(child && child->kind == N_INITIALIZER)
+					member->initial_val_expr = child;
+				member->constant = (node->kind == N_CONSTDEC);
+			} else if(node->kind == N_STRUCTURE || node->kind == N_UNIONATION) {
+				member->name = NULL;
+				member->type = build_type(type_pool, member_pool, node);
+			} else {
+				assert(0);
+			}
+
+			node = node->next;
+			member->next = mempool_alloc(member_pool);
+			member = member->next;
+		}
+
+		break;
+	case N_ENUMERATION:
+		break;
+	default:
+		myerror("jcc: error: can't infer type from initializer\nline: %i, col: %i\n",
+				node->info.line, node->info.col);
+		break;
+	}
+
+	return tinfo;
 }
 
 void sym_tab_build(Sym_tab *tab, AST_node *node) {
@@ -1273,7 +1387,7 @@ int lex(void) {
 		lexer.text_s = tp + 1;
 		lexer.text_e = s;
 		lexer.ptr = s + 1;
-		return (lexer.token = T_STRING);
+		return (lexer.token = T_STR);
 	}
 
 	if(*tp == '\'') {
@@ -1522,7 +1636,7 @@ AST_node* literal(void) {
 		root->kind = N_INTLIT;
 		root->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
-	case T_STRING:
+	case T_STR:
 		root->kind = N_STRLIT;
 		root->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
