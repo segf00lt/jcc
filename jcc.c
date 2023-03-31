@@ -521,6 +521,7 @@ struct Type_info_Union {
 };
 
 struct Type_member {
+	bool constant;
 	char *name;
 	Type_info *type;
 	Type_member *next;
@@ -609,6 +610,7 @@ void cleanup(void);
 void debug_ast_alloc(AST *ast);
 void debug_parser(AST_node *node, size_t depth);
 void debug_sym_tab(AST_node *node);
+void myerror(char *fmt, ...);
 
 /* Strpool functions */
 char* strpool_alloc(Strpool *pool, size_t len, char *s);
@@ -649,8 +651,8 @@ AST_node* call(void);
 
 /* type system funcitons */
 void type_info_print(Type_info *tp);
-Type_info* type_info_build(Mempool *tpool, Mempool *mpool, AST_node *node);
-Type_info* type_info_infer(Mempool *tpool, Mempool *mpool, AST_node *node);
+Type_info* build_type(Mempool *type_pool, Mempool *member_pool, AST_node *node);
+Type_info* infer_type(Mempool *type_pool, Mempool *member_pool, AST_node *node);
 
 /* symbol table functions */
 void sym_tab_build(Sym_tab *tab, AST_node *node);
@@ -790,14 +792,13 @@ void ast_free(AST *ast) {
 void type_info_print(Type_info *tp) {
 }
 
-// NOTE maybe put tpool and mpool in global scope
-Type_info* type_info_build(Mempool *tpool, Mempool *mpool, AST_node *node) {
+// NOTE maybe put type_pool and member_pool in global scope
+Type_info* build_type(Mempool *type_pool, Mempool *member_pool, AST_node *node) {
+	AST_node *child;
 	Type_info *tinfo;
 	Type_member *member;
 	Sym *symptr;
 	Sym symbol = {0};
-
-	assert(node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY);
 
 	if(node->kind == N_TYPE)
 		node = node->down;
@@ -807,41 +808,41 @@ Type_info* type_info_build(Mempool *tpool, Mempool *mpool, AST_node *node) {
 		tinfo = builtin_types + node->typesig;
 		break;
 	case N_POINTER:
-		tinfo = mempool_alloc(tpool);
-		tinfo->Pointer.pointer_to = type_info_build(tpool, mpool, node->down); 
+		tinfo = mempool_alloc(type_pool);
+		tinfo->Pointer.pointer_to = build_type(type_pool, member_pool, node->down); 
 		break;
 	case N_ARRAY:
-		tinfo = mempool_alloc(tpool);
+		tinfo = mempool_alloc(type_pool);
 		tinfo->Array.max_index_expr = node->down; /* resolve later */
-		tinfo->Array.array_of = type_info_build(tpool, mpool, node->down->next); 
+		tinfo->Array.array_of = build_type(type_pool, member_pool, node->down->next); 
 		break;
 	case N_FUNCTION:
 		// TODO make sure this works
 		node = node->down;
 		assert(node->kind == N_TYPE);
-		tinfo = mempool_alloc(tpool);
-		tinfo->Func.arg_types = member = mempool_alloc(mpool);
-		member->type = type_info_build(tpool, mpool, node);
+		tinfo = mempool_alloc(type_pool);
+		tinfo->Func.arg_types = member = mempool_alloc(member_pool);
+		member->type = build_type(type_pool, member_pool, node);
 		node = node->next;
 
 		do {
-			member->next = mempool_alloc(mpool);
+			member->next = mempool_alloc(member_pool);
 			member = member->next;
-			member->type = type_info_build(tpool, mpool, node);
+			member->type = build_type(type_pool, member_pool, node);
 			member = member->next;
 			node = node->next;
 		} while(node && (node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY));
 
 		assert(node && node->kind == N_RETURNTYPE);
 
-		tinfo->Func.arg_types = member = mempool_alloc(mpool);
-		member->type = type_info_build(tpool, mpool, node);
+		tinfo->Func.arg_types = member = mempool_alloc(member_pool);
+		member->type = build_type(type_pool, member_pool, node);
 		node = node->next;
 
 		do {
-			member->next = mempool_alloc(mpool);
+			member->next = mempool_alloc(member_pool);
 			member = member->next;
-			member->type = type_info_build(tpool, mpool, node);
+			member->type = build_type(type_pool, member_pool, node);
 			member = member->next;
 			node = node->next;
 		} while(node && (node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY));
@@ -849,11 +850,40 @@ Type_info* type_info_build(Mempool *tpool, Mempool *mpool, AST_node *node) {
 		assert(node == NULL);
 
 		break;
-	case N_STRUCTURE:
+	case N_STRUCTURE: case N_UNIONATION:
+		node = node->down;
+		assert(node->kind == N_DEC || node->kind == N_CONSTDEC || node->kind == N_STRUCTURE || node->kind == N_UNIONATION);
+		tinfo = mempool_alloc(type_pool);
+		tinfo->Struct.members = member = mempool_alloc(member_pool);
+
+		while(node) {
+			if(node->kind == N_DEC || node->kind == N_CONSTDEC) {
+				child = node->down;
+				assert(child->kind == N_ID);
+				member->name = child->val;
+				child = child->next;
+				if(child->kind != N_TYPE)
+					myerror("jcc: error: struct or union member missing explicit type\nline: %i, col: %i\n",
+							child->info.line, child->info.col);
+				member->type = build_type(type_pool, member_pool, child);
+				child = child->next;
+				if(child && child->kind == N_INITIALIZER)
+					member->initial_val_expr = child;
+				member->constant = (node->kind == N_CONSTDEC);
+			} else if(node->kind == N_STRUCTURE || node->kind == N_UNIONATION) {
+				member->name = NULL;
+				member->type = build_type(type_pool, member_pool, node);
+			} else {
+				assert(0);
+			}
+
+			node = node->next;
+			member->next = mempool_alloc(member_pool);
+			member = member->next;
+		}
+
 		break;
-	case N_ENUMERATION:
-		break;
-	case N_UNIONATION:
+	case N_ENUMERATION: /* TODO what are the semantics of an enum in a struct */
 		break;
 	case N_ID:
 		/* lookup identifier in symbol table, expect a Type
@@ -875,7 +905,7 @@ Type_info* type_info_build(Mempool *tpool, Mempool *mpool, AST_node *node) {
 			tinfo = symptr->val.t;
 		} else { /* define symbol in pendingtab */
 			symbol.name = node->val;
-			symbol.val.t = mempool_alloc(tpool);
+			symbol.val.t = mempool_alloc(type_pool);
 			sym_tab_def(&pendingtab, &symbol);
 			/* NOTE when we find the definition of this symbol remember not to
 			 * allocate a new Type_info for val.t */
@@ -889,7 +919,7 @@ Type_info* type_info_build(Mempool *tpool, Mempool *mpool, AST_node *node) {
 	return tinfo;
 }
 
-Type_info* type_info_infer(Mempool *pool, Mempool *mpool, AST_node *node) {
+Type_info* infer_type(Mempool *pool, Mempool *member_pool, AST_node *node) {
 	return NULL;
 }
 
@@ -1884,14 +1914,21 @@ AST_node* structure(void) {
 	} else if(t == T_UNION) {
 		lexer.info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
-		child = ast_alloc_node(&ast, N_DEC, NULL, &lexer.info);
-		child->down = unionation();
+		child = unionation();
 		t = lex();
 		if(t == '=') {
-			child->down->next = expression();
-			t = lex();
-			if(t != ';')
-				parse_error(&lexer, "';'");
+			parse_error(&lexer, "next member");
+		} else {
+			lexer.info.col -= lexer.ptr - lexer.unget;
+			lexer.ptr = lexer.unget;
+		}
+	} else if(t == T_STRUCT) {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		child = structure();
+		t = lex();
+		if(t == '=') {
+			parse_error(&lexer, "next member");
 		} else {
 			lexer.info.col -= lexer.ptr - lexer.unget;
 			lexer.ptr = lexer.unget;
@@ -1913,10 +1950,18 @@ AST_node* structure(void) {
 			child->next = unionation();
 			t = lex();
 			if(t == '=') {
-				child->down->next = expression();
-				t = lex();
-				if(t != ';')
-					parse_error(&lexer, "';'");
+				parse_error(&lexer, "next member");
+			} else {
+				lexer.info.col -= lexer.ptr - lexer.unget;
+				lexer.ptr = lexer.unget;
+			}
+		} else if(t == T_STRUCT) {
+			lexer.info.col -= lexer.ptr - lexer.unget;
+			lexer.ptr = lexer.unget;
+			child->next = structure();
+			t = lex();
+			if(t == '=') {
+				parse_error(&lexer, "next member");
 			} else {
 				lexer.info.col -= lexer.ptr - lexer.unget;
 				lexer.ptr = lexer.unget;
@@ -1945,6 +1990,7 @@ AST_node* unionation(void) {
 		return NULL;
 	}
 
+	child = NULL;
 	root = ast_alloc_node(&ast, N_UNIONATION, NULL, &lexer.info);
 
 	t = lex();
@@ -1952,46 +1998,74 @@ AST_node* unionation(void) {
 		parse_error(&lexer, "'{'");
 
 	t = lex();
-	if(t != T_ID)
-		parse_error(&lexer, "identifier");
-	child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-	child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+	if(t == T_ID) {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		child = declaration();
+	} else if(t == T_UNION) {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		child = unionation();
+		t = lex();
+		if(t == '=') {
+			parse_error(&lexer, "next member");
+		} else {
+			lexer.info.col -= lexer.ptr - lexer.unget;
+			lexer.ptr = lexer.unget;
+		}
+	} else if(t == T_STRUCT) {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		child = structure();
+		t = lex();
+		if(t == '=') {
+			parse_error(&lexer, "next member");
+		} else {
+			lexer.info.col -= lexer.ptr - lexer.unget;
+			lexer.ptr = lexer.unget;
+		}
+	} else {
+		parse_error(&lexer, "identifier or 'union'");
+	}
 
 	root->down = child;
 
-	t = lex();
-	if(t != ':')
-		parse_error(&lexer, "':'");
-	child->next = type();
-	if(!child->next)
-		parse_error(&lexer, "type");
-	child = child->next;
-
-	t = lex();
-	if(t != ';')
-		parse_error(&lexer, "';'");
-
 	while((t = lex()) != '}') {
-		if(t != T_ID)
-			parse_error(&lexer, "identifier");
-		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-		child = child->next;
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		if(t == T_ID) {
+			lexer.info.col -= lexer.ptr - lexer.unget;
+			lexer.ptr = lexer.unget;
+			child->next = declaration();
+		} else if(t == T_UNION) {
+			lexer.info.col -= lexer.ptr - lexer.unget;
+			lexer.ptr = lexer.unget;
+			child->next = unionation();
+			t = lex();
+			if(t == '=') {
+				parse_error(&lexer, "next member");
+			} else {
+				lexer.info.col -= lexer.ptr - lexer.unget;
+				lexer.ptr = lexer.unget;
+			}
+		} else if(t == T_STRUCT) {
+			lexer.info.col -= lexer.ptr - lexer.unget;
+			lexer.ptr = lexer.unget;
+			child->next = structure();
+			t = lex();
+			if(t == '=') {
+				parse_error(&lexer, "next member");
+			} else {
+				lexer.info.col -= lexer.ptr - lexer.unget;
+				lexer.ptr = lexer.unget;
+			}
+		} else {
+			parse_error(&lexer, "identifier or 'union'");
+		}
 
-		t = lex();
-		if(t != ':')
-			parse_error(&lexer, "':'");
-		child->next = type();
-		if(!child->next)
-			parse_error(&lexer, "type");
 		child = child->next;
-
-		t = lex();
-		if(t != ';')
-			parse_error(&lexer, "';'");
 	}
 
 	return root;
+
 }
 
 /*

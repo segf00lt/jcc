@@ -22,7 +22,7 @@ printer :: func(s: [SIZE << 3]char) inline {
 }
 
 multiple_return_vals :: func(a, b, c: int) int, int, int {
-	return a + 1, b - a, (c <<= 2);
+	return a + 1, b - a, c << 2;
 }
 
 add_abc :: func(a, b, c: int) int {
@@ -64,3 +64,6 @@ one :: func(i: int) int inline {
 	return 1;
 }
 
+test::func(){
+	a = b += 1;
+}
