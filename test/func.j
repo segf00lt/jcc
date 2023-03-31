@@ -60,7 +60,7 @@ main :: func() {
 	**a[0] = 64;
 }
 
-one :: func(i: int) int {
+one :: func(i: int) int inline {
 	return 1;
 }
 

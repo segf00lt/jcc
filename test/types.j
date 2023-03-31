@@ -6,7 +6,6 @@ Vec2 :: struct {
 integer : int;
 i: int = 0;
 x: s8 = -1;
-arr: [2]char;
 ptr: **void = 0;
 function_pointer_pointer_pointer : **func(int, char, func(int)(char)) (bool, bool) = int | (&&f);
 matrix: [1][2][0+3]float;
@@ -26,3 +25,6 @@ f :: func(i: int, c: char, f_prime: func(int)(char)) bool, bool {
 type: Type = int;
 v: Vec2;
 thingy: struct { x, y: f32; } = void;
+
+//arr: [2][2]char;
+fn: func(int)(int,int);

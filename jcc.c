@@ -175,6 +175,7 @@ enum NODES {
 	N_CONSTDEC,
 	N_TYPE,
 	N_INITIALIZER,
+	N_RETURNTYPE,
 	N_DEFER,
 	N_FUNCTION,
 	N_STRUCTURE,
@@ -220,6 +221,7 @@ char *nodes_debug[] = {
 	"N_CONSTDEC",
 	"N_TYPE",
 	"N_INITIALIZER",
+	"N_RETURNTYPE",
 	"N_DEFER",
 	"N_FUNCTION",
 	"N_STRUCTURE",
@@ -499,13 +501,13 @@ struct Type_info_Array {
 };
 
 struct Type_info_Func {
-	Type_Member *return_types;
-	Type_Member *arg_types;
+	Type_info *arg_types;
+	Type_info *return_types;
 };
 
 struct Type_info_Struct {
 	char *name;
-	Type_Member *members;
+	Type_info *members;
 };
 
 struct Type_info_Enum {
@@ -515,17 +517,17 @@ struct Type_info_Enum {
 
 struct Type_info_Union {
 	char *name;
-	Type_Member *members;
+	Type_info *members;
 };
 
 struct Type_Member {
 	char *name;
 	Type_info *type;
+	Type_info *next;
 	size_t byte_offset;
 };
 
 struct Type_info {
-	bool resolved;
 	int tag;
 	size_t bytes;
 	union {
@@ -537,6 +539,7 @@ struct Type_info {
 		Type_info_Struct Struct;
 		Type_info_Enum Enum;
 		Type_info_Union Union;
+		Type_Member Member;
 	};
 };
 
@@ -643,8 +646,8 @@ AST_node* call(void);
 
 /* type system funcitons */
 void type_info_print(Type_info *tp);
-void type_info_build(Mempool *pool, AST_node *node, Type_info **taddr);
-void type_info_infer(Mempool *pool, AST_node *node, Type_info **taddr);
+Type_info* type_info_build(Mempool *pool, AST_node *node);
+Type_info* type_info_infer(Mempool *pool, AST_node *node);
 
 /* symbol table functions */
 void sym_tab_build(Sym_tab *tab, AST_node *node);
@@ -784,27 +787,63 @@ void ast_free(AST *ast) {
 void type_info_print(Type_info *tp) {
 }
 
-void type_info_build(Mempool *tpool, AST_node *node, Type_info **taddr) {
-	Type_info **tmp;
+Type_info* type_info_build(Mempool *tpool, AST_node *node) {
+	Type_info *tinfo;
+	Type_info *member;
 	Sym *symptr;
 	Sym symbol = {0};
 
+	assert(node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY);
+
+	if(node->kind == N_TYPE)
+		node = node->down;
+
 	switch(node->kind) {
 	case N_BUILTINTYPE:
-		*taddr = builtin_types + node->typesig;
+		tinfo = builtin_types + node->typesig;
 		break;
 	case N_POINTER:
-		*taddr = mempool_alloc(tpool);
-		tmp = &((*taddr)->Pointer.pointer_to);
-		type_info_build(tpool, node->down, tmp); 
+		tinfo = mempool_alloc(tpool);
+		tinfo->Pointer.pointer_to = type_info_build(tpool, node->down); 
 		break;
 	case N_ARRAY:
-		*taddr = mempool_alloc(tpool);
-		(*taddr)->Array.max_index_expr = node->down->next; /* resolve later */
-		tmp = &((*taddr)->Array.array_of);
-		type_info_build(tpool, node->down->next->next, tmp); 
+		tinfo = mempool_alloc(tpool);
+		tinfo->Array.max_index_expr = node->down; /* resolve later */
+		tinfo->Array.array_of = type_info_build(tpool, node->down->next); 
 		break;
 	case N_FUNCTION:
+		// TODO make sure this works
+		node = node->down;
+		assert(node->kind == N_TYPE);
+		tinfo = mempool_alloc(tpool);
+		tinfo->Func.arg_types = member = mempool_alloc(tpool);
+		member->Member.type = type_info_build(tpool, node);
+		node = node->next;
+
+		do {
+			member->Member.next = mempool_alloc(tpool);
+			member = member->Member.next;
+			member->Member.type = type_info_build(tpool, node);
+			member = member->Member.next;
+			node = node->next;
+		} while(node && (node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY));
+
+		assert(node && node->kind == N_RETURNTYPE);
+
+		tinfo->Func.arg_types = member = mempool_alloc(tpool);
+		member->Member.type = type_info_build(tpool, node);
+		node = node->next;
+
+		do {
+			member->Member.next = mempool_alloc(tpool);
+			member = member->Member.next;
+			member->Member.type = type_info_build(tpool, node);
+			member = member->Member.next;
+			node = node->next;
+		} while(node && (node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY));
+
+		assert(node == NULL);
+
 		break;
 	case N_STRUCTURE:
 		break;
@@ -829,7 +868,7 @@ void type_info_build(Mempool *tpool, AST_node *node, Type_info **taddr) {
 			symptr = sym_tab_look(&pendingtab, node->val);
 
 		if(symptr) {
-			*taddr = symptr->val.t;
+			tinfo = symptr->val.t;
 		} else { /* define symbol in pendingtab */
 			symbol.name = node->val;
 			symbol.val.t = mempool_alloc(tpool);
@@ -842,9 +881,12 @@ void type_info_build(Mempool *tpool, AST_node *node, Type_info **taddr) {
 		assert(0);
 		break;
 	}
+
+	return tinfo;
 }
 
-void type_info_infer(Mempool *pool, AST_node *node, Type_info **taddr) {
+Type_info* type_info_infer(Mempool *pool, AST_node *node) {
+	return NULL;
 }
 
 void sym_tab_build(Sym_tab *tab, AST_node *node) {
@@ -935,8 +977,7 @@ void sym_tab_undef(Sym_tab *tab, char *name) {
 	origin = i = sym_tab_hash(tab, name);
 	do {
 		if(tab->data[i].name && !strcmp(tab->data[i].name, name))
-			//TODO
-			tab->data[i] = {0};
+			tab->data[i].name = NULL;
 		i = (i + 1) % tab->cap;
 	} while(i != origin);
 }
@@ -955,7 +996,7 @@ Sym* sym_tab_look(Sym_tab *tab, char *name) {
 void sym_tab_clear(Sym_tab *tab) {
 	/* NOTE make sure you still have a pointer to the string pool when you call this */
 	tab->count = tab->global_count = tab->arg_count = tab->local_count = 0;
-	for(size_t i = 0; i < tab->cap; ++i) tab->data[i].name = 0;
+	for(size_t i = 0; i < tab->cap; ++i) tab->data[i].name = NULL;
 }
 
 void sym_tab_print(Sym_tab *tab) {
@@ -1484,7 +1525,7 @@ AST_node* literal(void) {
 AST_node* type(void) {
 	register int t;
 	bool loop, indirect, lastwasexpr;
-	AST_node *root, *child, *arg, *ret;
+	AST_node *root, *child, *node;
 
 	t = lex();
 
@@ -1503,6 +1544,7 @@ AST_node* type(void) {
 
 			t = lex();
 			if(t != ']') {
+				lastwasexpr = true;
 				lexer.info.col -= lexer.ptr - lexer.unget;
 				lexer.ptr = lexer.unget;
 				child->down = expression();
@@ -1596,17 +1638,14 @@ AST_node* type(void) {
 		break;
 	case T_FUNC:
 		child->kind = N_FUNCTION;
-		/* extra node to let me arrange args and rets */
-		child->down = ast_alloc_node(&ast, 0, NULL, &lexer.info);
-		child = child->down;
 		t = lex();
 		if(t != '(')
 			parse_error(&lexer, "'('");
-		child->down = arg = type();
+		child->down = node = type();
 		t = lex();
 		while(t != ')') {
-			arg->next = type();
-			arg = arg->next;
+			node->next = type();
+			node = node->next;
 			t = lex();
 			if(t != ',' && t != ')')
 				parse_error(&lexer, "',' or ')'");
@@ -1616,11 +1655,14 @@ AST_node* type(void) {
 			lexer.info.col -= lexer.ptr - lexer.unget;
 			lexer.ptr = lexer.unget;
 		} else {
-			child->next = ret = type();
+			node->next = ast_alloc_node(&ast, N_RETURNTYPE, NULL, &lexer.info);
+			node = node->next;
+			node->next = type();
+			node = node->next;
 			t = lex();
 			while(t != ')') {
-				ret->next = type();
-				ret = ret->next;
+				node->next = type();
+				node = node->next;
 				t = lex();
 				if(t != ',' && t != ')')
 					parse_error(&lexer, "',' or ')'");
@@ -1689,12 +1731,18 @@ AST_node* function(void) {
 	if(t != ')')
 		parse_error(&lexer, "')'");
 
+	/* return type */
 	node = type();
-	if(!child && node)
-		root->down = child = node;
-	else if(node) {
-		child->next = node;
-		child = child->next;
+	if(node) {
+		if(!child) {
+			root->down = child = ast_alloc_node(&ast, N_RETURNTYPE, NULL, &lexer.info);
+			child->next = node;
+		} else {
+			child->next = ast_alloc_node(&ast, N_RETURNTYPE, NULL, &lexer.info);
+			child = child->next;
+			child->next = node;
+			child = child->next;
+		}
 	}
 
 	t = lex();
