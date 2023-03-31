@@ -422,7 +422,7 @@ typedef struct Type_info_Func Type_info_Func;
 typedef struct Type_info_Struct Type_info_Struct;
 typedef struct Type_info_Enum Type_info_Enum;
 typedef struct Type_info_Union Type_info_Union;
-typedef struct Type_Member Type_Member; /* struct, enum or union member */
+typedef struct Type_member Type_member; /* function arguments, return values, struct, enum or union member */
 typedef struct Type_info_pending Type_info_pending;
 typedef struct Sym Sym;
 typedef struct Sym_tab Sym_tab;
@@ -501,30 +501,34 @@ struct Type_info_Array {
 };
 
 struct Type_info_Func {
-	Type_info *arg_types;
-	Type_info *return_types;
+	Type_member *arg_types;
+	Type_member *return_types;
 };
 
 struct Type_info_Struct {
 	char *name;
-	Type_info *members;
+	Type_member *members;
 };
 
 struct Type_info_Enum {
 	char *name;
-	Type_info *type;
+	Type_member *members;
 };
 
 struct Type_info_Union {
 	char *name;
-	Type_info *members;
+	Type_member *members;
 };
 
-struct Type_Member {
+struct Type_member {
 	char *name;
 	Type_info *type;
-	Type_info *next;
+	Type_member *next;
 	size_t byte_offset;
+	union {
+		AST_node *initial_val_expr;
+		//Inst *initial_val_inst;
+	};
 };
 
 struct Type_info {
@@ -539,7 +543,6 @@ struct Type_info {
 		Type_info_Struct Struct;
 		Type_info_Enum Enum;
 		Type_info_Union Union;
-		Type_Member Member;
 	};
 };
 
@@ -646,8 +649,8 @@ AST_node* call(void);
 
 /* type system funcitons */
 void type_info_print(Type_info *tp);
-Type_info* type_info_build(Mempool *pool, AST_node *node);
-Type_info* type_info_infer(Mempool *pool, AST_node *node);
+Type_info* type_info_build(Mempool *tpool, Mempool *mpool, AST_node *node);
+Type_info* type_info_infer(Mempool *tpool, Mempool *mpool, AST_node *node);
 
 /* symbol table functions */
 void sym_tab_build(Sym_tab *tab, AST_node *node);
@@ -787,9 +790,10 @@ void ast_free(AST *ast) {
 void type_info_print(Type_info *tp) {
 }
 
-Type_info* type_info_build(Mempool *tpool, AST_node *node) {
+// NOTE maybe put tpool and mpool in global scope
+Type_info* type_info_build(Mempool *tpool, Mempool *mpool, AST_node *node) {
 	Type_info *tinfo;
-	Type_info *member;
+	Type_member *member;
 	Sym *symptr;
 	Sym symbol = {0};
 
@@ -804,41 +808,41 @@ Type_info* type_info_build(Mempool *tpool, AST_node *node) {
 		break;
 	case N_POINTER:
 		tinfo = mempool_alloc(tpool);
-		tinfo->Pointer.pointer_to = type_info_build(tpool, node->down); 
+		tinfo->Pointer.pointer_to = type_info_build(tpool, mpool, node->down); 
 		break;
 	case N_ARRAY:
 		tinfo = mempool_alloc(tpool);
 		tinfo->Array.max_index_expr = node->down; /* resolve later */
-		tinfo->Array.array_of = type_info_build(tpool, node->down->next); 
+		tinfo->Array.array_of = type_info_build(tpool, mpool, node->down->next); 
 		break;
 	case N_FUNCTION:
 		// TODO make sure this works
 		node = node->down;
 		assert(node->kind == N_TYPE);
 		tinfo = mempool_alloc(tpool);
-		tinfo->Func.arg_types = member = mempool_alloc(tpool);
-		member->Member.type = type_info_build(tpool, node);
+		tinfo->Func.arg_types = member = mempool_alloc(mpool);
+		member->type = type_info_build(tpool, mpool, node);
 		node = node->next;
 
 		do {
-			member->Member.next = mempool_alloc(tpool);
-			member = member->Member.next;
-			member->Member.type = type_info_build(tpool, node);
-			member = member->Member.next;
+			member->next = mempool_alloc(mpool);
+			member = member->next;
+			member->type = type_info_build(tpool, mpool, node);
+			member = member->next;
 			node = node->next;
 		} while(node && (node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY));
 
 		assert(node && node->kind == N_RETURNTYPE);
 
-		tinfo->Func.arg_types = member = mempool_alloc(tpool);
-		member->Member.type = type_info_build(tpool, node);
+		tinfo->Func.arg_types = member = mempool_alloc(mpool);
+		member->type = type_info_build(tpool, mpool, node);
 		node = node->next;
 
 		do {
-			member->Member.next = mempool_alloc(tpool);
-			member = member->Member.next;
-			member->Member.type = type_info_build(tpool, node);
-			member = member->Member.next;
+			member->next = mempool_alloc(mpool);
+			member = member->next;
+			member->type = type_info_build(tpool, mpool, node);
+			member = member->next;
 			node = node->next;
 		} while(node && (node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY));
 
@@ -885,7 +889,7 @@ Type_info* type_info_build(Mempool *tpool, AST_node *node) {
 	return tinfo;
 }
 
-Type_info* type_info_infer(Mempool *pool, AST_node *node) {
+Type_info* type_info_infer(Mempool *pool, Mempool *mpool, AST_node *node) {
 	return NULL;
 }
 
