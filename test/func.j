@@ -67,3 +67,7 @@ one :: func(i: int) int inline {
 test::func(){
 	a = b += 1;
 }
+
+abc :: func(a, b, c: int) int {
+}
+

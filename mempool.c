@@ -1,7 +1,8 @@
 #define MEMPOOL_PAGESIZE 128 /* number of objects in page */
 #define MEMPOOL_INITIAL_PAGECOUNT 2 /* initial number of pages */
 
-typedef struct {
+typedef struct Pool Pool;
+struct Pool {
 	size_t objsize;
 	size_t curpage;
 	size_t pagecount; /* length of void **pages */
@@ -9,7 +10,7 @@ typedef struct {
 	void *base; /* base of current page */
 	void *free; /* first free space in current page */
 	void **pages;
-} Mempool;
+};
 
 #define MEMPOOL_INIT(pool, obj) { \
 	pool->objsize = sizeof(obj); \
@@ -19,7 +20,7 @@ typedef struct {
 	pool->objcount = 0; \
 }
 
-void* mempool_alloc(Mempool *pool) {
+void* pool_alloc(Pool *pool) {
 	register void *p;
 
 	assert(pool->objsize != 0);
@@ -41,7 +42,7 @@ void* mempool_alloc(Mempool *pool) {
 	return p;
 }
 
-void* mempool_alloc_string(Mempool *pool, size_t len, char *s) {
+void* pool_alloc_string(Pool *pool, size_t len, char *s) {
 	register void *p;
 	size_t i;
 
@@ -64,12 +65,12 @@ void* mempool_alloc_string(Mempool *pool, size_t len, char *s) {
 	return p;
 }
 
-void mempool_clear_page(Mempool *pool) {
+void pool_clear_page(Pool *pool) {
 	memset(pool->base, 0, pool->objsize * MEMPOOL_PAGESIZE);
 	pool->free = pool->base;
 }
 
-void mempool_free(Mempool *pool) {
+void pool_free(Pool *pool) {
 	for(size_t i = 0; i <= pool->curpage; ++i)
 		free(pool->pages[i]);
 	free(pool->pages);

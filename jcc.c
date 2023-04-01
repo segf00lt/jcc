@@ -95,7 +95,7 @@ enum TOKENS {
 	T_SWITCH, T_CASE, T_DEFAULT,
 	T_AND, T_OR, T_NOT,
 
-	T_NUMBER,
+	T_INTEGER,
 	T_STR,
 	T_CHARACTER,
 	T_TRUE, T_FALSE,
@@ -146,7 +146,7 @@ char *tokens_debug[] = {
 	"T_FOR", "T_GOTO", "T_CONTINUE", "T_BREAK",
 	"T_SWITCH", "T_CASE", "T_DEFAULT",
 	"T_AND", "T_OR", "T_NOT",
-	"T_NUMBER",
+	"T_INTEGER",
 	"T_STR",
 	"T_CHARACTER",
 	"T_TRUE", "T_FALSE",
@@ -655,8 +655,7 @@ AST_node* call(void);
 
 /* type system funcitons */
 void type_info_print(Type_info *tp);
-Type_info* build_type(Mempool *type_pool, Mempool *member_pool, AST_node *node);
-Type_info* infer_type(Mempool *type_pool, Mempool *member_pool, AST_node *node);
+Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node);
 
 /* symbol table functions */
 void sym_tab_build(Sym_tab *tab, AST_node *node);
@@ -797,8 +796,8 @@ void type_info_print(Type_info *tp) {
 }
 
 // NOTE maybe put type_pool and member_pool in global scope
-Type_info* build_type(Mempool *type_pool, Mempool *member_pool, AST_node *node) {
-	AST_node *child;
+Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
+	AST_node *child, *sibling;
 	Type_info *tinfo;
 	Type_member *member;
 	Sym *symptr;
@@ -807,57 +806,128 @@ Type_info* build_type(Mempool *type_pool, Mempool *member_pool, AST_node *node) 
 	if(node->kind == N_TYPE)
 		node = node->down;
 
+	/* NOTE things we can't infer from
+	 * N_EXPRESSION
+	 * N_ARRAYLIT
+	 * N_ID
+	 */
+
 	switch(node->kind) {
+	//TODO use a table for builtins
+	case N_STRUCTLIT:
+		break;
+	case N_STRLIT:
+		//tinfo = builtin_types + TY_TYPE; TODO create string type
+		break;
+	case N_BOOLLIT:
+		tinfo = builtin_types + 3;
+		break;
+	case N_INTLIT:
+		tinfo = builtin_types + 0;
+		break;
+	case N_FLOATLIT:
+		tinfo = builtin_types + 4;
+		break;
+	case N_CHARLIT:
+		tinfo = builtin_types + 1;
+		break;
 	case N_BUILTINTYPE:
 		tinfo = builtin_types + node->typesig;
 		break;
 	case N_POINTER:
-		tinfo = mempool_alloc(type_pool);
-		tinfo->Pointer.pointer_to = build_type(type_pool, member_pool, node->down); 
+		tinfo = pool_alloc(type_pool);
+		tinfo->Pointer.pointer_to = type_info_build(type_pool, member_pool, node->down); 
 		break;
 	case N_ARRAY:
-		tinfo = mempool_alloc(type_pool);
+		tinfo = pool_alloc(type_pool);
 		tinfo->Array.max_index_expr = node->down; /* resolve later */
-		tinfo->Array.array_of = build_type(type_pool, member_pool, node->down->next); 
+		tinfo->Array.array_of = type_info_build(type_pool, member_pool, node->down->next); 
 		break;
 	case N_FUNCTION:
 		node = node->down;
-		assert(node->kind == N_TYPE);
-		tinfo = mempool_alloc(type_pool);
-		tinfo->Func.arg_types = member = mempool_alloc(member_pool);
-		member->type = build_type(type_pool, member_pool, node);
-		node = node->next;
+		if(node->kind == N_TYPE) {
+			tinfo = pool_alloc(type_pool);
+			tinfo->Func.arg_types = member = pool_alloc(member_pool);
+			/* NOTE
+			 * The while loop below might solve a very common
+			 * situation in this program.
+			 *
+			 * We want to build a linked list inside a loop, but the procedure
+			 * for the first node has an extra step.
+			 * Beyond this step the procedure for any node is the same.
+			 *
+			 * To avoid putting the special steps + what will already be in
+			 * the loop body before the loop, which often causes silly bugs
+			 * due to having to change the same thing twice, we put the
+			 * special steps before and instead of doing a normal while loop,
+			 * we write an infinite loop where a break condition is placed in
+			 * between the code for building a node and the code for iterating
+			 * to the next node.
+			 */
+			while(true) {
+				member->type = type_info_build(type_pool, member_pool, node);
+				node = node->next;
+				if(!(node && node->kind != N_RETURNTYPE))
+					break;
+				member->next = pool_alloc(member_pool);
+				member = member->next;
+			}
 
-		do {
-			member->next = mempool_alloc(member_pool);
-			member = member->next;
-			member->type = build_type(type_pool, member_pool, node);
-			member = member->next;
-			node = node->next;
-		} while(node && (node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY));
+			assert(node && node->kind == N_RETURNTYPE);
 
-		assert(node && node->kind == N_RETURNTYPE);
+			tinfo->Func.return_types = member = pool_alloc(member_pool);
+			while(true) {
+				member->type = type_info_build(type_pool, member_pool, node);
+				node = node->next;
+				if(!(node && node->kind != N_BLOCK))
+					break;
+				member->next = pool_alloc(member_pool);
+				member = member->next;
+			}
 
-		tinfo->Func.arg_types = member = mempool_alloc(member_pool);
-		member->type = build_type(type_pool, member_pool, node);
-		node = node->next;
+			assert(node == NULL);
 
-		do {
-			member->next = mempool_alloc(member_pool);
-			member = member->next;
-			member->type = build_type(type_pool, member_pool, node);
-			member = member->next;
-			node = node->next;
-		} while(node && (node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY));
+		} else if(node->kind == N_DEC) {
+			tinfo = pool_alloc(type_pool);
+			tinfo->Func.arg_types = member = pool_alloc(member_pool);
+			while(node->kind == N_DEC) {
+				child = node->down;
+				for(sibling = child; sibling->kind != N_TYPE; sibling = sibling->next);
+				while(true) {
+					member->name = child->val;
+					member->type = type_info_build(type_pool, member_pool, sibling);
+					child = child->next;
+					if(child->kind != N_ID)
+						break;
+					member->next = pool_alloc(member_pool);
+					member = member->next;
+				}
+				node = node->next;
+			}
 
-		assert(node == NULL);
+			assert(node && node->kind == N_RETURNTYPE);
 
+			tinfo->Func.return_types = member = pool_alloc(member_pool);
+			while(true) {
+				member->type = type_info_build(type_pool, member_pool, node);
+				node = node->next;
+				if(!(node && node->kind != N_BLOCK))
+					break;
+				member->next = pool_alloc(member_pool);
+				member = member->next;
+			}
+
+			assert(node && node->kind == N_BLOCK);
+
+		} else {
+			assert(0);
+		}
 		break;
 	case N_STRUCTURE: case N_UNIONATION:
 		node = node->down;
 		assert(node->kind == N_DEC || node->kind == N_CONSTDEC || node->kind == N_STRUCTURE || node->kind == N_UNIONATION);
-		tinfo = mempool_alloc(type_pool);
-		tinfo->Struct.members = member = mempool_alloc(member_pool);
+		tinfo = pool_alloc(type_pool);
+		tinfo->Struct.members = member = pool_alloc(member_pool);
 
 		while(node) {
 			if(node->kind == N_DEC || node->kind == N_CONSTDEC) {
@@ -868,30 +938,30 @@ Type_info* build_type(Mempool *type_pool, Mempool *member_pool, AST_node *node) 
 				if(child->kind != N_TYPE)
 					myerror("jcc: error: struct or union member missing explicit type\nline: %i, col: %i\n",
 							child->info.line, child->info.col);
-				member->type = build_type(type_pool, member_pool, child);
+				member->type = type_info_build(type_pool, member_pool, child);
 				child = child->next;
 				if(child && child->kind == N_INITIALIZER)
 					member->initial_val_expr = child;
 				member->constant = (node->kind == N_CONSTDEC);
 			} else if(node->kind == N_STRUCTURE || node->kind == N_UNIONATION) {
 				member->name = NULL;
-				member->type = build_type(type_pool, member_pool, node);
+				member->type = type_info_build(type_pool, member_pool, node);
+			} else if(node->kind == N_ENUMERATION) {
+				// TODO what does this mean?
 			} else {
 				assert(0);
 			}
 
 			node = node->next;
-			member->next = mempool_alloc(member_pool);
+			member->next = pool_alloc(member_pool);
 			member = member->next;
 		}
-
 		break;
-	case N_ENUMERATION: /* TODO what are the semantics of an enum in a struct */
+	case N_ENUMERATION:
 		break;
 	case N_ID:
-		/* lookup identifier in symbol table, expect a Type
-		 * if it isn't in the table, create the symptr and append tinfo to the pending list
-		 */
+		/* lookup identifier in symbol table, expect a Type if it isn't
+		 * in the table, create the symptr and append tinfo to the pending list */
 		for(size_t i = depth; i >= 0; --i) {
 			symptr = sym_tab_look(blocktab+depth, node->val);
 			if(symptr)
@@ -908,7 +978,7 @@ Type_info* build_type(Mempool *type_pool, Mempool *member_pool, AST_node *node) 
 			tinfo = symptr->val.t;
 		} else { /* define symbol in pendingtab */
 			symbol.name = node->val;
-			symbol.val.t = mempool_alloc(type_pool);
+			symbol.val.t = pool_alloc(type_pool);
 			sym_tab_def(&pendingtab, &symbol);
 			/* NOTE when we find the definition of this symbol remember not to
 			 * allocate a new Type_info for val.t */
@@ -916,121 +986,6 @@ Type_info* build_type(Mempool *type_pool, Mempool *member_pool, AST_node *node) 
 		break;
 	default:
 		assert(0);
-		break;
-	}
-
-	return tinfo;
-}
-
-Type_info* infer_type(Mempool *type_pool, Mempool *member_pool, AST_node *node) {
-	AST_node *child;
-	Type_info *tinfo;
-	Type_member *member;
-	Sym *symptr;
-	Sym symbol = {0};
-
-	switch(node->kind) {
-	//TODO use a table
-	case N_STRLIT:
-		//tinfo = builtin_types + TY_TYPE; TODO create string type
-		break;
-	case N_BOOLLIT:
-		tinfo = builtin_types + 3;
-		break;
-	case N_INTLIT:
-		tinfo = builtin_types + 0;
-		break;
-	case N_FLOATLIT:
-		tinfo = builtin_types + 4;
-		break;
-	case N_CHARLIT:
-		tinfo = builtin_types + 1;
-		break;
-	case N_TYPE:
-		tinfo = builtin_types + 7;
-		break;
-	case N_POINTER:
-		tinfo = mempool_alloc(type_pool);
-		tinfo->Pointer.pointer_to = build_type(type_pool, member_pool, node->down); 
-		break;
-	case N_ARRAY:
-		tinfo = mempool_alloc(type_pool);
-		tinfo->Array.max_index_expr = node->down; /* resolve later */
-		tinfo->Array.array_of = build_type(type_pool, member_pool, node->down->next); 
-		break;
-	case N_FUNCTION:
-		/*TODO
-		node = node->down;
-		assert(node->kind == N_TYPE);
-		tinfo = mempool_alloc(type_pool);
-		tinfo->Func.arg_types = member = mempool_alloc(member_pool);
-		member->type = build_type(type_pool, member_pool, node);
-		node = node->next;
-
-		do {
-			member->next = mempool_alloc(member_pool);
-			member = member->next;
-			member->type = build_type(type_pool, member_pool, node);
-			member = member->next;
-			node = node->next;
-		} while(node && (node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY));
-
-		assert(node && node->kind == N_RETURNTYPE);
-
-		tinfo->Func.arg_types = member = mempool_alloc(member_pool);
-		member->type = build_type(type_pool, member_pool, node);
-		node = node->next;
-
-		do {
-			member->next = mempool_alloc(member_pool);
-			member = member->next;
-			member->type = build_type(type_pool, member_pool, node);
-			member = member->next;
-			node = node->next;
-		} while(node && (node->kind == N_TYPE || node->kind == N_POINTER || node->kind == N_ARRAY));
-
-		assert(node == NULL);
-		*/
-
-		break;
-	case N_STRUCTURE: case N_UNIONATION:
-		node = node->down;
-		assert(node->kind == N_DEC || node->kind == N_CONSTDEC || node->kind == N_STRUCTURE || node->kind == N_UNIONATION);
-		tinfo = mempool_alloc(type_pool);
-		tinfo->Struct.members = member = mempool_alloc(member_pool);
-
-		while(node) {
-			if(node->kind == N_DEC || node->kind == N_CONSTDEC) {
-				child = node->down;
-				assert(child->kind == N_ID);
-				member->name = child->val;
-				child = child->next;
-				if(child->kind != N_TYPE)
-					myerror("jcc: error: struct or union member missing explicit type\nline: %i, col: %i\n",
-							child->info.line, child->info.col);
-				member->type = build_type(type_pool, member_pool, child);
-				child = child->next;
-				if(child && child->kind == N_INITIALIZER)
-					member->initial_val_expr = child;
-				member->constant = (node->kind == N_CONSTDEC);
-			} else if(node->kind == N_STRUCTURE || node->kind == N_UNIONATION) {
-				member->name = NULL;
-				member->type = build_type(type_pool, member_pool, node);
-			} else {
-				assert(0);
-			}
-
-			node = node->next;
-			member->next = mempool_alloc(member_pool);
-			member = member->next;
-		}
-
-		break;
-	case N_ENUMERATION:
-		break;
-	default:
-		myerror("jcc: error: can't infer type from initializer\nline: %i, col: %i\n",
-				node->info.line, node->info.col);
 		break;
 	}
 
@@ -1180,7 +1135,7 @@ int lex(void) {
 
 	lexer.text_s = lexer.text_e = NULL;
 
-	while(1) {
+	while(true) {
 		while(isspace(*lexer.ptr)) { /* whitespace */
 			if(*lexer.ptr != '\n') {
 				++lexer.info.col;
@@ -1378,7 +1333,7 @@ int lex(void) {
 		lexer.info.col += s - tp;
 		lexer.text_s = tp;
 		lexer.text_e = lexer.ptr = s;
-		return (lexer.token = T_NUMBER);
+		return (lexer.token = T_INTEGER);
 	}
 
 	if(*tp == '"') {
@@ -1620,7 +1575,7 @@ AST_node* literal(void) {
 	root = NULL;
 	t = lex();
 
-	if((t >= T_NUMBER  && t <= T_FALSE) || t == T_BAR || t == '{')
+	if((t >= T_INTEGER  && t <= T_FALSE) || t == T_BAR || t == '{')
 		root = ast_alloc_node(&ast, 0, NULL, &lexer.info);
 	else if(t != T_ID) {
 		lexer.info.col -= lexer.ptr - lexer.unget;
@@ -1632,7 +1587,7 @@ AST_node* literal(void) {
 	}
 
 	switch(t) {
-	case T_NUMBER:
+	case T_INTEGER:
 		root->kind = N_INTLIT;
 		root->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
@@ -2225,7 +2180,7 @@ AST_node* enumeration(void) {
 	t = lex();
 	if(t == '=') {
 		t = lex();
-		if(t != T_NUMBER && t != T_CHARACTER)
+		if(t != T_INTEGER && t != T_CHARACTER)
 			parse_error(&lexer, "numerical or character constant");
 		child->next = ast_alloc_node(&ast, N_INTLIT, NULL, &lexer.info);
 		child = child->next;
@@ -2252,7 +2207,7 @@ AST_node* enumeration(void) {
 		t = lex();
 		if(t == '=') {
 			t = lex();
-			if(t != T_NUMBER && t != T_CHARACTER)
+			if(t != T_INTEGER && t != T_CHARACTER)
 				parse_error(&lexer, "numerical or character constant");
 			child->next = ast_alloc_node(&ast, N_INTLIT, NULL, &lexer.info);
 			child = child->next;
@@ -2282,7 +2237,6 @@ AST_node* statement(void) {
 		lexer.ptr = lexer.unget;
 		return NULL;
 	}
-
 
 	if(t == T_DEFER) {
 		root = ast_alloc_node(&ast, N_DEFER, NULL, &lexer.info);
