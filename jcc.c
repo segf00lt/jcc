@@ -18,32 +18,10 @@
 #include <error.h>
 #endif
 #include "fmap.c"
-#include "mempool.c"
+#include "pool.c"
 
 #define ARRLEN(x) (sizeof(x) / sizeof(*x))
 #define STRLEN(x) (sizeof(x) / sizeof(*x)) - 1 /* compile-time strlen */
-
-#define AST_PAGE_SIZE 256
-#define STRPOOL_PAGE_SIZE 512
-#define AST_INITIAL_PAGE_COUNT 4
-#define STRPOOL_INITIAL_PAGE_COUNT 4
-
-#define STRPOOL_INIT(pool) { \
-	pool.pages = malloc(STRPOOL_INITIAL_PAGE_COUNT * sizeof(char*)); \
-	pool.cap = STRPOOL_INITIAL_PAGE_COUNT; \
-	pool.cur = 0; \
-	pool.pages[pool.cur] = malloc(STRPOOL_PAGE_SIZE); \
-	pool.base = pool.free = pool.pages[ast.cur]; \
-}
-
-#define AST_INIT(ast) { \
-	ast.pages = malloc(AST_INITIAL_PAGE_COUNT * sizeof(AST_node*)); \
-	ast.cap = AST_INITIAL_PAGE_COUNT; \
-	ast.cur = 0; \
-	ast.nodecount = 1; \
-	ast.pages[ast.cur] = malloc(AST_PAGE_SIZE * sizeof(AST_node)); \
-	ast.base = ast.free = ast.pages[ast.cur]; \
-}
 
 #define SYM_TAB_INIT(tab) {\
 	tab.cap = 128;\
@@ -413,7 +391,6 @@ char *type_tag_debug[] = {
 };
 
 typedef struct Debug_info Debug_info;
-typedef struct Strpool Strpool;
 typedef struct Lexer Lexer;
 typedef struct AST_node AST_node;
 typedef struct AST AST;
@@ -436,14 +413,6 @@ struct Debug_info {
 	int col;
 	char *line_s;
 	char *line_e;
-};
-
-struct Strpool {
-	char *base;
-	char *free;
-	char **pages;
-	size_t cur;
-	size_t cap;
 };
 
 struct Lexer {
@@ -474,11 +443,7 @@ struct AST {
 	/* since we never free individual nodes AST.free stores the first vacant
 	 * node in the current page */
 	AST_node *root;
-	AST_node *free;
-	AST_node *base; /* base of current page */
-	AST_node **pages;
-	size_t cur; /* index of current page */
-	size_t cap; /* capacity of **pages */
+	Pool pool;
 	size_t nodecount; /* debug */
 };
 
@@ -497,10 +462,7 @@ struct Type_info_Pointer {
 
 struct Type_info_Array {
 	Type_info *array_of;
-	union {
-		AST_node *max_index_expr;
-		//Inst *max_index_inst;
-	};
+	AST_node *max_index_expr;
 	size_t max_index;
 };
 
@@ -530,10 +492,7 @@ struct Type_member {
 	Type_info *type;
 	Type_member *next;
 	size_t byte_offset;
-	union {
-		AST_node *initial_val_expr;
-		//Inst *initial_val_inst;
-	};
+	AST_node *initial_val_expr;
 };
 
 struct Type_info {
@@ -600,9 +559,9 @@ struct Sym_tab {
 	};
 };
 
+Pool spool;
 Lexer lexer;
 AST ast;
-Strpool spool;
 Sym_tab pendingtab; /* unresolved symbols get defined here */
 Sym_tab globaltab;
 Sym_tab functab;
@@ -616,13 +575,8 @@ void debug_parser(AST_node *node, size_t depth);
 void debug_sym_tab(AST_node *node);
 void myerror(char *fmt, ...);
 
-/* Strpool functions */
-char* strpool_alloc(Strpool *pool, size_t len, char *s);
-void strpool_free(Strpool *pool);
-
 /* AST functions */
 AST_node* ast_alloc_node(AST *ast, int kind, char *val, Debug_info *info);
-void ast_free(AST *ast);
 
 /* parsing */
 int lex(void);
@@ -668,36 +622,6 @@ Sym* sym_tab_look(Sym_tab *tab, char *name);
 void sym_tab_clear(Sym_tab *tab);
 void sym_tab_print(Sym_tab *tab);
 
-char* strpool_alloc(Strpool *pool, size_t len, char *s) {
-	size_t count, i;
-	char *p;
-
-	count = pool->free - pool->base;
-	if(count + len >= STRPOOL_PAGE_SIZE) {
-		++pool->cur;
-		if(pool->cur >= pool->cap) {
-			pool->cap <<= 1;
-			pool->pages = realloc(pool->pages, pool->cap * sizeof(char*));
-		}
-		pool->pages[pool->cur] = malloc(STRPOOL_PAGE_SIZE);
-		pool->base = pool->free = pool->pages[pool->cur];
-	}
-
-	for(i = 0; i < len; ++i) pool->free[i] = s[i];
-	pool->free[i] = 0;
-
-	p = pool->free;
-	pool->free += i + 1;
-
-	return p;
-}
-
-void strpool_free(Strpool *pool) {
-	for(size_t i = 0; i <= pool->cur; ++i)
-		free(pool->pages[i]);
-	free(pool->pages);
-}
-
 /*
 void debug_sym_tab(AST_node *node) {
 	sym_tab_build(&classtab, node);
@@ -713,6 +637,7 @@ void debug_sym_tab(AST_node *node) {
 }
 */
 
+/*
 void debug_ast_alloc(AST *ast) {
 	for(size_t i = 0; i <= ast->cur; ++i) {
 		fprintf(stderr, "PAGE %zu\n", i);
@@ -736,6 +661,7 @@ void debug_ast_alloc(AST *ast) {
 		}
 	}
 }
+*/
 
 void debug_parser(AST_node *node, size_t depth) {
 	for(; node; node = node->next) {
@@ -764,18 +690,9 @@ void debug_parser(AST_node *node, size_t depth) {
 }
 
 AST_node* ast_alloc_node(AST *ast, int kind, char *val, Debug_info *info) {
-	if(ast->free - ast->base >= AST_PAGE_SIZE) {
-		++ast->cur;
-		if(ast->cur >= ast->cap) {
-			ast->cap <<= 1;
-			ast->pages = realloc(ast->pages, ast->cap * sizeof(AST_node*));
-		}
-		ast->pages[ast->cur] = malloc(AST_PAGE_SIZE * sizeof(AST_node));
-		ast->base = ast->free = ast->pages[ast->cur];
-	}
-
-	*(ast->free) =
-		(AST_node){
+	register AST_node *node;
+	node = pool_alloc(&(ast->pool));
+	*node = (AST_node){
 			.id = ast->nodecount++,
 			.kind = kind,
 			.val = val,
@@ -783,13 +700,7 @@ AST_node* ast_alloc_node(AST *ast, int kind, char *val, Debug_info *info) {
 			.next = NULL,
 			.info = *info
 		};
-	return ast->free++;
-}
-
-void ast_free(AST *ast) {
-	for(size_t i = 0; i <= ast->cur; ++i)
-		free(ast->pages[i]);
-	free(ast->pages);
+	return node;
 }
 
 void type_info_print(Type_info *tp) {
@@ -1435,7 +1346,7 @@ AST_node* declaration(void) {
 
 	root = ast_alloc_node(&ast, N_DEC, NULL, &lexer.info);
 	root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-	child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+	child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 
 	while((t = lex()) == ',') {
 		t = lex();
@@ -1443,7 +1354,7 @@ AST_node* declaration(void) {
 			parse_error(&lexer, "identifier");
 		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
 		child = child->next;
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 	}
 
 	if(t != ':')
@@ -1522,7 +1433,7 @@ AST_node* vardec(void) {
 
 	root = ast_alloc_node(&ast, N_DEC, NULL, &lexer.info);
 	root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-	child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+	child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 
 	while((t = lex()) == ',') {
 		t = lex();
@@ -1530,7 +1441,7 @@ AST_node* vardec(void) {
 			parse_error(&lexer, "identifier");
 		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
 		child = child->next;
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 	}
 
 	if(t != ':')
@@ -1589,15 +1500,15 @@ AST_node* literal(void) {
 	switch(t) {
 	case T_INTEGER:
 		root->kind = N_INTLIT;
-		root->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		root->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
 	case T_STR:
 		root->kind = N_STRLIT;
-		root->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		root->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
 	case T_CHARACTER:
 		root->kind = N_CHARLIT;
-		root->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		root->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
 	case T_TRUE: case T_FALSE:
 		root->kind = N_BOOLLIT;
@@ -1736,7 +1647,7 @@ AST_node* type(void) {
 
 	switch(t) {
 	case T_ID:
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 		child->kind = N_ID;
 		break;
 	case T_FUNC:
@@ -2157,7 +2068,7 @@ AST_node* enumeration(void) {
 	t = lex();
 	if(t >= T_INT && t <= T_S64) {
 		root->down = child = ast_alloc_node(&ast, N_BUILTINTYPE, NULL, &lexer.info);
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
 	}
 
@@ -2170,11 +2081,11 @@ AST_node* enumeration(void) {
 
 	if(!child) {
 		root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 	} else {
 		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
 		child = child->next;
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 	}
 
 	t = lex();
@@ -2186,7 +2097,7 @@ AST_node* enumeration(void) {
 		child = child->next;
 		if(t == T_CHARACTER)
 			child->kind = N_CHARLIT;
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
 	}
 
@@ -2203,7 +2114,7 @@ AST_node* enumeration(void) {
 			parse_error(&lexer, "identifier");
 		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
 		child = child->next;
-		child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
 		if(t == '=') {
 			t = lex();
@@ -2213,7 +2124,7 @@ AST_node* enumeration(void) {
 			child = child->next;
 			if(t == T_CHARACTER)
 				child->kind = N_CHARLIT;
-			child->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+			child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 			t = lex();
 		}
 
@@ -2854,7 +2765,7 @@ AST_node* member(void) {
 			if(t != T_ID)
 				parse_error(&lexer, "identifier");
 			child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-			child->next->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+			child->next->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 			child = child->next;
 		}
 
@@ -2882,7 +2793,7 @@ AST_node* term(void) {
 	t = lex();
 	if(t == T_ID) {
 		node = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-		node->val = strpool_alloc(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		node->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
 		return node;
 	}
 
@@ -2928,7 +2839,7 @@ AST_node* call(void) {
 	}
 
 	root = ast_alloc_node(&ast, N_CALL, NULL, &lexer.info);
-	root->val = strpool_alloc(&spool, e - s, s);
+	root->val = pool_alloc_string(&spool, e - s, s);
 
 	root->down = child = expression();
 	while((t = lex()) == ',') {
@@ -2959,12 +2870,9 @@ void compile(void) {
 
 /*
 void cleanup(void) {
-	strpool_free(&spool);
-	ast_free(&ast);
-	free(functab.data);
+	pool_free(&ast.pool);
+	pool_free(&spool);
 	fmapclose(&fm);
-	fclose(astout);
-	fclose(symout);
 }
 */
 
@@ -2981,15 +2889,15 @@ int main(int argc, char **argv) {
 #endif
 	fmapread(&fm);
 	lexer_init(&lexer, fm.buf);
-	AST_INIT(ast);
-	STRPOOL_INIT(spool);
+	pool_init(&ast.pool, sizeof(AST_node), 256, 4);
+	pool_init(&spool, sizeof(char), 512, 4);
 
 	parse();
 	debug_parser(ast.root, 0);
-	//debug_ast_alloc(&ast);
 
 	fmapclose(&fm);
-	ast_free(&ast);
-	strpool_free(&spool);
+	pool_free(&ast.pool);
+	pool_free(&spool);
+
 	return 0;
 }
