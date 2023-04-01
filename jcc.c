@@ -531,7 +531,6 @@ Type_info builtin_types[] = {
 
 struct Sym {
 	size_t pos; /* position in memory segment */
-	size_t size; /* size in bytes */
 	unsigned int seg : 3; /* memory segment */
 	unsigned int constant : 1;
 	char *name;
@@ -559,7 +558,9 @@ struct Sym_tab {
 	};
 };
 
-Pool spool;
+Pool string_pool;
+Pool type_pool;
+Pool member_pool;
 Lexer lexer;
 AST ast;
 Sym_tab pendingtab; /* unresolved symbols get defined here */
@@ -614,8 +615,8 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node);
 /* symbol table functions */
 void sym_tab_build(Sym_tab *tab, AST_node *node);
 void sym_tab_grow(Sym_tab *tab);
-void sym_tab_def(Sym_tab *tab, Sym *symbol);
-void sym_tab_undef(Sym_tab *tab, char *name);
+int sym_tab_def(Sym_tab *tab, Sym *symbol);
+int sym_tab_undef(Sym_tab *tab, char *name);
 void sym_tab_copy(Sym_tab *dest, Sym_tab *src);
 size_t sym_tab_hash(Sym_tab *tab, char *name);
 Sym* sym_tab_look(Sym_tab *tab, char *name);
@@ -716,12 +717,8 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 
 	if(node->kind == N_TYPE)
 		node = node->down;
-
-	/* NOTE things we can't infer from
-	 * N_EXPRESSION
-	 * N_ARRAYLIT
-	 * N_ID
-	 */
+	else if(node->kind == N_ID || node->kind == N_ARRAYLIT || node->kind == N_EXPRESSION)
+		return NULL;
 
 	switch(node->kind) {
 	//TODO use a table for builtins
@@ -747,18 +744,21 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		break;
 	case N_POINTER:
 		tinfo = pool_alloc(type_pool);
+		tinfo->tag = TY_POINTER;
 		tinfo->Pointer.pointer_to = type_info_build(type_pool, member_pool, node->down); 
 		break;
 	case N_ARRAY:
 		tinfo = pool_alloc(type_pool);
+		tinfo->tag = TY_ARRAY;
 		tinfo->Array.max_index_expr = node->down; /* resolve later */
 		tinfo->Array.array_of = type_info_build(type_pool, member_pool, node->down->next); 
 		break;
 	case N_FUNCTION:
 		node = node->down;
+		tinfo = pool_alloc(type_pool);
+		tinfo->tag = TY_FUNC;
+		tinfo->Func.arg_types = member = pool_alloc(member_pool);
 		if(node->kind == N_TYPE) {
-			tinfo = pool_alloc(type_pool);
-			tinfo->Func.arg_types = member = pool_alloc(member_pool);
 			/* NOTE
 			 * The while loop below might solve a very common
 			 * situation in this program.
@@ -799,8 +799,6 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 			assert(node == NULL);
 
 		} else if(node->kind == N_DEC) {
-			tinfo = pool_alloc(type_pool);
-			tinfo->Func.arg_types = member = pool_alloc(member_pool);
 			while(node->kind == N_DEC) {
 				child = node->down;
 				for(sibling = child; sibling->kind != N_TYPE; sibling = sibling->next);
@@ -835,10 +833,11 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		}
 		break;
 	case N_STRUCTURE: case N_UNIONATION:
-		node = node->down;
-		assert(node->kind == N_DEC || node->kind == N_CONSTDEC || node->kind == N_STRUCTURE || node->kind == N_UNIONATION);
+		assert(node->down->kind == N_DEC || node->down->kind == N_CONSTDEC || node->down->kind == N_STRUCTURE || node->down->kind == N_UNIONATION);
 		tinfo = pool_alloc(type_pool);
+		tinfo->tag = TY_STRUCT ? node->kind == N_STRUCTURE : TY_UNION;
 		tinfo->Struct.members = member = pool_alloc(member_pool);
+		node = node->down;
 
 		while(node) {
 			if(node->kind == N_DEC || node->kind == N_CONSTDEC) {
@@ -904,56 +903,64 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 }
 
 void sym_tab_build(Sym_tab *tab, AST_node *node) {
-	//AST_node *child, *tmp;
-	//Sym sym;
+	AST_node *child, *sibling;
+	Type_info *tinfo;
+	Sym sym;
 
-	//for(; node; node = node->next) {
-	//	sym = (Sym){0};
-	//	switch(node->kind) {
-	//	case N_STRUCTURE: case N_UNIONATION:
-	//		break;
-	//	case N_ENUMERATION:
-	//		child = node->down;
-	//		sym.seg = S_CONSTANT;
-	//		sym.type = keyword[T_U64 - T_ENUM];
-	//		if(child->kind == N_BUILTINTYPE) {
-	//			sym.type = child->val;
-	//			child = child->next;
-	//		}
-	//		if(child->next->kind >= N_INTLIT && child->next->kind <= N_BOOLLIT) {
-	//			sym.val = child->next;
-	//			/* TODO check type */
-	//		}
-	//		while(child) {
-	//			sym.name = child->val;
-	//			sym.info = child->info;
-	//			sym_tab_def(tab, &sym);
-	//			child = child->next;
-	//		}
-	//		break;
-	//	case N_CONSTDEC:
-	//		sym.constant = 1;
-	//		tmp = child;
-	//		while(tmp->kind == N_ID)
-	//			tmp = tmp->next;
-	//		switch(tmp->kind) {
-	//		case N_BUILTINTYPE:
-	//			sym.type = tmp->val;
-	//			break;
-	//		case N_FUNCTION:
-	//			break;
-	//		case N_STRUCTURE:
-	//			break;
-	//		case N_UNIONATION:
-	//			break;
-	//		case N_ENUMERATION:
-	//			break;
-	//		}
-	//		break;
-	//	case N_DEC:
-	//		break;
-	//	}
-	//}
+	for(; node; node = node->next) {
+		sym = (Sym){0};
+		switch(node->kind) {
+		case N_ENUMERATION:
+			//child = node->down;
+			//sym.seg = S_CONSTANT;
+			//sym.type = keyword[T_U64 - T_ENUM];
+			//if(child->kind == N_BUILTINTYPE) {
+			//	sym.type = child->val;
+			//	child = child->next;
+			//}
+			//if(child->next->kind >= N_INTLIT && child->next->kind <= N_BOOLLIT) {
+			//	sym.val = child->next;
+			//}
+			//while(child) {
+			//	sym.name = child->val;
+			//	sym.info = child->info;
+			//	sym_tab_def(tab, &sym);
+			//	child = child->next;
+			//}
+			break;
+		case N_CONSTDEC: case N_DEC:
+			sym.constant = (node->kind == N_CONSTDEC);
+			child = node->down;
+			assert(child->kind == N_ID);
+			while(sibling->kind == N_ID)
+				sibling = sibling->next;
+			tinfo = type_info_build(&type_pool, &member_pool, sibling);
+			if(sibling->kind == N_TYPE) {
+				sym.type = tinfo;
+			} else if(sibling->kind == N_INITIALIZER) {
+				if(tinfo->tag != TY_STRUCT && tinfo->tag != TY_ENUM && tinfo->tag != TY_UNION) {
+					sym.type = tinfo;
+					sym.val.a = sibling;
+				} else {
+					sym.type = builtin_types + 7;
+					sym.val.t = tinfo;
+				}
+			}
+			while(child->kind == N_ID) {
+				// TODO set segment and location
+				sym.name = child->val;
+				sym.info = child->info;
+				if(!sym_tab_def(tab, &sym)) {
+					myerror("jcc: error: redefenition of '%s'\nline: %i, col: %i\n",
+							child->val, child->info.line, child->info.col);
+				}
+				child = child->next;
+			}
+			break;
+		default:
+			break;
+		}
+	}
 }
 
 void sym_tab_grow(Sym_tab *tab) {
@@ -974,26 +981,30 @@ size_t sym_tab_hash(Sym_tab *tab, char *name) {
 	return hash % tab->cap;
 }
 
-void sym_tab_def(Sym_tab *tab, Sym *symbol) {
+int sym_tab_def(Sym_tab *tab, Sym *symbol) {
 	if(tab->count >= tab->cap) sym_tab_grow(tab);
 	size_t i = sym_tab_hash(tab, symbol->name);
 	while(tab->data[i].name) {
 		if(!strcmp(tab->data[i].name, symbol->name))
-			return;
+			return 0;
 		i = (i + 1) % tab->cap;
 	}
 	tab->data[i] = *symbol;
 	++tab->count;
+	return 1;
 }
 
-void sym_tab_undef(Sym_tab *tab, char *name) {
+int sym_tab_undef(Sym_tab *tab, char *name) {
 	size_t i, origin;
 	origin = i = sym_tab_hash(tab, name);
 	do {
-		if(tab->data[i].name && !strcmp(tab->data[i].name, name))
+		if(tab->data[i].name && !strcmp(tab->data[i].name, name)) {
 			tab->data[i].name = NULL;
+			return 1;
+		}
 		i = (i + 1) % tab->cap;
 	} while(i != origin);
+	return 0;
 }
 
 Sym* sym_tab_look(Sym_tab *tab, char *name) {
@@ -1346,7 +1357,7 @@ AST_node* declaration(void) {
 
 	root = ast_alloc_node(&ast, N_DEC, NULL, &lexer.info);
 	root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-	child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+	child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 
 	while((t = lex()) == ',') {
 		t = lex();
@@ -1354,7 +1365,7 @@ AST_node* declaration(void) {
 			parse_error(&lexer, "identifier");
 		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
 		child = child->next;
-		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 	}
 
 	if(t != ':')
@@ -1433,7 +1444,7 @@ AST_node* vardec(void) {
 
 	root = ast_alloc_node(&ast, N_DEC, NULL, &lexer.info);
 	root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-	child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+	child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 
 	while((t = lex()) == ',') {
 		t = lex();
@@ -1441,7 +1452,7 @@ AST_node* vardec(void) {
 			parse_error(&lexer, "identifier");
 		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
 		child = child->next;
-		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 	}
 
 	if(t != ':')
@@ -1500,15 +1511,15 @@ AST_node* literal(void) {
 	switch(t) {
 	case T_INTEGER:
 		root->kind = N_INTLIT;
-		root->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		root->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
 	case T_STR:
 		root->kind = N_STRLIT;
-		root->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		root->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
 	case T_CHARACTER:
 		root->kind = N_CHARLIT;
-		root->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		root->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
 	case T_TRUE: case T_FALSE:
 		root->kind = N_BOOLLIT;
@@ -1647,7 +1658,7 @@ AST_node* type(void) {
 
 	switch(t) {
 	case T_ID:
-		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		child->kind = N_ID;
 		break;
 	case T_FUNC:
@@ -2068,7 +2079,7 @@ AST_node* enumeration(void) {
 	t = lex();
 	if(t >= T_INT && t <= T_S64) {
 		root->down = child = ast_alloc_node(&ast, N_BUILTINTYPE, NULL, &lexer.info);
-		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
 	}
 
@@ -2081,11 +2092,11 @@ AST_node* enumeration(void) {
 
 	if(!child) {
 		root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 	} else {
 		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
 		child = child->next;
-		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 	}
 
 	t = lex();
@@ -2097,7 +2108,7 @@ AST_node* enumeration(void) {
 		child = child->next;
 		if(t == T_CHARACTER)
 			child->kind = N_CHARLIT;
-		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
 	}
 
@@ -2114,7 +2125,7 @@ AST_node* enumeration(void) {
 			parse_error(&lexer, "identifier");
 		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
 		child = child->next;
-		child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
 		if(t == '=') {
 			t = lex();
@@ -2124,7 +2135,7 @@ AST_node* enumeration(void) {
 			child = child->next;
 			if(t == T_CHARACTER)
 				child->kind = N_CHARLIT;
-			child->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+			child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 			t = lex();
 		}
 
@@ -2765,7 +2776,7 @@ AST_node* member(void) {
 			if(t != T_ID)
 				parse_error(&lexer, "identifier");
 			child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-			child->next->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+			child->next->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 			child = child->next;
 		}
 
@@ -2793,7 +2804,7 @@ AST_node* term(void) {
 	t = lex();
 	if(t == T_ID) {
 		node = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-		node->val = pool_alloc_string(&spool, lexer.text_e - lexer.text_s, lexer.text_s);
+		node->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		return node;
 	}
 
@@ -2839,7 +2850,7 @@ AST_node* call(void) {
 	}
 
 	root = ast_alloc_node(&ast, N_CALL, NULL, &lexer.info);
-	root->val = pool_alloc_string(&spool, e - s, s);
+	root->val = pool_alloc_string(&string_pool, e - s, s);
 
 	root->down = child = expression();
 	while((t = lex()) == ',') {
@@ -2871,7 +2882,7 @@ void compile(void) {
 /*
 void cleanup(void) {
 	pool_free(&ast.pool);
-	pool_free(&spool);
+	pool_free(&string_pool);
 	fmapclose(&fm);
 }
 */
@@ -2890,14 +2901,14 @@ int main(int argc, char **argv) {
 	fmapread(&fm);
 	lexer_init(&lexer, fm.buf);
 	pool_init(&ast.pool, sizeof(AST_node), 256, 4);
-	pool_init(&spool, sizeof(char), 512, 4);
+	pool_init(&string_pool, sizeof(char), 512, 4);
 
 	parse();
 	debug_parser(ast.root, 0);
 
 	fmapclose(&fm);
 	pool_free(&ast.pool);
-	pool_free(&spool);
+	pool_free(&string_pool);
 
 	return 0;
 }
