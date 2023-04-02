@@ -964,8 +964,8 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 
 		if(symptr) {
 			if(!symptr->constant)
-				myerror("jcc: error: use of non constant symbol '%s' as type\nsymbol declared on line: %i, col: %i\n",
-						symptr->name, symptr->info.line, symptr->info.col);
+				myerror("jcc: error: use of non constant symbol '%s' as type\nline: %i, col: %i\n",
+						symptr->name, node->info.line, node->info.col);
 			tinfo = symptr->val.t;
 		} else { /* define symbol in pendingtab */
 			symbol.name = node->val;
@@ -1051,11 +1051,8 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		node->visited = true;
 		sym = (Sym){0};
 
-		tinfo = type_info_build(&type_pool, &member_pool, sibling);
-
 		sym.constant = (node->kind == N_CONSTDEC);
 		sym.type = builtin_types + TY_TYPE;
-		sym.val.t = tinfo;
 
 		assert(child->kind == N_ID || child->kind == N_IDLIST);
 
@@ -1065,6 +1062,15 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			// TODO set segment and location
 			sym.name = child->val;
 			sym.info = child->info;
+			tinfo = type_info_build(&type_pool, &member_pool, sibling);
+			if(tinfo->tag == TY_STRUCT) {
+				tinfo->Struct.name = sym.name;
+			} else if(tinfo->tag == TY_UNION) {
+				tinfo->Union.name = sym.name;
+			} else if(tinfo->tag == TY_ENUM) {
+				tinfo->Enum.name = sym.name;
+			} else assert(0);
+			sym.val.t = tinfo;
 			if(!sym_tab_def(tab, &sym)) {
 				myerror("jcc: error: redefinition of '%s'\nline: %i, col: %i\n",
 						child->val, child->info.line, child->info.col);
@@ -1080,6 +1086,8 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		for(size_t j = 0; j < type_pool.pagesize; ++j) {
 			tinfo = tinfo_array + j;
 			if(tinfo->tag != TY_STRUCT && tinfo->tag != TY_UNION)
+				continue;
+			if(tinfo->bytes != 0)
 				continue;
 			resolve_compound_type(tinfo);
 		}

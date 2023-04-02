@@ -19,6 +19,8 @@ foo, foo2 := struct {
 	kiss: Array;
 }
 
+foo3: foo; // this shouldn't compile
+
 Bar :: struct {
 	i: int = ---;
 	union {

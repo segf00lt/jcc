@@ -1,7 +1,6 @@
-set memory segment and postition of symbols
-remove IDLIST
-add initializer() to grammar
 type comparisons and casts
+set memory segment and postition of symbols
 bytecode interpreter
 compile to bytecode
+add #load #import #run
 compile to x64
