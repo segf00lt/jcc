@@ -1,2 +1,7 @@
+set memory segment and postition of symbols
 remove IDLIST
 add initializer() to grammar
+type comparisons and casts
+bytecode interpreter
+compile to bytecode
+compile to x64
