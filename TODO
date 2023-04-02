@@ -1,4 +1,2 @@
-replace use Mempool for allocating AST_node, strings and Type_info
-print Type_info
-test build_type() and infer_type()
-sym_tab_build()
+remove IDLIST
+add initializer() to grammar

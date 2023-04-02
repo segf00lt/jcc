@@ -1,5 +1,9 @@
-Vec3 : Type : struct {
-	x, y: f32;
+Vec3 :: struct {
+	x, y, z: f32 = 0;
+}
+
+Person :: struct {
+	name: *char;
 }
 
 vec3_add :: func(dest, a, b: *Vec3) {

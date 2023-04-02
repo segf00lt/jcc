@@ -13,7 +13,7 @@ void pool_init(Pool *pool, size_t objsize, size_t pagesize, size_t initial_pagec
 	pool->pagesize = pagesize;
 	pool->objsize = objsize;
 	pool->pages = malloc(sizeof(void*) * initial_pagecount);
-	pool->pages[0] = pool->base = pool->free = malloc(objsize * pagesize);
+	pool->pages[0] = pool->base = pool->free = calloc(pagesize, objsize);
 	pool->pagecount = initial_pagecount;
 }
 
@@ -28,32 +28,10 @@ void* pool_alloc(Pool *pool) {
 			pool->pagecount <<= 1;
 			pool->pages = realloc(pool->pages, pool->pagecount * sizeof(void*));
 		}
-		pool->pages[pool->curpage] = malloc(pool->objsize * pool->pagesize);
+		pool->pages[pool->curpage] = calloc(pool->pagesize, pool->objsize);
 		pool->base = pool->free = pool->pages[pool->curpage];
 	}
 
-	p = pool->free;
-	pool->free = (unsigned char*)pool->free + pool->objsize;
-
-	return p;
-}
-
-void* pool_zalloc(Pool *pool) {
-	register void *p;
-
-	assert(pool->objsize != 0);
-
-	if((char*)pool->free - (char*)pool->base >= pool->objsize * pool->pagesize) {
-		++pool->curpage;
-		if(pool->curpage >= pool->pagecount) {
-			pool->pagecount <<= 1;
-			pool->pages = realloc(pool->pages, pool->pagecount * sizeof(void*));
-		}
-		pool->pages[pool->curpage] = malloc(pool->objsize * pool->pagesize);
-		pool->base = pool->free = pool->pages[pool->curpage];
-	}
-
-	memset(pool->free, 0, pool->objsize);
 	p = pool->free;
 	pool->free = (unsigned char*)pool->free + pool->objsize;
 
@@ -70,7 +48,7 @@ void* pool_alloc_string(Pool *pool, size_t len, char *s) {
 			pool->pagecount <<= 1;
 			pool->pages = realloc(pool->pages, pool->pagecount * sizeof(void*));
 		}
-		pool->pages[pool->curpage] = malloc(pool->objsize * pool->pagesize);
+		pool->pages[pool->curpage] = calloc(pool->pagesize, pool->objsize);
 		pool->base = pool->free = pool->pages[pool->curpage];
 	}
 
