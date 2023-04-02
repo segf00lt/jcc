@@ -500,12 +500,12 @@ struct Type_info_Union {
 };
 
 struct Type_member {
-	bool constant;
 	char *name;
-	Type_info *type;
-	Type_member *next;
+	bool constant;
 	size_t byte_offset;
 	AST_node *initial_val_expr;
+	Type_info *type;
+	Type_member *next;
 };
 
 struct Type_info {
@@ -544,10 +544,10 @@ Type_info builtin_types[] = {
 };
 
 struct Sym {
-	size_t pos; /* position in memory segment */
-	unsigned int seg : 3; /* memory segment */
-	unsigned int constant : 1;
 	char *name;
+	unsigned int constant : 1;
+	unsigned int seg : 3; /* memory segment */
+	size_t pos; /* position in memory segment */
 	Type_info *type;
 	union { /* initial value may be Type_info* or AST_node* */
 		Type_info *t;
@@ -572,6 +572,7 @@ struct Sym_tab {
 };
 
 /* globals */
+Fmap fm; /* source file Fmap */
 Pool string_pool;
 Pool type_pool;
 Pool member_pool;
@@ -585,12 +586,14 @@ size_t depth;
 
 /* utility functions */
 void cleanup(void);
-void debug_parser(AST_node *node, size_t depth);
-void debug_sym_tab(AST_node *node);
 void myerror(char *fmt, ...);
 
 /* AST functions */
 AST_node* ast_alloc_node(AST *ast, int kind, char *val, Debug_info *info);
+void ast_print(AST_node *node, size_t depth);
+
+/* lexer functions */
+void lexer_init(Lexer *l, char *buf);
 
 /* parsing */
 int lex(void);
@@ -622,7 +625,7 @@ AST_node* term(void);
 AST_node* call(void);
 
 /* type system funcitons */
-void type_info_print(Type_info *tp);
+void type_info_print(Type_info *tp, size_t depth);
 Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node);
 
 /* symbol table functions */
@@ -636,12 +639,11 @@ Sym* sym_tab_look(Sym_tab *tab, char *name);
 void sym_tab_clear(Sym_tab *tab);
 void sym_tab_print(Sym_tab *tab);
 
-void debug_sym_tab(AST_node *node) {
-}
-
-void debug_parser(AST_node *node, size_t depth) {
+void ast_print(AST_node *node, size_t depth) {
+	int i;
 	for(; node; node = node->next) {
-		int i;
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		fprintf(stderr, "AST_NODE");
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		fprintf(stderr, "id: %u\n", node->id);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
@@ -657,11 +659,8 @@ void debug_parser(AST_node *node, size_t depth) {
 		fprintf(stderr, "down: %u\n", node->down ? node->down->id : 0);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		fprintf(stderr, "next: %u\n\n", node->next ? node->next->id : 0);
-		if(node->down) {
-			++depth;
-			debug_parser(node->down, depth);
-			--depth;
-		}
+		if(node->down)
+			ast_print(node->down, depth+1);
 	}
 }
 
@@ -679,7 +678,96 @@ AST_node* ast_alloc_node(AST *ast, int kind, char *val, Debug_info *info) {
 	return node;
 }
 
-void type_info_print(Type_info *tp) {
+void type_info_print(Type_info *tp, size_t depth) {
+	Type_member *member;
+	register size_t i;
+	for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+	fprintf(stderr, "TYPE_INFO");
+	for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+	fprintf(stderr, "tag: %s\n", type_tag_debug[tp->tag]);
+	for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+	fprintf(stderr, "bytes: %zu\n", tp->bytes);
+	switch(tp->tag) {
+	case TY_INT:
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		fprintf(stderr, "bits: %u\n", tp->Int.bits);
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		fprintf(stderr, "sign: %u\n", tp->Int.sign);
+		break;
+	case TY_FLOAT:
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		fprintf(stderr, "bits: %u\n", tp->Float.bits);
+		break;
+	case TY_TYPE:
+		break;
+	case TY_VOID:
+		break;
+	case TY_BOOL:
+		break;
+	case TY_STRING:
+		break;
+	case TY_ARRAY:
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		fprintf(stderr, "max_index: %zu\n", tp->Array.max_index);
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		fprintf(stderr, "array_of: %s\n", type_tag_debug[tp->Array.array_of->tag]);
+		ast_print(tp->Array.max_index_expr, depth+1);
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		type_info_print(tp->Array.array_of, depth+1);
+		break;
+	case TY_POINTER:
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		fprintf(stderr, "pointer_to: %s\n", type_tag_debug[tp->Pointer.pointer_to->tag]);
+		type_info_print(tp->Pointer.pointer_to, depth+1);
+		break;
+	case TY_FUNC:
+		break;
+	case TY_STRUCT:
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		fprintf(stderr, "name: %s\n", tp->Struct.name);
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		fprintf(stderr, "members:\n");
+		++depth;
+		for(member = tp->Struct.members; member; member = member->next) {
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "name: %s\n", member->name);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "constant: %d\n", member->constant);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "byte_offset: %zu\n", member->byte_offset);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "initial_val_expr:\n");
+			ast_print(member->initial_val_expr, depth+1);
+			type_info_print(member->type, depth);
+		}
+		--depth;
+		break;
+	case TY_ENUM:
+		break;
+	case TY_UNION:
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		fprintf(stderr, "name: %s\n", tp->Union.name);
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		fprintf(stderr, "members:\n");
+		++depth;
+		for(member = tp->Union.members; member; member = member->next) {
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "name: %s\n", member->name);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "constant: %d\n", member->constant);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "byte_offset: %zu\n", member->byte_offset);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "initial_val_expr:\n");
+			ast_print(member->initial_val_expr, depth+1);
+			type_info_print(member->type, depth);
+		}
+		--depth;
+		break;
+	default:
+		assert(0);
+	}
+	fprintf(stderr,"\n");
 }
 
 // NOTE maybe put type_pool and member_pool in global scope
@@ -1032,11 +1120,16 @@ void sym_tab_clear(Sym_tab *tab) {
 
 void sym_tab_print(Sym_tab *tab) {
 	for(size_t i = 0; i < tab->cap; ++i) {
-		if(tab->data[i].name == 0) continue;
-		/* TODO print Type_info */
-		//fprintf(stderr, "SYMBOL\n\tname: %s\n\ttype: %p\n\tseg: %s\n\tpos: %zu\n\n",
-		//		tab->data[i].name, tab->data[i].type,
-		//		segments[tab->data[i].seg], tab->data[i].pos);
+		if(tab->data[i].name == 0)
+			continue;
+		fprintf(stderr, "SYM\nname: %s\nconstant: %i\nseg: %u\npos: %zu\ntype:\n",
+				tab->data[i].name, tab->data[i].constant, tab->data[i].seg, tab->data[i].pos);
+		type_info_print(tab->data[i].type, 1);
+		fprintf(stderr, "val:\n\n");
+		if(tab->data[i].type->tag == TY_TYPE)
+			type_info_print(tab->data[i].val.t, 1);
+		else
+			ast_print(tab->data[i].val.a, 1);
 	}
 }
 
@@ -1055,6 +1148,15 @@ void myerror(char *fmt, ...) {
 	vfprintf(stderr, fmt, args);
 	va_end(args);
 	exit(1);
+}
+
+void lexer_init(Lexer *l, char *buf) {
+	l->token = 0;
+	l->text_s = l->text_e = l->unget = NULL;
+	l->ptr = l->src = buf;
+	l->info = (Debug_info){ .line = 1, .col = 1, .line_s = buf };
+	for(l->info.line_e = l->ptr; *(l->info.line_e) != '\n'; ++(l->info.line_e));
+	++(l->info.line_e);
 }
 
 int lex(void) {
@@ -2882,36 +2984,25 @@ AST_node* call(void) {
 	return root;
 }
 
-void lexer_init(Lexer *l, char *buf) {
-	l->token = 0;
-	l->text_s = l->text_e = l->unget = NULL;
-	l->ptr = l->src = buf;
-	l->info = (Debug_info){ .line = 1, .col = 1, .line_s = buf };
-	for(l->info.line_e = l->ptr; *(l->info.line_e) != '\n'; ++(l->info.line_e));
-	++(l->info.line_e);
-}
-
 void compile(void) {
 	//AST_node *root = ast.root;
 
 	/* build global tab */
 }
 
-/*
 void cleanup(void) {
 	pool_free(&ast.pool);
 	pool_free(&string_pool);
 	fmapclose(&fm);
 }
-*/
 
 int main(int argc, char **argv) {
-	printf("TY_TYPE = %i\n",  TY_TYPE);
+	printf("Type_info = %zu\n", sizeof(Type_info));
 	printf("AST_node size = %zu\n", sizeof(AST_node));
+	printf("Sym size = %zu\n", sizeof(Sym));
 	if(argc == 1) {
 		return 1;
 	}
-	Fmap fm;
 	if(fmapopen(argv[1], O_RDONLY, &fm) < 0)
 #if defined(__MACH__)
 		err(1, "%s: no such file or directory", argv[1]);
@@ -2924,7 +3015,10 @@ int main(int argc, char **argv) {
 	pool_init(&string_pool, sizeof(char), 512, 4);
 
 	parse();
-	debug_parser(ast.root, 0);
+	ast_print(ast.root, 0);
+
+	for(int i = 0; i < ARRLEN(builtin_types); ++i)
+		type_info_print(builtin_types+i, 0);
 
 	fmapclose(&fm);
 	pool_free(&ast.pool);
