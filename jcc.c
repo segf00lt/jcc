@@ -628,7 +628,8 @@ AST_node* call(void);
 /* type system funcitons */
 void type_info_print(Type_info *tp, size_t depth);
 Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node);
-void resolve_compound_types(Pool *type_pool);
+void resolve_compound_type(Type_info *tinfo);
+int compare_types(Type_info *a, Type_info *b);
 
 /* symbol table functions */
 void sym_tab_build(Sym_tab *tab, AST_node *node);
@@ -723,14 +724,60 @@ void type_info_print(Type_info *tp, size_t depth) {
 		type_info_print(tp->Pointer.pointer_to, depth+1);
 		break;
 	case TY_FUNC:
-		break;
-	case TY_STRUCT:
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
-		fprintf(stderr, "name: %s\n", tp->Struct.name);
+		fprintf(stderr, "arguments:\n");
+		++depth;
+		for(member = tp->Func.arg_types; member; member = member->next) {
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "ARGUMENT\n");
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "name: %s\n", member->name);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "constant: %d\n", member->constant);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "byte_offset: %zu\n", member->byte_offset);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "initial_val_expr:\n");
+			ast_print(member->initial_val_expr, depth+1);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "type:\n");
+			type_info_print(member->type, depth+1);
+		}
+		--depth;
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		fprintf(stderr, "return values:\n");
+		++depth;
+		for(member = tp->Func.return_types; member; member = member->next) {
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "RETURN\n");
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "name: %s\n", member->name);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "constant: %d\n", member->constant);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "byte_offset: %zu\n", member->byte_offset);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "initial_val_expr:\n");
+			ast_print(member->initial_val_expr, depth+1);
+			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+			fprintf(stderr, "type:\n");
+			type_info_print(member->type, depth+1);
+		}
+		--depth;
+		break;
+	case TY_STRUCT: case TY_UNION:
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		if(tp->tag == TY_STRUCT) {
+			fprintf(stderr, "name: %s\n", tp->Struct.name);
+			member = tp->Struct.members;
+		} else {
+			fprintf(stderr, "name: %s\n", tp->Union.name);
+			member = tp->Union.members;
+		}
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		fprintf(stderr, "members:\n");
 		++depth;
-		for(member = tp->Struct.members; member; member = member->next) {
+		for(; member; member = member->next) {
 			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 			fprintf(stderr, "MEMBER\n");
 			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
@@ -750,38 +797,14 @@ void type_info_print(Type_info *tp, size_t depth) {
 		break;
 	case TY_ENUM:
 		break;
-	case TY_UNION:
-		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
-		fprintf(stderr, "name: %s\n", tp->Union.name);
-		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
-		fprintf(stderr, "members:\n");
-		++depth;
-		for(member = tp->Union.members; member; member = member->next) {
-			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
-			fprintf(stderr, "MEMBER\n");
-			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
-			fprintf(stderr, "name: %s\n", member->name);
-			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
-			fprintf(stderr, "constant: %d\n", member->constant);
-			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
-			fprintf(stderr, "byte_offset: %zu\n", member->byte_offset);
-			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
-			fprintf(stderr, "initial_val_expr:\n");
-			ast_print(member->initial_val_expr, depth+1);
-			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
-			fprintf(stderr, "type:\n");
-			type_info_print(member->type, depth+1);
-		}
-		--depth;
-		break;
 	default:
 		assert(0);
 	}
 }
 
 Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
-	AST_node *child, *sibling;
-	Type_info *tinfo;
+	AST_node *child, *sibling, *member_initial_val_expr;
+	Type_info *tinfo, *member_type;
 	Type_member *member;
 	Sym *symptr;
 	Sym symbol = {0};
@@ -832,8 +855,8 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		tinfo = pool_alloc(type_pool);
 		tinfo->tag = TY_FUNC;
 		tinfo->bytes = 8u;
-		tinfo->Func.arg_types = member = pool_alloc(member_pool);
-		if(node->kind == N_TYPE) {
+		if(node->kind == N_TYPE) { /* function type literal */
+			tinfo->Func.arg_types = member = pool_alloc(member_pool);
 			while(true) {
 				member->type = type_info_build(type_pool, member_pool, node);
 				node = node->next;
@@ -845,28 +868,26 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 
 			if(node && node->kind != N_RETURNTYPE)
 				break;
-
-			tinfo->Func.return_types = member = pool_alloc(member_pool);
-			while(true) {
-				member->type = type_info_build(type_pool, member_pool, node);
-				node = node->next;
-				if(!(node && node->kind != N_BLOCK))
-					break;
-				member->next = pool_alloc(member_pool);
-				member = member->next;
-			}
-
-			assert(node == NULL);
-
-		} else if(node->kind == N_DEC) {
+		} else if(node->kind == N_DEC) { /* function declaration */
+			tinfo->Func.arg_types = member = pool_alloc(member_pool);
 			while(node->kind == N_DEC) {
 				child = node->down;
-				for(sibling = child; sibling->kind != N_TYPE; sibling = sibling->next);
-				while(true) {
+				member_type = NULL;
+				member_initial_val_expr = NULL;
+				for(sibling = child; sibling && sibling->kind != N_TYPE; sibling = sibling->next);
+				if(!sibling) {
+					myerror("jcc: error: function parameter has no type\nline: %i, col: %i\n",
+							child->info.line, child->info.col);
+				}
+				member_type = type_info_build(type_pool, member_pool, sibling);
+				if(sibling->next && sibling->next->kind == N_INITIALIZER)
+					member_initial_val_expr = sibling->next;
+				while(child->kind == N_ID) {
 					member->name = child->val;
-					member->type = type_info_build(type_pool, member_pool, sibling);
+					member->type = member_type;
+					member->initial_val_expr = member_initial_val_expr;
 					child = child->next;
-					if(child->kind != N_ID)
+					if(child->kind !=  N_ID && node->next && node->next->kind != N_DEC)
 						break;
 					member->next = pool_alloc(member_pool);
 					member = member->next;
@@ -876,22 +897,25 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 
 			if(node && node->kind != N_RETURNTYPE)
 				break;
-
-			tinfo->Func.return_types = member = pool_alloc(member_pool);
-			while(true) {
-				member->type = type_info_build(type_pool, member_pool, node);
-				node = node->next;
-				if(!(node && node->kind != N_BLOCK))
-					break;
-				member->next = pool_alloc(member_pool);
-				member = member->next;
-			}
-
-			assert(node && node->kind == N_BLOCK);
-
 		} else {
-			assert(node->kind == N_BLOCK);
+			assert(node->kind==N_RETURNTYPE||node->kind==N_BLOCK||node->kind==N_STORAGEQUALIFIER);
 		}
+
+		if(node->kind == N_BLOCK || node->kind == N_STORAGEQUALIFIER)
+			break;
+		else /* node is return type */
+			node = node->next;
+
+		tinfo->Func.return_types = member = pool_alloc(member_pool);
+		while(true) {
+			member->type = type_info_build(type_pool, member_pool, node);
+			node = node->next;
+			if(!(node && node->kind != N_BLOCK && node->kind != N_STORAGEQUALIFIER))
+				break;
+			member->next = pool_alloc(member_pool);
+			member = member->next;
+		}
+
 		break;
 	case N_STRUCTURE: case N_UNIONATION:
 		assert(node->down->kind == N_DEC || node->down->kind == N_CONSTDEC || node->down->kind == N_STRUCTURE || node->down->kind == N_UNIONATION);
@@ -963,6 +987,10 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 			symptr = sym_tab_look(&pendingtab, node->val);
 
 		if(symptr) {
+			/* TODO you can declare a var with non constant type
+			 * symbol by declaring the type symbol after the var to
+			 * solve this make sure everything in the pending tab
+			 * is a constant */
 			if(!symptr->constant)
 				myerror("jcc: error: use of non constant symbol '%s' as type\nline: %i, col: %i\n",
 						symptr->name, node->info.line, node->info.col);
@@ -976,6 +1004,9 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		}
 		break;
 	default:
+		fprintf(stderr, "######### printing node\n");
+		fwrite(node->info.line_s, 1, node->info.line_e - node->info.line_s, stderr);
+		ast_print(node,0);
 		assert(0);
 		break;
 	}
@@ -1961,6 +1992,7 @@ AST_node* function(void) {
 		if(!child) {
 			root->down = child = ast_alloc_node(&ast, N_RETURNTYPE, NULL, &lexer.info);
 			child->next = node;
+			child = child->next;
 		} else {
 			child->next = ast_alloc_node(&ast, N_RETURNTYPE, NULL, &lexer.info);
 			child = child->next;
@@ -3107,7 +3139,7 @@ int main(int argc, char **argv) {
 	pool_init(&member_pool, sizeof(Type_member), 128, 1);
 
 	parse();
-	ast_print(ast.root, 0);
+	//ast_print(ast.root, 0);
 	sym_tab_build(&globaltab, ast.root);
 	sym_tab_print(&globaltab);
 

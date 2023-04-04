@@ -1,3 +1,7 @@
+test::func(){
+	a = b += 1;
+}
+
 two :: func() int {
 	return cast(int)2;
 }
@@ -6,7 +10,7 @@ exp :: func() int {
 	return 1 * 1 + 1;
 }
 
-factorial :: func(x := 0) int {
+factorial :: func(x: int = 0) int {
 	if(x <= 0) {
 		return 1;
 	}
@@ -62,10 +66,6 @@ main :: func() {
 
 one :: func(i: int) int inline {
 	return 1;
-}
-
-test::func(){
-	a = b += 1;
 }
 
 abc :: func(a, b, c: int) int {
