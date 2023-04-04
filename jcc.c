@@ -872,22 +872,25 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 			tinfo->Func.arg_types = member = pool_alloc(member_pool);
 			while(node->kind == N_DEC) {
 				child = node->down;
+				assert(child->kind == N_ID || child->kind == N_IDLIST);
+				sibling = child->next;
+				if(child->kind == N_IDLIST)
+					child = child->down;
+				assert(child->kind == N_ID);
 				member_type = NULL;
 				member_initial_val_expr = NULL;
-				for(sibling = child; sibling && sibling->kind != N_TYPE; sibling = sibling->next);
-				if(!sibling) {
-					myerror("jcc: error: function parameter has no type\nline: %i, col: %i\n",
-							child->info.line, child->info.col);
-				}
-				member_type = type_info_build(type_pool, member_pool, sibling);
-				if(sibling->next && sibling->next->kind == N_INITIALIZER)
+				if(sibling->kind == N_INITIALIZER) {
+					member_initial_val_expr = sibling;
+					sibling = sibling->down->down; // go down twice to get past N_EXPRESSION
+				} else if(sibling->next && sibling->next->kind == N_INITIALIZER)
 					member_initial_val_expr = sibling->next;
+				member_type = type_info_build(type_pool, member_pool, sibling);
 				while(child->kind == N_ID) {
 					member->name = child->val;
 					member->type = member_type;
 					member->initial_val_expr = member_initial_val_expr;
 					child = child->next;
-					if(child->kind !=  N_ID && node->next && node->next->kind != N_DEC)
+					if(!child || (child->kind != N_ID && node->next && node->next->kind != N_DEC))
 						break;
 					member->next = pool_alloc(member_pool);
 					member = member->next;
@@ -1643,7 +1646,7 @@ AST_node* declaration(void) {
 
 AST_node* vardec(void) {
 	register int t;
-	AST_node *root, *child;
+	AST_node *root, *child, *tmp;
 	char *unget1, *unget2;
 
 	t = lex();
@@ -1676,13 +1679,22 @@ AST_node* vardec(void) {
 	root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
 	child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 
-	while((t = lex()) == ',') {
+	t = lex();
+
+	if(t == ',') {
+		tmp = child;
+		root->down = child = ast_alloc_node(&ast, N_IDLIST, NULL, &lexer.info);
+		child->down = tmp;
+	}
+
+	while(t == ',') {
 		t = lex();
 		if(t != T_ID)
 			parse_error("identifier");
-		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
-		child = child->next;
-		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		tmp->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.info);
+		tmp = tmp->next;
+		tmp->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		t = lex();
 	}
 
 	if(t != ':')
@@ -3139,7 +3151,7 @@ int main(int argc, char **argv) {
 	pool_init(&member_pool, sizeof(Type_member), 128, 1);
 
 	parse();
-	//ast_print(ast.root, 0);
+	ast_print(ast.root, 0);
 	sym_tab_build(&globaltab, ast.root);
 	sym_tab_print(&globaltab);
 

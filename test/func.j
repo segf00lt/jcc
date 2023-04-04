@@ -1,3 +1,7 @@
+multiple_return_vals :: func(a, b, c: int) int, int, int {
+	return a + 1, b - a, c << 2;
+}
+
 test::func(){
 	a = b += 1;
 }
@@ -10,7 +14,7 @@ exp :: func() int {
 	return 1 * 1 + 1;
 }
 
-factorial :: func(x: int = 0) int {
+factorial :: func(x := 0) int {
 	if(x <= 0) {
 		return 1;
 	}
@@ -23,10 +27,6 @@ number :: func(x: int = 0, b: int, c: int) int {
 
 printer :: func(s: [SIZE << 3]char) inline {
 	print("hello %s\n");
-}
-
-multiple_return_vals :: func(a, b, c: int) int, int, int {
-	return a + 1, b - a, c << 2;
 }
 
 add_abc :: func(a, b, c: int) int {
