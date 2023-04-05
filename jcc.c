@@ -629,7 +629,6 @@ AST_node* call(void);
 void type_info_print(Type_info *tp, size_t depth);
 Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node);
 void resolve_compound_type(Type_info *tinfo);
-int compare_types(Type_info *a, Type_info *b);
 
 /* symbol table functions */
 void sym_tab_build(Sym_tab *tab, AST_node *node);
@@ -641,6 +640,8 @@ size_t sym_tab_hash(Sym_tab *tab, char *name);
 Sym* sym_tab_look(Sym_tab *tab, char *name);
 void sym_tab_clear(Sym_tab *tab);
 void sym_tab_print(Sym_tab *tab);
+
+/* TODO bytecode interpreter */
 
 void ast_print(AST_node *node, size_t depth) {
 	int i;
@@ -811,16 +812,20 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 
 	if(node->kind == N_TYPE)
 		node = node->down;
-	if(node->kind == N_EXPRESSION)
-		assert(0);
+
+	assert(node->kind != N_EXPRESSION);
 
 	symptr = NULL;
 
 	switch(node->kind) {
 	case N_STRUCTLIT:
+		myerror("jcc: error: feature unimplemented\non compiler source line: %i\n in function %s\n",
+				__LINE__, __func__);
 		break;
 	case N_STRLIT:
 		//tinfo = builtin_types + TY_STRING; TODO create string type
+		myerror("jcc: error: feature unimplemented\non compiler source line: %i\n in function %s\n",
+				__LINE__, __func__);
 		break;
 	case N_BOOLLIT:
 		tinfo = builtin_types + TY_BOOL;
@@ -881,7 +886,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 				member_initial_val_expr = NULL;
 				if(sibling->kind == N_INITIALIZER) {
 					member_initial_val_expr = sibling;
-					sibling = sibling->down->down; // go down twice to get past N_EXPRESSION
+					sibling = sibling->down;
 				} else if(sibling->next && sibling->next->kind == N_INITIALIZER)
 					member_initial_val_expr = sibling->next;
 				member_type = type_info_build(type_pool, member_pool, sibling);
@@ -921,7 +926,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 
 		break;
 	case N_STRUCTURE: case N_UNIONATION:
-		assert(node->down->kind == N_DEC || node->down->kind == N_CONSTDEC || node->down->kind == N_STRUCTURE || node->down->kind == N_UNIONATION);
+		assert(node->down->kind==N_DEC||node->down->kind==N_CONSTDEC||node->down->kind==N_STRUCTURE||node->down->kind==N_UNIONATION);
 		tinfo = pool_alloc(type_pool);
 		if(node->kind == N_STRUCTURE)
 			tinfo->tag = TY_STRUCT;
@@ -960,7 +965,8 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 				member->name = NULL;
 				member->type = type_info_build(type_pool, member_pool, node);
 			} else if(node->kind == N_ENUMERATION) {
-				// TODO what does this mean?
+				myerror("jcc: error: feature unimplemented\non compiler source line: %i\n in function %s\n",
+						__LINE__, __func__); // TODO what does this mean?
 			} else {
 				assert(0);
 			}
@@ -973,6 +979,8 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		}
 		break;
 	case N_ENUMERATION:
+		myerror("jcc: error: feature unimplemented\non compiler source line: %i\n in function %s\n",
+				__LINE__, __func__); // TODO
 		break;
 	case N_ID:
 		/* lookup identifier in symbol table, expect a Type if it isn't
@@ -1103,7 +1111,8 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 				tinfo->Union.name = sym.name;
 			} else if(tinfo->tag == TY_ENUM) {
 				tinfo->Enum.name = sym.name;
-			} else assert(0);
+			} else
+				assert(0);
 			sym.val.t = tinfo;
 			if(!sym_tab_def(tab, &sym)) {
 				myerror("jcc: error: redefinition of '%s'\nline: %i, col: %i\n",
@@ -1132,7 +1141,8 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			continue;
 
 		if(node->kind == N_ENUMERATION) {
-			assert(0); // TODO implement anonymous enum
+			myerror("jcc: error: feature unimplemented\non compiler source line: %i\n in function %s\n",
+					__LINE__, __func__); // TODO implement anonymous enum
 		}
 
 		sym = (Sym){0};
@@ -1145,9 +1155,11 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			tinfo = type_info_build(&type_pool, &member_pool, sibling);
 			sibling = sibling->next;
 		} else if(sibling->kind == N_INITIALIZER) {
-			if(sibling->down->kind == N_EXPRESSION)
-				myerror("jcc: error: can't infer type from expression\nline: %i, col: %i\n",
-						sibling->down->info.line, sibling->down->info.col);
+			assert(sibling->down->kind != N_EXPRESSION);
+			//if(sibling->down->kind == N_EXPRESSION) {
+			//	myerror("jcc: error: can't infer type from expression\nline: %i, col: %i\n",
+			//			sibling->down->info.line, sibling->down->info.col);
+			//}
 			tinfo = type_info_build(&type_pool, &member_pool, sibling->down);
 		} else {
 			assert(0);
@@ -1170,6 +1182,8 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			child = child->next;
 		}
 	}
+
+	/* TODO check pending tab */
 }
 
 void sym_tab_grow(Sym_tab *tab) {
@@ -1534,6 +1548,7 @@ AST_node* declaration(void) {
 	register int t;
 	AST_node *root, *child, *tmp;
 	char *unget1, *unget2;
+	bool explicit_type = false;
 
 	t = lex();
 	unget1 = lexer.unget;
@@ -1605,6 +1620,7 @@ AST_node* declaration(void) {
 		parse_error("':'");
 
 	child->next = type();
+	explicit_type = (bool)child->next;
 
 	t = lex();
 
@@ -1630,7 +1646,10 @@ AST_node* declaration(void) {
 	if((child->down = unionation())) return root;
 	if((child->down = enumeration())) return root;
 
-	child->down = expression();
+	if(explicit_type)
+		child->down = expression();
+	else
+		child->down = literal();
 
 	if(child->down) {
 		t = lex();
@@ -1639,7 +1658,7 @@ AST_node* declaration(void) {
 		return root;
 	}
 
-	parse_error("expression or body");
+	parse_error("initializer");
 
 	return NULL;
 }
@@ -1648,6 +1667,7 @@ AST_node* vardec(void) {
 	register int t;
 	AST_node *root, *child, *tmp;
 	char *unget1, *unget2;
+	bool explicit_type = false;
 
 	t = lex();
 	unget1 = lexer.unget;
@@ -1701,6 +1721,7 @@ AST_node* vardec(void) {
 		parse_error("':'");
 
 	child->next = type();
+	explicit_type = (bool)child->next;
 
 	t = lex();
 
@@ -1721,12 +1742,15 @@ AST_node* vardec(void) {
 	if(t != '=')
 		parse_error("'=' or ':'");
 
-	child->down = expression();
+	if(explicit_type)
+		child->down = expression();
+	else
+		child->down = literal();
 
 	if(child->down)
 		return root;
 
-	parse_error("expression");
+	parse_error("initializer");
 
 	return NULL;
 }
