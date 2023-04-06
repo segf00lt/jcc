@@ -7,19 +7,21 @@ struct {
 	}
 }
 
-// constant struct
-Array :: struct {
-	cap, count, stride: u64;
-	data: *void;
-}
-
 // variable struct
 foo, foo2 := struct {
 	bar: float;
 	kiss: Array;
 }
 
-foo3: foo; // this shouldn't compile
+// constant struct
+Array :: struct {
+	cap, count, stride: u64;
+	data: *void;
+}
+
+//Array: int;
+
+//foo3: foo; // this shouldn't compile
 
 Bar :: struct {
 	i: int = ---;
@@ -40,3 +42,8 @@ test :: union {
 		f: float;
 	}
 }
+
+recurse :: struct {
+	r: []recurse;
+}
+

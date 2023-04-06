@@ -487,16 +487,19 @@ struct Type_info_Func {
 struct Type_info_Struct {
 	char *name;
 	Type_member *members;
+	Debug_info debug_info;
 };
 
 struct Type_info_Enum {
 	char *name;
 	Type_member *members;
+	Debug_info debug_info;
 };
 
 struct Type_info_Union {
 	char *name;
 	Type_member *members;
+	Debug_info debug_info;
 };
 
 struct Type_member {
@@ -627,7 +630,7 @@ AST_node* call(void);
 
 /* type system funcitons */
 void type_info_print(Type_info *tp, size_t depth);
-Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node);
+Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, Type_info *dest);
 void resolve_compound_type(Type_info *tinfo);
 
 /* symbol table functions */
@@ -685,6 +688,8 @@ AST_node* ast_alloc_node(AST *ast, int kind, char *val, Debug_info *info) {
 void type_info_print(Type_info *tp, size_t depth) {
 	Type_member *member;
 	register size_t i;
+	char *compound_type_name;
+
 	for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 	fprintf(stderr, "TYPE_INFO\n");
 	for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
@@ -769,9 +774,11 @@ void type_info_print(Type_info *tp, size_t depth) {
 	case TY_STRUCT: case TY_UNION:
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		if(tp->tag == TY_STRUCT) {
+			compound_type_name = tp->Struct.name;
 			fprintf(stderr, "name: %s\n", tp->Struct.name);
 			member = tp->Struct.members;
 		} else {
+			compound_type_name = tp->Union.name;
 			fprintf(stderr, "name: %s\n", tp->Union.name);
 			member = tp->Union.members;
 		}
@@ -792,7 +799,26 @@ void type_info_print(Type_info *tp, size_t depth) {
 			ast_print(member->initial_val_expr, depth+1);
 			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 			fprintf(stderr, "type:\n");
-			type_info_print(member->type, depth+1);
+			if(member->type->tag == TY_POINTER || member->type->tag == TY_ARRAY) {
+				assert(compound_type_name);
+				if(member->type->Pointer.pointer_to != tp && member->type->Array.array_of != tp) {
+					type_info_print(member->type, depth+1);
+				}
+				++depth;
+				for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+				fprintf(stderr, "TYPE_INFO\n");
+				for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+				fprintf(stderr, "tag: %s\n", type_tag_debug[member->type->tag]);
+				for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+				fprintf(stderr, "bytes: %zu\n", tp->bytes);
+				for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+				if(member->type->tag == TY_POINTER) {
+					fprintf(stderr, "pointer_to: %s\n", compound_type_name);
+				} else {
+					fprintf(stderr, "array_of: %s\n", compound_type_name);
+				}
+			} else
+				type_info_print(member->type, depth+1);
 		}
 		--depth;
 		break;
@@ -803,11 +829,12 @@ void type_info_print(Type_info *tp, size_t depth) {
 	}
 }
 
-Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
+Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, Type_info *dest) {
 	AST_node *child, *sibling, *member_initial_val_expr;
 	Type_info *tinfo, *member_type;
 	Type_member *member;
 	Sym *symptr;
+	bool is_pending;
 	Sym symbol = {0};
 
 	if(node->kind == N_TYPE)
@@ -843,27 +870,45 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		tinfo = builtin_types + node->typesig;
 		break;
 	case N_POINTER:
-		tinfo = pool_alloc(type_pool);
+		if(dest)
+			tinfo = dest;
+		else
+			tinfo = pool_alloc(type_pool);
+
 		tinfo->tag = TY_POINTER;
 		tinfo->bytes = 8u;
-		tinfo->Pointer.pointer_to = type_info_build(type_pool, member_pool, node->down); 
+		tinfo->Pointer.pointer_to = type_info_build(type_pool, member_pool, node->down,NULL); 
 		break;
 	case N_ARRAY:
-		tinfo = pool_alloc(type_pool);
+		if(dest)
+			tinfo = dest;
+		else
+			tinfo = pool_alloc(type_pool);
+
 		tinfo->tag = TY_ARRAY;
 		tinfo->bytes = 8u << 2;
-		tinfo->Array.max_index_expr = node->down; /* resolve later */
-		tinfo->Array.array_of = type_info_build(type_pool, member_pool, node->down->next); 
+		if(node->down->kind == N_EXPRESSION) {
+			tinfo->Array.max_index_expr = node->down; /* resolve later */
+			node = node->down->next;
+		} else {
+			node = node->down;
+		}
+		tinfo->Array.array_of = type_info_build(type_pool, member_pool, node,NULL); 
 		break;
 	case N_FUNCTION:
 		node = node->down;
-		tinfo = pool_alloc(type_pool);
+
+		if(dest)
+			tinfo = dest;
+		else
+			tinfo = pool_alloc(type_pool);
+
 		tinfo->tag = TY_FUNC;
 		tinfo->bytes = 8u;
 		if(node->kind == N_TYPE) { /* function type literal */
 			tinfo->Func.arg_types = member = pool_alloc(member_pool);
 			while(true) {
-				member->type = type_info_build(type_pool, member_pool, node);
+				member->type = type_info_build(type_pool, member_pool, node,NULL);
 				node = node->next;
 				if(!(node && node->kind != N_RETURNTYPE))
 					break;
@@ -879,17 +924,21 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 				child = node->down;
 				assert(child->kind == N_ID || child->kind == N_IDLIST);
 				sibling = child->next;
+
 				if(child->kind == N_IDLIST)
 					child = child->down;
 				assert(child->kind == N_ID);
+
 				member_type = NULL;
 				member_initial_val_expr = NULL;
+
 				if(sibling->kind == N_INITIALIZER) {
 					member_initial_val_expr = sibling;
 					sibling = sibling->down;
 				} else if(sibling->next && sibling->next->kind == N_INITIALIZER)
 					member_initial_val_expr = sibling->next;
-				member_type = type_info_build(type_pool, member_pool, sibling);
+
+				member_type = type_info_build(type_pool, member_pool, sibling,NULL);
 				while(child->kind == N_ID) {
 					member->name = child->val;
 					member->type = member_type;
@@ -916,7 +965,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 
 		tinfo->Func.return_types = member = pool_alloc(member_pool);
 		while(true) {
-			member->type = type_info_build(type_pool, member_pool, node);
+			member->type = type_info_build(type_pool, member_pool, node, NULL);
 			node = node->next;
 			if(!(node && node->kind != N_BLOCK && node->kind != N_STORAGEQUALIFIER))
 				break;
@@ -927,7 +976,14 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		break;
 	case N_STRUCTURE: case N_UNIONATION:
 		assert(node->down->kind==N_DEC||node->down->kind==N_CONSTDEC||node->down->kind==N_STRUCTURE||node->down->kind==N_UNIONATION);
-		tinfo = pool_alloc(type_pool);
+
+		if(dest)
+			tinfo = dest;
+		else
+			tinfo = pool_alloc(type_pool);
+
+		tinfo->bytes = 0;
+
 		if(node->kind == N_STRUCTURE)
 			tinfo->tag = TY_STRUCT;
 		else
@@ -944,7 +1000,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 							sibling->info.line, sibling->info.col);
 				if(child->kind == N_IDLIST)
 					child = child->down;
-				member->type = type_info_build(type_pool, member_pool, sibling);
+				member->type = type_info_build(type_pool, member_pool, sibling,NULL);
 				sibling = sibling->next;
 				member->initial_val_expr = NULL;
 				if(sibling && sibling->kind == N_INITIALIZER)
@@ -963,7 +1019,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 				}
 			} else if(node->kind == N_STRUCTURE || node->kind == N_UNIONATION) {
 				member->name = NULL;
-				member->type = type_info_build(type_pool, member_pool, node);
+				member->type = type_info_build(type_pool, member_pool, node,NULL);
 			} else if(node->kind == N_ENUMERATION) {
 				myerror("jcc: error: feature unimplemented\non compiler source line: %i\n in function %s\n",
 						__LINE__, __func__); // TODO what does this mean?
@@ -985,6 +1041,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 	case N_ID:
 		/* lookup identifier in symbol table, expect a Type if it isn't
 		 * in the table, create the symptr and append tinfo to the pending list */
+		is_pending = false;
 		for(int i = scope_depth; i >= 0; --i) {
 			symptr = sym_tab_look(blocktab+scope_depth, node->val);
 			if(symptr)
@@ -994,22 +1051,24 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node) {
 			symptr = sym_tab_look(&functab, node->val);
 		if(!symptr)
 			symptr = sym_tab_look(&globaltab, node->val);
-		if(!symptr)
+		if(!symptr) {
 			symptr = sym_tab_look(&pendingtab, node->val);
+			is_pending = true;
+		}
 
 		if(symptr) {
-			/* TODO you can declare a var with non constant type
-			 * symbol by declaring the type symbol after the var to
-			 * solve this make sure everything in the pending tab
-			 * is a constant */
-			if(!symptr->constant)
+			if(!symptr->constant && !is_pending)
 				myerror("jcc: error: use of non constant symbol '%s' as type\nline: %i, col: %i\n",
 						symptr->name, node->info.line, node->info.col);
 			tinfo = symptr->val.t;
+			break;
 		} else { /* define symbol in pendingtab */
 			symbol.name = node->val;
 			symbol.val.t = pool_alloc(type_pool);
+			symbol.val.t->bytes = 0;
+			symbol.info = node->info;
 			sym_tab_def(&pendingtab, &symbol);
+			tinfo = symbol.val.t;
 			/* NOTE when we find the definition of this symbol remember not to
 			 * allocate a new Type_info for val.t */
 		}
@@ -1038,6 +1097,10 @@ void resolve_compound_type(Type_info *tinfo) {
 		offset = 0;
 
 		while(member) {
+			if(member->type == tinfo)
+				myerror("jcc: error: struct '%s' was recursively defined on line: %i, col: %i\n",
+						tinfo->Struct.name, tinfo->Struct.debug_info.line, tinfo->Struct.debug_info.col);
+
 			if(member->type->bytes == 0)
 				resolve_compound_type(member->type);
 			assert(member->type->bytes != 0);
@@ -1052,6 +1115,10 @@ void resolve_compound_type(Type_info *tinfo) {
 		largest = 0;
 
 		while(member) {
+			if(member->type == tinfo)
+				myerror("jcc: error: union '%s' was recursively defined on line: %i, col: %i\n",
+						tinfo->Union.name, tinfo->Union.debug_info.line, tinfo->Union.debug_info.col);
+
 			if(member->type->bytes == 0)
 				resolve_compound_type(member->type);
 			assert(member->type->bytes != 0);
@@ -1070,12 +1137,14 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 	AST_node *node, *child, *sibling;
 	Type_info *tinfo;
 	Sym sym;
+	Sym *symptr;
 
 	/* declare types first */
 	for(node = root; node; node = node->next) {
 		if(node->kind != N_CONSTDEC && node->kind != N_DEC)
 			continue;
 
+		tinfo = NULL;
 		child = node->down;
 
 		sibling = child->next;
@@ -1104,22 +1173,49 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			// TODO set segment and location
 			sym.name = child->val;
 			sym.info = child->info;
-			tinfo = type_info_build(&type_pool, &member_pool, sibling);
-			if(tinfo->tag == TY_STRUCT) {
-				tinfo->Struct.name = sym.name;
-			} else if(tinfo->tag == TY_UNION) {
-				tinfo->Union.name = sym.name;
-			} else if(tinfo->tag == TY_ENUM) {
-				tinfo->Enum.name = sym.name;
-			} else
-				assert(0);
+
+			symptr = sym_tab_look(&pendingtab, sym.name);
+
+			if(!symptr)
+				tinfo = pool_alloc(&type_pool);
+			if(symptr) {
+				if(!sym.constant)
+					myerror("jcc: error: '%s' was not declared as constant, to use it in type declarations it must be constant\nline: %i, col: %i\n",
+							symptr->name, child->info.line, child->info.col);
+				tinfo = symptr->val.t;
+				*symptr = (Sym){0};
+			}
+
 			sym.val.t = tinfo;
+
 			if(!sym_tab_def(tab, &sym)) {
-				myerror("jcc: error: redefinition of '%s'\nline: %i, col: %i\n",
+				myerror("jcc: error: redefinition of '%s', line: %i, col: %i\n",
 						child->val, child->info.line, child->info.col);
 			}
+
+			type_info_build(&type_pool, &member_pool, sibling, tinfo);
+
+			if(tinfo->tag == TY_STRUCT) {
+				tinfo->Struct.name = sym.name;
+				tinfo->Struct.debug_info = sym.info;
+			} else if(tinfo->tag == TY_UNION) {
+				tinfo->Union.name = sym.name;
+				tinfo->Union.debug_info = sym.info;
+			} else if(tinfo->tag == TY_ENUM) {
+				tinfo->Enum.name = sym.name;
+				tinfo->Enum.debug_info = sym.info;
+			} else
+				assert(0);
+
 			child = child->next;
 		}
+	}
+
+	for(size_t i = 0; i < pendingtab.cap; ++i) {
+		symptr = pendingtab.data + i;
+		if(symptr->name != NULL)
+			myerror("jcc: error: '%s' was not defined, first referenced on line: %i, col: %i\n",
+						symptr->name, symptr->info.line, symptr->info.col);
 	}
 
 	/* set sizes of structs and unions */
@@ -1152,7 +1248,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		sibling = child->next;
 
 		if(sibling->kind == N_TYPE) {
-			tinfo = type_info_build(&type_pool, &member_pool, sibling);
+			tinfo = type_info_build(&type_pool, &member_pool, sibling, NULL);
 			sibling = sibling->next;
 		} else if(sibling->kind == N_INITIALIZER) {
 			assert(sibling->down->kind != N_EXPRESSION);
@@ -1160,7 +1256,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			//	myerror("jcc: error: can't infer type from expression\nline: %i, col: %i\n",
 			//			sibling->down->info.line, sibling->down->info.col);
 			//}
-			tinfo = type_info_build(&type_pool, &member_pool, sibling->down);
+			tinfo = type_info_build(&type_pool, &member_pool, sibling->down, NULL);
 		} else {
 			assert(0);
 		}
@@ -1176,14 +1272,12 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			sym.name = child->val;
 			sym.info = child->info;
 			if(!sym_tab_def(tab, &sym)) {
-				myerror("jcc: error: redefinition of '%s'\nline: %i, col: %i\n",
+				myerror("jcc: error: redefinition of '%s', line: %i, col: %i\n",
 						child->val, child->info.line, child->info.col);
 			}
 			child = child->next;
 		}
 	}
-
-	/* TODO check pending tab */
 }
 
 void sym_tab_grow(Sym_tab *tab) {
