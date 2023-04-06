@@ -7,8 +7,10 @@ Person :: struct {
 }
 
 vec3_add :: func(dest, a, b: *Vec3) {
+	tmp: *Vec3;
 	dest.x = a.x + b.x;
 	dest.y = a.y + b.y;
+	tmp = dest;
 }
 
 main :: func() {

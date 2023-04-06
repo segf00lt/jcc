@@ -1,5 +1,5 @@
-// anonymous struct
-struct {
+// we don't allow anonymous structs
+anon :: struct {
 	i: int = ---;
 	union {
 		c: char;
