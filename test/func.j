@@ -31,8 +31,11 @@ printer :: func(s: [SIZE << 3]char) inline {
 
 add_abc :: func(a, b, c: int) int {
 	result : int = 0;
+	v: Local_Vec;
 
 	defer print("hello world");
+
+	local_func();
 
 	if(a > 1) {
 		result += a + b + c;
@@ -52,6 +55,14 @@ add_abc :: func(a, b, c: int) int {
 	}
 
 	return result;
+
+	Local_Vec :: struct {
+		x,y,z: float;
+	}
+
+	local_func :: func() {
+		print("hello\n");
+	}
 }
 
 main :: func() {
