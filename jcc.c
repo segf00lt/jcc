@@ -164,6 +164,7 @@ enum NODES {
 	N_UNIONATION,
 	N_ENUMERATION,
 	N_BLOCK,
+	N_FUNCSIGNATURE,
 	N_STATEMENT,
 	N_IFSTATEMENT,
 	N_ELSESTATEMENT,
@@ -212,6 +213,7 @@ char *nodes_debug[] = {
 	"N_UNIONATION",
 	"N_ENUMERATION",
 	"N_BLOCK",
+	"N_FUNCSIGNATURE",
 	"N_STATEMENT",
 	"N_IFSTATEMENT",
 	"N_ELSESTATEMENT",
@@ -636,7 +638,6 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 void resolve_compound_type(Type_info *tinfo);
 
 /* symbol table functions */
-void add_func_args_to_sym_tab(Sym_tab *tab, AST_node *node);
 void sym_tab_build(Sym_tab *tab, AST_node *node);
 void sym_tab_grow(Sym_tab *tab);
 int sym_tab_def(Sym_tab *tab, Sym *symbol);
@@ -899,6 +900,47 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 		}
 		tinfo->Array.array_of = type_info_build(type_pool, member_pool, node,NULL); 
 		break;
+	case N_FUNCSIGNATURE:
+		node = node->down;
+
+		if(dest)
+			tinfo = dest;
+		else
+			tinfo = pool_alloc(type_pool);
+
+		tinfo->tag = TY_FUNC;
+		tinfo->bytes = 8u;
+
+		if(node->kind == N_ARGUMENTS) {
+			arguments = node->down;
+			child = arguments;
+			tinfo->Func.arg_types = member = pool_alloc(member_pool);
+			while(true) {
+				member->type = type_info_build(type_pool, member_pool, child,NULL);
+				child = child->next;
+				if(!child)
+					break;
+				member->next = pool_alloc(member_pool);
+				member = member->next;
+			}
+			node = node->next;
+		}
+
+		if(node->kind == N_BLOCK || node->kind == N_STORAGEQUALIFIER)
+			break;
+		else /* node is return type */
+			node = node->down;
+
+		tinfo->Func.return_types = member = pool_alloc(member_pool);
+		while(true) {
+			member->type = type_info_build(type_pool, member_pool, node, NULL);
+			node = node->next;
+			if(!(node && node->kind != N_BLOCK && node->kind != N_STORAGEQUALIFIER))
+				break;
+			member->next = pool_alloc(member_pool);
+			member = member->next;
+		}
+		break;
 	case N_FUNCTION:
 		node = node->down;
 
@@ -911,53 +953,40 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 		tinfo->bytes = 8u;
 		if(node->kind == N_ARGUMENTS) {
 			arguments = node->down;
-			if(arguments->kind == N_TYPE) { /* function type literal */
-				child = arguments;
-				tinfo->Func.arg_types = member = pool_alloc(member_pool);
-				while(true) {
-					member->type = type_info_build(type_pool, member_pool, child,NULL);
+			tinfo->Func.arg_types = member = pool_alloc(member_pool);
+			while(arguments && arguments->kind == N_DEC) {
+				child = arguments->down;
+				assert(child->kind == N_ID || child->kind == N_IDLIST);
+				sibling = child->next;
+
+				if(child->kind == N_IDLIST)
+					child = child->down;
+				assert(child->kind == N_ID);
+
+				member_type = NULL;
+				member_initial_val_expr = NULL;
+
+				if(sibling->kind == N_INITIALIZER) {
+					member_initial_val_expr = sibling;
+					sibling = sibling->down;
+				} else if(sibling->next && sibling->next->kind == N_INITIALIZER)
+					member_initial_val_expr = sibling->next;
+
+				member_type = type_info_build(type_pool, member_pool, sibling,NULL);
+				while(child->kind == N_ID) {
+					member->name = child->val;
+					member->type = member_type;
+					member->initial_val_expr = member_initial_val_expr;
 					child = child->next;
 					if(!child)
+						break;
+					if(child->kind != N_ID)
 						break;
 					member->next = pool_alloc(member_pool);
 					member = member->next;
 				}
-			} else if(arguments->kind == N_DEC) { /* function declaration */
-				tinfo->Func.arg_types = member = pool_alloc(member_pool);
-				while(arguments && arguments->kind == N_DEC) {
-					child = arguments->down;
-					assert(child->kind == N_ID || child->kind == N_IDLIST);
-					sibling = child->next;
-
-					if(child->kind == N_IDLIST)
-						child = child->down;
-					assert(child->kind == N_ID);
-
-					member_type = NULL;
-					member_initial_val_expr = NULL;
-
-					if(sibling->kind == N_INITIALIZER) {
-						member_initial_val_expr = sibling;
-						sibling = sibling->down;
-					} else if(sibling->next && sibling->next->kind == N_INITIALIZER)
-						member_initial_val_expr = sibling->next;
-
-					member_type = type_info_build(type_pool, member_pool, sibling,NULL);
-					while(child->kind == N_ID) {
-						member->name = child->val;
-						member->type = member_type;
-						member->initial_val_expr = member_initial_val_expr;
-						child = child->next;
-						if(!child)
-							break;
-						if(child->kind != N_ID)
-							break;
-						member->next = pool_alloc(member_pool);
-						member = member->next;
-					}
-					arguments = arguments->next;
-				}
-			} else assert(0);
+				arguments = arguments->next;
+			}
 
 			node = node->next;
 		}
@@ -976,7 +1005,6 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 			member->next = pool_alloc(member_pool);
 			member = member->next;
 		}
-
 		break;
 	case N_STRUCTURE: case N_UNIONATION:
 		assert(node->down->kind==N_DEC||node->down->kind==N_CONSTDEC||node->down->kind==N_STRUCTURE||node->down->kind==N_UNIONATION);
@@ -1350,11 +1378,11 @@ void sym_tab_clear(Sym_tab *tab) {
 }
 
 void sym_tab_print(Sym_tab *tab) {
-	fprintf(stderr, "SYMBOL TABLE: %s\n",tab->name);
+	fprintf(stderr, "SYMBOL TABLE: %s",tab->name);
 	for(size_t i = 0; i < tab->cap; ++i) {
 		if(tab->data[i].name == 0)
 			continue;
-		fprintf(stderr, "SYM\nname: %s\nconstant: %i\nseg: %u\npos: %zu\ntype:\n",
+		fprintf(stderr, "\nSYM\nname: %s\nconstant: %i\nseg: %u\npos: %zu\ntype:\n",
 				tab->data[i].name, tab->data[i].constant, tab->data[i].seg, tab->data[i].pos);
 		type_info_print(tab->data[i].type, 1);
 		fprintf(stderr, "val:\n");
@@ -1998,32 +2026,60 @@ AST_node* type(void) {
 		return NULL;
 	}
 
+	node = NULL;
+
+	switch(t) {
+	case T_STRUCT:
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		node = structure();
+		break;
+	case T_ENUM:
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		node = enumeration();
+		break;
+	case T_UNION:
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		node = unionation();
+		break;
+	}
+
+	if(!node)
+		node = ast_alloc_node(&ast, 0, NULL, &lexer.info);
 
 	if(!indirect) {
 		root = ast_alloc_node(&ast, N_TYPE, NULL, &lexer.info);
-		root->down = child = ast_alloc_node(&ast, N_BUILTINTYPE, NULL, &lexer.info);
+		root->down = child = node;
 	} else {
 		if(lastwasexpr) {
-			child->next = ast_alloc_node(&ast, N_BUILTINTYPE, NULL, &lexer.info);
+			child->next = node;
 			child = child->next;
 		} else {
-			child->down = ast_alloc_node(&ast, N_BUILTINTYPE, NULL, &lexer.info);
+			child->down = node;
 			child = child->down;
 		}
 	}
 
 	switch(t) {
+	case T_STRUCT: case T_UNION: case T_ENUM:
+		break;
 	case T_ID:
-		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		child->kind = N_ID;
+		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
 	case T_FUNC:
-		child->kind = N_FUNCTION;
+		child->kind = N_FUNCSIGNATURE;
 		t = lex();
 		if(t != '(')
 			parse_error("'('");
+		child->down = ast_alloc_node(&ast, N_ARGUMENTS, NULL, &lexer.info);
+		child = child->down;
 		child->down = node = type();
 		t = lex();
+		if(t != ',' && t != ')')
+			parse_error("',' or ')'");
 		while(t != ')') {
 			node->next = type();
 			node = node->next;
@@ -2036,12 +2092,13 @@ AST_node* type(void) {
 			lexer.info.col -= lexer.ptr - lexer.unget;
 			lexer.ptr = lexer.unget;
 		} else {
-			node->next = ast_alloc_node(&ast, N_RETURNTYPE, NULL, &lexer.info);
-			node = node->next;
-			node->next = type();
-			node = node->next;
+			child->next = ast_alloc_node(&ast, N_RETURNTYPE, NULL, &lexer.info);
+			child = child->next;
+			child->down = node = type();
 			t = lex();
-			while(t != ')') {
+			if(t != ',' && t != ')')
+				parse_error("',' or ')'");
+			while(node && t != ')') {
 				node->next = type();
 				node = node->next;
 				t = lex();
@@ -2050,23 +2107,9 @@ AST_node* type(void) {
 			}
 		}
 		break;
-	case T_STRUCT:
-		lexer.info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		root->down = structure();
-		break;
-	case T_ENUM:
-		lexer.info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		root->down = enumeration();
-		break;
-	case T_UNION:
-		lexer.info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		root->down = unionation();
-		break;
 	default: /* builtin type */
 		assert(t >= T_INT && t <= T_S64);
+		child->kind = N_BUILTINTYPE;
 		child->typesig = t - T_INT + TY_INT;
 		break;
 	}
