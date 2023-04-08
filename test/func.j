@@ -61,7 +61,7 @@ add_abc :: func(a, b, c: int) int {
 		x,y,z: float;
 	}
 
-	local_func :: func() {
+	local_func :: func {
 		print("hello\n");
 	}
 }

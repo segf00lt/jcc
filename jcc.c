@@ -1381,18 +1381,18 @@ void sym_tab_clear(Sym_tab *tab) {
 }
 
 void sym_tab_print(Sym_tab *tab) {
-	fprintf(stderr, "SYMBOL TABLE: %s",tab->name);
+	fprintf(stderr, "SYMBOL TABLE: %s\n",tab->name);
 	for(size_t i = 0; i < tab->cap; ++i) {
 		if(tab->data[i].name == 0)
 			continue;
-		fprintf(stderr, "\nSYM\nname: %s\nconstant: %i\nseg: %u\npos: %zu\ntype:\n",
+		fprintf(stderr, "SYM\n*   name: %s\n*   constant: %i\n*   seg: %u\n*   pos: %zu\n*   type:\n",
 				tab->data[i].name, tab->data[i].constant, tab->data[i].seg, tab->data[i].pos);
-		type_info_print(tab->data[i].type, 1);
-		fprintf(stderr, "val:\n");
+		type_info_print(tab->data[i].type, 2);
+		fprintf(stderr, "*   val:\n");
 		if(tab->data[i].type->tag == TY_TYPE)
-			type_info_print(tab->data[i].val.t, 1);
+			type_info_print(tab->data[i].val.t, 2);
 		else
-			ast_print(tab->data[i].val.a, 1);
+			ast_print(tab->data[i].val.a, 2);
 	}
 }
 
@@ -1671,7 +1671,13 @@ void parse(void) {
 
 /*
  * TODO
- * topdeclaration
+ * globalstatement
+AST_node* globalstatement(void) {
+	register size_t t;
+	AST_node *node;
+
+
+}
  */
 
 /*
@@ -1879,7 +1885,6 @@ AST_node* vardec(void) {
 AST_node* literal(void) {
 	register int t;
 	AST_node *root;
-	//char *s, *e;
 
 	root = NULL;
 	t = lex();
@@ -2662,11 +2667,11 @@ AST_node* returnstatement(void) {
 
 	root = ast_alloc_node(&ast, N_RETURNSTATEMENT, NULL, &lexer.info);
 
-	root->down = child = expression();
+	root->down = child = assignment();
 
 	t = lex();
 	while(t == ',') {
-		child->next = expression();
+		child->next = assignment();
 		child = child->next;
 		t = lex();
 	}
@@ -3222,7 +3227,6 @@ int main(int argc, char **argv) {
 
 	parse();
 	ast_print(ast.root, 0);
-	exit(1);
 
 	globaltab.name = argv[1];
 	sym_tab_build(&globaltab, ast.root);
