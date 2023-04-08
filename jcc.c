@@ -171,6 +171,7 @@ enum NODES {
 	N_WHILESTATEMENT,
 	N_RETURNSTATEMENT,
 	N_FORSTATEMENT,
+	N_ASSIGNMENT,
 	N_EXPRESSION,
 	N_LOGICAL,
 	N_COMPARE,
@@ -220,6 +221,7 @@ char *nodes_debug[] = {
 	"N_WHILESTATEMENT",
 	"N_RETURNSTATEMENT",
 	"N_FORSTATEMENT",
+	"N_ASSIGNMENT",
 	"N_EXPRESSION",
 	"N_LOGICAL",
 	"N_COMPARE",
@@ -620,6 +622,7 @@ AST_node* ifstatement(void);
 AST_node* whilestatement(void);
 AST_node* forstatement(void);
 AST_node* returnstatement(void);
+AST_node* assignment(void);
 AST_node* expression(void);
 AST_node* logical(void);
 AST_node* compare(void);
@@ -2137,25 +2140,27 @@ AST_node* function(void) {
 	root = ast_alloc_node(&ast, N_FUNCTION, NULL, &lexer.info);
 
 	t = lex();
-	if(t != '(')
-		parse_error("'('");
+	if(t == '(') {
+		node = vardec();
+		if(node) {
+			root->down = child = ast_alloc_node(&ast, N_ARGUMENTS, NULL, &lexer.info);
+			child->down = node;
+		}
 
-	node = vardec();
-	if(node) {
-		root->down = child = ast_alloc_node(&ast, N_ARGUMENTS, NULL, &lexer.info);
-		child->down = node;
-	}
-
-	t = lex();
-	while(t == ',') {
-		node->next = vardec();
-		if(node->next)
-			node = node->next;
 		t = lex();
-	}
+		while(t == ',') {
+			node->next = vardec();
+			if(node->next)
+				node = node->next;
+			t = lex();
+		}
 
-	if(t != ')')
-		parse_error("')'");
+		if(t != ')')
+			parse_error("')'");
+	} else {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+	}
 
 	/* return type */
 	node = type();
@@ -2539,7 +2544,7 @@ AST_node* enumeration(void) {
 }
 
 /*
- * statement: ('defer')? expression (',' expression)* ';'
+ * statement: ('defer')? expression (assign expression)? ';'
  */
 AST_node* statement(void) {
 	register int t;
@@ -2554,19 +2559,15 @@ AST_node* statement(void) {
 
 	if(t == T_DEFER) {
 		root = ast_alloc_node(&ast, N_DEFER, NULL, &lexer.info);
-		root->down = child = expression();
+		root->down = child = assignment();
 	} else {
 		lexer.info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
 		root = ast_alloc_node(&ast, N_STATEMENT, NULL, &lexer.info);
-		root->down = child = expression();
+		root->down = child = assignment();
 	}
 
-	while((t = lex()) == ',') {
-		child->next = expression();
-		child = child->next;
-	}
-
+	t = lex();
 	if(t != ';')
 		parse_error("';'");
 
@@ -2575,7 +2576,7 @@ AST_node* statement(void) {
 
 /*
  * ifstatement:
- * 	'if' '(' expression ')' '{' block '}' ('elif' '(' expression ')' '{' block '}')* ('else' '{' block '}')?
+ * 	'if' ' ' expression '{' block '}' ('elif' ' ' expression '{' block '}')* ('else' '{' block '}')?
  */
 AST_node* ifstatement(void) {
 	register int t;
@@ -2589,11 +2590,7 @@ AST_node* ifstatement(void) {
 
 	root = ast_alloc_node(&ast, N_IFSTATEMENT, NULL, &lexer.info);
 
-	if(lex() != '(')
-		parse_error("'('");
 	root->down = child = expression();
-	if(lex() != ')')
-		parse_error("')'");
 
 	if(lex() != '{')
 		parse_error("'{'");
@@ -2605,11 +2602,7 @@ AST_node* ifstatement(void) {
 	while(1) {
 		t = lex();
 		if(t == T_ELIF) {
-			if(lex() != '(')
-				parse_error("'('");
 			child->next = expression();
-			if(lex() != ')')
-				parse_error("')'");
 			child = child->next;
 		} else if(t != T_ELSE) {
 			lexer.info.col -= lexer.ptr - lexer.unget;
@@ -2630,7 +2623,7 @@ AST_node* ifstatement(void) {
 
 /*
  * whilestatement:
- * 	'while' '(' expression ')' '{' block '}'
+ * 	'while' ' ' expression '{' block '}'
  */
 AST_node* whilestatement(void) {
 	AST_node *root, *child;
@@ -2643,11 +2636,7 @@ AST_node* whilestatement(void) {
 
 	root = ast_alloc_node(&ast, N_WHILESTATEMENT, NULL, &lexer.info);
 
-	if(lex() != '(')
-		parse_error("'('");
 	root->down = child = expression();
-	if(lex() != ')')
-		parse_error("')'");
 
 	if(lex() != '{')
 		parse_error("'{'");
@@ -2689,7 +2678,7 @@ AST_node* returnstatement(void) {
 }
 
 /*
- * forstatement: 'for' '(' (vardec ','?)* ';' expression ';' expression ')' '{' block '}'
+ * forstatement: 'for' (vardec ','?)* ';' expression ';' expression '{' block '}'
  */
 AST_node* forstatement(void) {
 	register int t;
@@ -2701,10 +2690,6 @@ AST_node* forstatement(void) {
 		lexer.ptr = lexer.unget;
 		return NULL;
 	}
-
-	t = lex();
-	if(t != '(')
-		parse_error("'('");
 
 	root = ast_alloc_node(&ast, N_FORSTATEMENT, NULL, &lexer.info);
 	root->down = child = vardec();
@@ -2733,17 +2718,20 @@ AST_node* forstatement(void) {
 		parse_error("';'");
 
 	if(child)
-		child->next = expression();
+		child->next = assignment();
 	else
-		root->down = child = expression();
+		root->down = child = assignment();
 	if(child->next)
 		child = child->next;
-
 	t = lex();
-	if(t != ')')
-		parse_error("')'");
+	while(t == ',') {
+		child->next = assignment();
+		if(child->next)
+			child = child->next;
+		t = lex();
+	}
 
-	if(lex() != '{')
+	if(t != '{')
 		parse_error("'{'");
 
 	if(child)
@@ -2751,87 +2739,36 @@ AST_node* forstatement(void) {
 	else
 		root->down = child = block();
 
-	if(lex() != '}')
+	t = lex();
+	if(t != '}')
 		parse_error("'}'");
 
 	return root;
 }
 
-/*
- * expression:
- *	logical '=' expression
- *	logical T_ASSIGNPLUS expression
- *	logical T_ASSIGNSUB expression
- *	logical T_ASSIGNMUL expression
- *	logical T_ASSIGNDIV expression
- *	logical T_ASSIGNMOD expression
- *	logical T_ASSIGNNOT expression
- *	logical T_ASSIGNAND expression
- *	logical T_ASSIGNOR expression
- *	logical T_ASSIGNXOR expression
- *	logical T_ASSIGNLSHIFT expression
- *	logical T_ASSIGNRSHIFT expression
- * 	logical
- *
- * logical:
- * 	compare 'and' logical
- * 	compare 'or' logical
- *	compare
- * 
- * compare:
- * 	shift T_EQ compare
- * 	shift T_NEQ compare
- * 	shift T_LTEQ compare
- * 	shift T_GTEQ compare
- * 	shift '<' compare
- * 	shift '>' compare
- * 	shift
- *
- * shift:
- *	bitwise T_LSHIFT shift
- *	bitwise T_RSHIFT shift
- *	bitwise
- *
- * bitwise:
- * 	arith '&' bitwise
- * 	arith '|' bitwise
- * 	arith '^' bitwise
- * 	arith
- *
- * arith:
- * 	factor '+' arith
- * 	factor '-' arith
- * 	factor
- *
- * factor:
- * 	term '*' factor
- * 	term '/' factor
- * 	term '%' factor
- * 	term
- *
- * TODO improve expression parsing
- * unary:
- * 	'*' unary
- * 	'&' unary
- * 	T_NOT unary
- * 	'-' unary
- * 	'~' unar
- * 	T_INC unary
- * 	T_DEC unary
- * 	'cast' '(' type ')' unary
- * 	unary '[' expression ']'
- * 	unary '.' identifier
- * 	term
- *
- * term:
- *	literal
- * 	call
- * 	identifier
- * 	'(' expression ')'
- *
- */
-AST_node* expression(void) {
+AST_node* assignment(void) {
 	register int t;
+	AST_node *root, *child;
+
+	child = expression();
+
+	t = lex();
+	if(t != '=' && !(t >= T_ASSIGNPLUS && t <= T_ASSIGNRSHIFT)) {
+		lexer.info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		return child;
+	}
+
+	root = ast_alloc_node(&ast, N_ASSIGNMENT, NULL, &lexer.info);
+	root->down = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
+	root->down->op = (t == '=') ? OP_ASSIGN : (t - T_ASSIGNPLUS) + OP_ASSIGNPLUS;
+	root->down->down = child;
+	root->down->next = expression();
+
+	return root;
+}
+
+AST_node* expression(void) {
 	AST_node *root, *child;
 
 	child = logical();
@@ -2840,22 +2777,7 @@ AST_node* expression(void) {
 		return NULL;
 
 	root = ast_alloc_node(&ast, N_EXPRESSION, NULL, &lexer.info);
-
-	t = lex();
-	if(t != '=' && !(t >= T_ASSIGNPLUS && t <= T_ASSIGNRSHIFT)) {
-		root->down = child;
-		lexer.info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		return root;
-	}
-
-	root->down = ast_alloc_node(&ast, N_OP, NULL, &lexer.info);
-	root->down->op = (t == '=') ? OP_ASSIGN : (t - T_ASSIGNPLUS) + OP_ASSIGNPLUS;
-	root->down->down = child;
-	root->down->next = expression();
-
-	if(!root->down->next)
-		parse_error("rvalue");
+	root->down = child;
 
 	return root;
 }
@@ -3299,8 +3221,8 @@ int main(int argc, char **argv) {
 	pool_init(&member_pool, sizeof(Type_member), 128, 1);
 
 	parse();
-	//ast_print(ast.root, 0);
-	//exit(1);
+	ast_print(ast.root, 0);
+	exit(1);
 
 	globaltab.name = argv[1];
 	sym_tab_build(&globaltab, ast.root);

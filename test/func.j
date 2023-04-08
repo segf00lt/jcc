@@ -2,8 +2,9 @@ multiple_return_vals :: func(a, b, c: int) int, int, int {
 	return a + 1, b - a, c << 2;
 }
 
-test::func(){
-	a = b += 1;
+test::func int {
+	b += 1;
+	a = b;
 }
 
 two :: func() int {
@@ -15,7 +16,7 @@ exp :: func() int {
 }
 
 factorial :: func(x := 0) int {
-	if(x <= 0) {
+	if x <= 0 {
 		return 1;
 	}
 	return x * factorial(x - 1);
@@ -37,19 +38,19 @@ add_abc :: func(a, b, c: int) int {
 
 	local_func();
 
-	if(a > 1) {
+	if a > 1 {
 		result += a + b + c;
-	} elif(a == 5) {
+	} elif a == 5 {
 		result >>= 1;
 	} else {
 		return 0;
 	}
 
-	while(true) {
+	while true {
 		result += 1;
 	}
 
-	for(i, j : int, c : char = 'c'; i < 10; i += j - c) {
+	for i, j : int, c : char = 'c'; i < 10; i += j - c {
 		i = 2;
 		print("%i");
 	}
@@ -65,7 +66,7 @@ add_abc :: func(a, b, c: int) int {
 	}
 }
 
-main :: func() {
+main :: func {
 	a, b, c: u64 = ---;
 	a <<= 4;
 
