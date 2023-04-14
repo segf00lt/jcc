@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -409,23 +410,73 @@ char *type_tag_debug[] = {
 };
 
 enum OPCODE {
-	OC_ARITH,
-	OC_JUMP,
-	OC_MOV,
-	OC_STACK,
-	OC_CALL,
-	OC_RET,
-	OC_HALT,
+	BCOP_SET, // set register to immediate value
+	BCOP_ADD,
+	BCOP_SUB,
+	BCOP_MUL,
+	BCOP_DIV,
+	BCOP_MOD,
+	BCOP_AND,
+	BCOP_OR,
+	BCOP_XOR,
+	BCOP_NOT,
+	BCOP_LSHIFT,
+	BCOP_RSHIFT,
+	BCOP_JMP,
+	BCOP_JLT,
+	BCOP_JGE,
+	BCOP_JNE,
+	BCOP_JEQ,
+	BCOP_LB,
+	BCOP_LS,
+	BCOP_LH,
+	BCOP_LW,
+	BCOP_SB,
+	BCOP_SS,
+	BCOP_SH,
+	BCOP_SW,
+	BCOP_PUSH,
+	BCOP_POP,
+	BCOP_CALL,
+	BCOP_RET,
+
+	/* special opcodes */
+	BCOP_INT,
+	BCOP_HALT,
 };
 
 char *opcode_debug[] = {
-	"OC_ARITH",
-	"OC_JUMP",
-	"OC_MOV",
-	"OC_STACK",
-	"OC_CALL",
-	"OC_RET",
-	"OC_HALT",
+	"BCOP_SET",
+	"BCOP_ADD",
+	"BCOP_SUB",
+	"BCOP_MUL",
+	"BCOP_DIV",
+	"BCOP_MOD",
+	"BCOP_AND",
+	"BCOP_OR",
+	"BCOP_XOR",
+	"BCOP_NOT",
+	"BCOP_LSHIFT",
+	"BCOP_RSHIFT",
+	"BCOP_JMP",
+	"BCOP_JLT",
+	"BCOP_JGE",
+	"BCOP_JNE",
+	"BCOP_JEQ",
+	"BCOP_LB",
+	"BCOP_LS",
+	"BCOP_LH",
+	"BCOP_LW",
+	"BCOP_SB",
+	"BCOP_SS",
+	"BCOP_SH",
+	"BCOP_SW",
+	"BCOP_PUSH",
+	"BCOP_POP",
+	"BCOP_CALL",
+	"BCOP_RET",
+	"BCOP_INT",
+	"BCOP_HALT",
 };
 
 typedef struct Debug_info Debug_info;
@@ -445,6 +496,7 @@ typedef struct Type_member Type_member; /* function arguments and return values,
 typedef struct Type_info_pending Type_info_pending;
 typedef struct Sym Sym;
 typedef struct Sym_tab Sym_tab;
+typedef struct BCreg BCreg;
 typedef struct BCinst BCinst;
 typedef struct BCinst_Arith BCinst_Arith;
 typedef struct BCinst_Jump BCinst_Jump;
@@ -631,49 +683,29 @@ struct Sym_tab {
  * NOTE the call instruction assumes the address given is relative to the
  * interpreters text segment
  */
-struct BCinst_Arith {
-	unsigned int func : 4;
-	unsigned int jump_reg : 2;
-	unsigned int reg1 : 2;
-	unsigned int reg2 : 2;
-	unsigned int constant : 16;
+
+enum BC_REG_SIZES {
+	BC_BYTE = 1,
+	BC_SHORT = 2,
+	BC_HALF = 4,
+	BC_WORD = 8,
 };
 
-struct BCinst_Jump {
-	unsigned int func : 4;
-	unsigned int jump_reg : 2;
-	unsigned int reg1 : 2;
-	unsigned int reg2 : 2;
-	unsigned int jump_offset : 16;
-};
-
-struct BCinst_Mov {
-	unsigned int func : 4;
-	unsigned int dest_reg : 2;
-	unsigned int src_reg : 2;
-	unsigned int dest_offset : 16;
-	unsigned int src_offset : 16;
-};
-
-struct BCinst_Stack {
-	unsigned int func : 1;
-	unsigned int reg : 2;
-	unsigned int offset : 24;
-};
-
-struct BCinst_Call {
-	unsigned int reg : 2;
-	unsigned int offset : 24;
+struct BCreg {
+	uint64_t data;
+	size_t size;
 };
 
 struct BCinst {
-	unsigned long opcode : 3;
+	uint64_t opcode;
 	union {
-		BCinst_Arith Arith;
-		BCinst_Jump Jump;
-		BCinst_Mov Mov;
-		BCinst_Stack Stack;
-		BCinst_Call Call;
+		uint64_t dest_r;
+		uint64_t addr;
+	};
+	uint64_t r1;
+	union {
+		uint64_t r2;
+		uint64_t imm;
 	};
 };
 
@@ -689,6 +721,8 @@ Sym_tab globaltab;
 Sym_tab functab;
 Sym_tab blocktab[8]; /* hard limit on amount of nesting that can be done */
 int scope_depth = -1;
+BCreg *bc_registers;
+unsigned char *bc_memory;
 
 /* utility functions */
 void cleanup(void);
@@ -748,8 +782,8 @@ Sym* sym_tab_look(Sym_tab *tab, char *name);
 void sym_tab_clear(Sym_tab *tab);
 void sym_tab_print(Sym_tab *tab);
 
-/* TODO bytecode interpreter */
-int interpreter(BCinst *prog);
+/* bytecode interpreter */
+int bc_interpreter(BCinst *prog);
 
 void ast_print(AST_node *node, size_t depth) {
 	int i;
@@ -1494,26 +1528,123 @@ void sym_tab_print(Sym_tab *tab) {
 	}
 }
 
-int interpreter(BCinst *prog) {
-	BCinst *cur;
+int bc_interpreter(BCinst *prog) {
+	BCinst *pc;
+	BCreg *r1, *r2;
+	register uint64_t r1_data, r2_data, imm, addr;
 
-	for(cur = prog; cur->opcode != OC_HALT; ++cur) {
-		switch(cur->opcode) {
-		case OC_ARITH:
+	pc = prog;
+	while(true) {
+		r1 = bc_registers + pc->r1;
+		r2 = bc_registers + pc->r2;
+		r1_data = r1->data;
+		r2_data = r2->data;
+		imm = pc->imm;
+		addr = pc->addr;
+
+		switch(pc->opcode) {
+		case BCOP_SET:
+			bc_registers[pc->dest_r].data = imm;
 			break;
-		case OC_JUMP:
+		case BCOP_ADD:
+			bc_registers[pc->dest_r].data = r1_data + r2_data;
 			break;
-		case OC_MOV:
+		case BCOP_SUB:
+			bc_registers[pc->dest_r].data = r1_data - r2_data;
 			break;
-		case OC_STACK:
+		case BCOP_MUL:
+			bc_registers[pc->dest_r].data = r1_data * r2_data;
 			break;
-		case OC_CALL:
+		case BCOP_DIV:
+			bc_registers[pc->dest_r].data = r1_data / r2_data;
 			break;
-		case OC_RET:
+		case BCOP_MOD:
+			bc_registers[pc->dest_r].data = r1_data % r2_data;
 			break;
-		case OC_HALT:
+		case BCOP_AND:
+			bc_registers[pc->dest_r].data = r1_data & r2_data;
 			break;
+		case BCOP_OR:
+			bc_registers[pc->dest_r].data = r1_data | r2_data;
+			break;
+		case BCOP_XOR:
+			bc_registers[pc->dest_r].data = r1_data ^ r2_data;
+			break;
+		case BCOP_NOT:
+			bc_registers[pc->dest_r].data = ~r1_data;
+			break;
+		case BCOP_LSHIFT:
+			bc_registers[pc->dest_r].data = r1_data << r2_data;
+			break;
+		case BCOP_RSHIFT:
+			bc_registers[pc->dest_r].data = r1_data >> r2_data;
+			break;
+		case BCOP_JMP:
+			pc = prog + addr;
+			break;
+		case BCOP_JLT:
+			if(r1_data < r2_data)
+				pc = prog + addr;
+			break;
+		case BCOP_JGE:
+			if(r1_data >= r2_data)
+				pc = prog + addr;
+			break;
+		case BCOP_JNE:
+			if(r1_data != r2_data)
+				pc = prog + addr;
+			break;
+		case BCOP_JEQ:
+			if(r1_data == r2_data)
+				pc = prog + addr;
+			break;
+		case BCOP_LB:
+			assert(r1->size == BC_BYTE);
+			r1->data = *(uint8_t*)(bc_memory+addr) & 0xff;
+			break;
+		case BCOP_LS:
+			assert(r1->size == BC_SHORT);
+			r1->data = *(uint16_t*)(bc_memory+addr) & 0xffff;
+			break;
+		case BCOP_LH:
+			assert(r1->size == BC_HALF);
+			r1->data = *(uint32_t*)(bc_memory+addr) & 0xffffffff;
+			break;
+		case BCOP_LW:
+			assert(r1->size == BC_WORD);
+			r1->data = *(uint64_t*)(bc_memory+addr);
+			break;
+		case BCOP_SB:
+			assert(r1->size == BC_BYTE);
+			*(uint8_t*)(bc_memory+addr) = r1->data & 0xff;
+			break;
+		case BCOP_SS:
+			assert(r1->size == BC_SHORT);
+			*(uint16_t*)(bc_memory+addr) = r1->data & 0xffff;
+			break;
+		case BCOP_SH:
+			assert(r1->size == BC_HALF);
+			*(uint32_t*)(bc_memory+addr) = r1->data & 0xffffffff;
+			break;
+		case BCOP_SW:
+			assert(r1->size == BC_WORD);
+			*(uint64_t*)(bc_memory+addr) = r1->data;
+			break;
+		case BCOP_PUSH:
+			break;
+		case BCOP_POP:
+			break;
+		case BCOP_CALL:
+			break;
+		case BCOP_RET:
+			break;
+		case BCOP_INT:
+			break;
+		case BCOP_HALT:
+			return 0;
 		}
+
+		++pc;
 	}
 }
 
