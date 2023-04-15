@@ -14,6 +14,7 @@ vec3_add :: func(dest, a, b: *Vec3) {
 }
 
 main :: func() {
+	i:=0;
 	a, b, c: Vec3 = ---;
 	a.x = 2;
 	a.y = 3;

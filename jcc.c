@@ -1566,7 +1566,8 @@ void sym_tab_print(Sym_tab *tab) {
 int bc_interpreter(BCinst *prog, BCmem *mem) {
 	BCinst *curinst;
 	BCreg *r1, *r2;
-	register uint64_t r1_data, r2_data, imm, addr, seg, pc;
+	BCreg r1_data, r2_data;
+	register uint64_t imm, addr, seg, pc;
 
 	pc = 0;
 	curinst = prog;
@@ -3101,17 +3102,35 @@ AST_node* assignment(void) {
 	child = expression();
 
 	t = lex();
-	if(t != '=' && !(t >= T_ASSIGNPLUS && t <= T_ASSIGNRSHIFT)) {
+	if(t != '=' && !(t >= T_ASSIGNPLUS && t <= T_ASSIGNRSHIFT) && t != T_INC && t != T_DEC) {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
 		return child;
+	}
+
+	if(!child) {
+		lexer.debug_info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		parse_error("expression");
 	}
 
 	root = ast_alloc_node(&ast, N_ASSIGNMENT, &lexer.debug_info);
 	root->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
 	root->down->val.op = (t == '=') ? OP_ASSIGN : (t - T_ASSIGNPLUS) + OP_ASSIGNPLUS;
 	root->down->down = child;
-	root->down->next = expression();
+
+	if(t == T_INC) {
+		root->down->val.op = OP_INC;
+	} else if(t == T_DEC) {
+		root->down->val.op = OP_DEC;
+	} else {
+		root->down->next = expression();
+		if(!root->down->next) {
+			lexer.debug_info.col -= lexer.ptr - lexer.unget;
+			lexer.ptr = lexer.unget;
+			parse_error("expression");
+		}
+	}
 
 	return root;
 }
@@ -3368,20 +3387,6 @@ AST_node* unary(void) {
 		case '~':
 			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
 			child->val.op = OP_NOT;
-			child->next = unary();
-			if(!child)
-				parse_error("term");
-			break;
-		case T_INC:
-			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
-			child->val.op = OP_INC;
-			child->next = unary();
-			if(!child)
-				parse_error("term");
-			break;
-		case T_DEC:
-			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
-			child->val.op = OP_DEC;
 			child->next = unary();
 			if(!child)
 				parse_error("term");

@@ -1,4 +1,3 @@
-set memory segment and postition of symbols
 bytecode interpreter
 compile to bytecode
 add directives
