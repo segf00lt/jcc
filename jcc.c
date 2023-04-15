@@ -1317,7 +1317,7 @@ void resolve_compound_type(Type_info *tinfo) {
 }
 
 void sym_tab_build(Sym_tab *tab, AST_node *root) {
-	AST_node *node, *child, *sibling, *initializer_node, *prev;
+	AST_node *node, *child, *sibling, *initializer_node;
 	Type_info *tinfo;
 	Sym sym;
 	Sym *symptr;
@@ -1419,7 +1419,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		}
 	}
 
-	for(prev = NULL, node = root; node; prev = node, node = node->next) {
+	for(node = root; node; node = node->next) {
 		if(node->visited || (node->kind != N_CONSTDEC && node->kind != N_DEC && node->kind != N_ENUMERATION))
 			continue;
 
@@ -1496,12 +1496,6 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			initializer_node->val.str = child->val.str;
 			initializer_node->next = node->next;
 			*node = *initializer_node;
-		} else {
-			if(prev) {
-				prev->next = node->next;
-			} else {
-				*root = *node->next;
-			}
 		}
 
 		while(child && child->kind == N_ID) {
@@ -3659,55 +3653,6 @@ void cleanup(void) {
 	fmapclose(&fm);
 }
 
-void test_sym_tab() {
-	AST_node *node, *child, *tmp;
-	Sym_tab functab;
-	fprintf(stderr,"#### TESTING SYMBOL TABLE ####\n\n");
-
-	sym_tab_build(&globaltab, ast.root);
-	sym_tab_print(&globaltab);
-
-	SYM_TAB_INIT(functab,0);
-
-	for(node = ast.root; node; node = node->next) {
-		if(node->kind != N_DEC && node->kind != N_CONSTDEC)
-			continue;
-		child = node->down;
-		assert(child->kind == N_ID || child->kind == N_IDLIST);
-		if(child->kind == N_ID)
-			functab.name = child->val.str;
-		else
-			functab.name = NULL;
-		while(child && child->kind != N_INITIALIZER)
-			child = child->next;
-		if(!child)
-			continue;
-		child = child->down;
-		if(child->kind != N_FUNCTION)
-			continue;
-		child = child->down;
-		while(child->kind != N_ARGUMENTS && child->kind != N_BLOCK)
-			child = child->next;
-		if(child->kind == N_ARGUMENTS) {
-			fprintf(stderr,"#### ARGUMENT SCOPE ####\n");
-			tmp = child->down;
-			functab.scope = SCOPE_ARGUMENT;
-			sym_tab_build(&functab, tmp);
-			sym_tab_print(&functab);
-			sym_tab_clear(&functab);
-		}
-		fprintf(stderr,"#### LOCAL SCOPE ####\n");
-		functab.scope = SCOPE_LOCAL;
-		while(child->kind != N_BLOCK)
-			child = child->next;
-		child = child->down;
-		sym_tab_build(&functab, child);
-		sym_tab_print(&functab);
-		sym_tab_clear(&functab);
-	}
-	free(functab.data);
-}
-
 int main(int argc, char **argv) {
 	if(argc == 1) {
 		printf("sizeof BCinst = %zu\n",sizeof(BCinst));
@@ -3735,7 +3680,6 @@ int main(int argc, char **argv) {
 	ast_print(ast.root, 0, false);
 
 	globaltab.name = argv[1];
-	test_sym_tab();
 	fprintf(stderr,"################ TESTING COMPILE FUNCTIONS #####################\n");
 	compile(ast.root);
 	//ast_print(ast.root, 0, false);
