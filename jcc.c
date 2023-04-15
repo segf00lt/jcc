@@ -998,13 +998,11 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 
 	switch(node->kind) {
 	case N_STRUCTLIT:
-		myerror("jcc: error: feature unimplemented\non compiler source line: %i\n in function %s\n",
-				__LINE__, __func__);
+		myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
 		break;
 	case N_STRLIT:
 		//tinfo = builtin_types + TY_STRING; TODO create string type
-		myerror("jcc: error: feature unimplemented\non compiler source line: %i\n in function %s\n",
-				__LINE__, __func__);
+		myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
 		break;
 	case N_BOOLLIT:
 		tinfo = builtin_types + TY_BOOL;
@@ -1175,8 +1173,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 				child = node->down;
 				sibling = child->next;
 				if(sibling->kind != N_TYPE)
-					myerror("jcc: error: struct or union member missing explicit type%DBG",
-							&(sibling->debug_info));
+					myerror("struct or union member missing explicit type%DBG", &(sibling->debug_info));
 				if(child->kind == N_IDLIST)
 					child = child->down;
 				member->type = type_info_build(type_pool, member_pool, sibling,NULL);
@@ -1200,8 +1197,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 				member->name = NULL;
 				member->type = type_info_build(type_pool, member_pool, node,NULL);
 			} else if(node->kind == N_ENUMERATION) {
-				myerror("jcc: error: feature unimplemented\non compiler source line: %i\n in function %s\n",
-						__LINE__, __func__); // TODO what does this mean?
+				myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__); // TODO what does this mean?
 			} else {
 				assert(0);
 			}
@@ -1214,8 +1210,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 		}
 		break;
 	case N_ENUMERATION:
-		myerror("jcc: error: feature unimplemented\non compiler source line: %i\n in function %s\n",
-				__LINE__, __func__); // TODO
+		myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__); // TODO
 		break;
 	case N_ID:
 		/* lookup identifier in symbol table, expect a Type if it isn't
@@ -1237,8 +1232,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 
 		if(symptr) {
 			if(!symptr->constant && !is_pending)
-				myerror("jcc: error: use of non constant symbol '%s' as type%DBG",
-						symptr->name, &(node->debug_info));
+				myerror("use of non constant symbol '%s' as type%DBG", symptr->name, &(node->debug_info));
 			tinfo = symptr->val.t;
 			break;
 		} else { /* define symbol in pendingtab */
@@ -1277,8 +1271,7 @@ void resolve_compound_type(Type_info *tinfo) {
 
 		while(member) {
 			if(member->type == tinfo)
-				myerror("jcc: error: struct '%s' was recursively defined at%DBG",
-						tinfo->Struct.name, &(tinfo->Struct.debug_info));
+				myerror("struct '%s' was recursively defined at%DBG", tinfo->Struct.name, &(tinfo->Struct.debug_info));
 
 			if(member->type->bytes == 0)
 				resolve_compound_type(member->type);
@@ -1295,8 +1288,7 @@ void resolve_compound_type(Type_info *tinfo) {
 
 		while(member) {
 			if(member->type == tinfo)
-				myerror("jcc: error: union '%s' was recursively defined at%DBG",
-						tinfo->Union.name, &(tinfo->Union.debug_info));
+				myerror("union '%s' was recursively defined at%DBG", tinfo->Union.name, &(tinfo->Union.debug_info));
 
 			if(member->type->bytes == 0)
 				resolve_compound_type(member->type);
@@ -1359,8 +1351,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 				tinfo = pool_alloc(&type_pool);
 			if(symptr) {
 				if(!sym.constant)
-					myerror("jcc: error: '%s' was not declared as constant, to use it in type declarations it must be constant%DBG",
-							symptr->name, &(child->debug_info));
+					myerror("'%s' was not declared as constant, to use it in type declarations it must be constant%DBG", symptr->name, &(child->debug_info));
 				tinfo = symptr->val.t;
 				*symptr = (Sym){0};
 			}
@@ -1371,8 +1362,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			tab->seg_count.data += sym.type->bytes;
 
 			if(!sym_tab_def(tab, &sym)) {
-				myerror("jcc: error: redefinition of '%s'%DBG",
-						child->val.str, &(child->debug_info));
+				myerror("redefinition of '%s'%DBG", child->val.str, &(child->debug_info));
 			}
 
 			type_info_build(&type_pool, &member_pool, sibling, tinfo);
@@ -1396,8 +1386,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 	for(size_t i = 0; i < pendingtab.cap; ++i) {
 		symptr = pendingtab.data + i;
 		if(symptr->name != NULL)
-			myerror("jcc: error: '%s' was not defined, first referenced at%DBG",
-						symptr->name, &(symptr->debug_info.line));
+			myerror("'%s' was not defined, first referenced at%DBG", symptr->name, &(symptr->debug_info.line));
 	}
 
 	/* set sizes of structs and unions */
@@ -1419,8 +1408,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			continue;
 
 		if(node->kind == N_ENUMERATION) {
-			myerror("jcc: error: feature unimplemented\non compiler source line: %i\n in function %s\n",
-					__LINE__, __func__); // TODO implement anonymous enum
+			myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__); // TODO implement anonymous enum
 		}
 
 		sym = (Sym){0};
@@ -1443,7 +1431,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		if(sibling) {
 			if(tinfo->tag == TY_TYPE) {
 				if(sibling->down->down->kind != N_TYPE)
-					myerror("jcc: error: attempted to initialize var of type 'Type' with wrong initializer%DBG", &(sibling->debug_info));
+					myerror("attempted to initialize var of type 'Type' with wrong initializer%DBG", &(sibling->debug_info));
 				sym.val.t = type_info_build(&type_pool, &member_pool, sibling->down->down, NULL);
 			} else
 				sym.val.a = sibling;
@@ -1486,8 +1474,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			sym.addr = *seg_count;
 			*seg_count += sym.type->bytes;
 			if(!sym_tab_def(tab, &sym)) {
-				myerror("jcc: error: redefinition of '%s' at%DBG",
-						child->val.str, &(child->debug_info));
+				myerror("redefinition of '%s' at%DBG", child->val.str, &(child->debug_info));
 			}
 			child = child->next;
 		}
@@ -1577,75 +1564,81 @@ void sym_tab_print(Sym_tab *tab) {
 }
 
 int bc_interpreter(BCinst *prog, BCmem *mem) {
-	BCinst *pc;
+	BCinst *curinst;
 	BCreg *r1, *r2;
-	register uint64_t r1_data, r2_data, imm, addr, seg;
+	register uint64_t r1_data, r2_data, imm, addr, seg, pc;
 
-	pc = prog;
+	pc = 0;
+	curinst = prog;
 	while(true) {
-		r1 = mem->regs + pc->r1;
-		r2 = mem->regs + pc->r2;
+		r1 = mem->regs + curinst->r1;
+		r2 = mem->regs + curinst->r2;
 		r1_data = *r1;
 		r2_data = *r2;
-		imm = pc->imm;
-		addr = pc->addr;
-		seg = pc->seg;
+		imm = curinst->imm;
+		addr = curinst->addr;
+		seg = curinst->seg;
 
-		switch(pc->opcode) {
+		switch(curinst->opcode) {
 		case BCOP_SET:
-			mem->regs[pc->dest_r] = imm;
+			mem->regs[curinst->dest_r] = imm;
 			break;
 		case BCOP_ADD:
-			mem->regs[pc->dest_r] = r1_data + r2_data;
+			mem->regs[curinst->dest_r] = r1_data + r2_data;
 			break;
 		case BCOP_SUB:
-			mem->regs[pc->dest_r] = r1_data - r2_data;
+			mem->regs[curinst->dest_r] = r1_data - r2_data;
 			break;
 		case BCOP_MUL:
-			mem->regs[pc->dest_r] = r1_data * r2_data;
+			mem->regs[curinst->dest_r] = r1_data * r2_data;
 			break;
 		case BCOP_DIV:
-			mem->regs[pc->dest_r] = r1_data / r2_data;
+			mem->regs[curinst->dest_r] = r1_data / r2_data;
 			break;
 		case BCOP_MOD:
-			mem->regs[pc->dest_r] = r1_data % r2_data;
+			mem->regs[curinst->dest_r] = r1_data % r2_data;
 			break;
 		case BCOP_AND:
-			mem->regs[pc->dest_r] = r1_data & r2_data;
+			mem->regs[curinst->dest_r] = r1_data & r2_data;
 			break;
 		case BCOP_OR:
-			mem->regs[pc->dest_r] = r1_data | r2_data;
+			mem->regs[curinst->dest_r] = r1_data | r2_data;
 			break;
 		case BCOP_XOR:
-			mem->regs[pc->dest_r] = r1_data ^ r2_data;
+			mem->regs[curinst->dest_r] = r1_data ^ r2_data;
 			break;
 		case BCOP_NOT:
-			mem->regs[pc->dest_r] = ~r1_data;
+			mem->regs[curinst->dest_r] = ~r1_data;
 			break;
 		case BCOP_LSHIFT:
-			mem->regs[pc->dest_r] = r1_data << r2_data;
+			mem->regs[curinst->dest_r] = r1_data << r2_data;
 			break;
 		case BCOP_RSHIFT:
-			mem->regs[pc->dest_r] = r1_data >> r2_data;
+			mem->regs[curinst->dest_r] = r1_data >> r2_data;
 			break;
 		case BCOP_JMP:
-			pc = prog + addr;
+			assert(curinst->seg == SEG_TEXT);
+			curinst = prog + addr;
 			break;
 		case BCOP_JLT:
+			assert(curinst->seg == SEG_TEXT);
 			if(r1_data < r2_data)
-				pc = prog + addr;
+				curinst = prog + addr;
 			break;
 		case BCOP_JGE:
+			assert(curinst->seg == SEG_TEXT);
 			if(r1_data >= r2_data)
-				pc = prog + addr;
+				curinst = prog + addr;
 			break;
 		case BCOP_JNE:
+			assert(curinst->seg == SEG_TEXT);
 			if(r1_data != r2_data)
-				pc = prog + addr;
+				curinst = prog + addr;
 			break;
 		case BCOP_JEQ:
+			assert(curinst->seg == SEG_TEXT);
 			if(r1_data == r2_data)
-				pc = prog + addr;
+				curinst = prog + addr;
 			break;
 		case BCOP_LOADB:
 			*r1 = *(uint8_t*)(mem->seg[seg]+addr) & 0xff;
@@ -1676,44 +1669,52 @@ int bc_interpreter(BCinst *prog, BCmem *mem) {
 			mem->stack_ptr += sizeof(uint64_t);
 			break;
 		case BCOP_POPW:
-			*r1 = *(uint64_t*)(mem->stack_ptr);
 			mem->stack_ptr -= sizeof(uint64_t);
+			*r1 = *(uint64_t*)(mem->stack_ptr);
 			break;
 		case BCOP_PUSHH:
 			*(uint32_t*)(mem->stack_ptr) = *r1;
 			mem->stack_ptr += sizeof(uint32_t);
 			break;
 		case BCOP_POPH:
-			*r1 = *(uint32_t*)(mem->stack_ptr);
 			mem->stack_ptr -= sizeof(uint32_t);
+			*r1 = *(uint32_t*)(mem->stack_ptr);
 			break;
 		case BCOP_PUSHS:
 			*(uint16_t*)(mem->stack_ptr) = *r1;
 			mem->stack_ptr += sizeof(uint16_t);
 			break;
 		case BCOP_POPS:
-			*r1 = *(uint16_t*)(mem->stack_ptr);
 			mem->stack_ptr -= sizeof(uint16_t);
+			*r1 = *(uint16_t*)(mem->stack_ptr);
 			break;
 		case BCOP_PUSHB:
 			*(uint8_t*)(mem->stack_ptr) = *r1;
 			mem->stack_ptr += sizeof(uint8_t);
 			break;
 		case BCOP_POPB:
-			*r1 = *(uint8_t*)(mem->stack_ptr);
 			mem->stack_ptr -= sizeof(uint8_t);
+			*r1 = *(uint8_t*)(mem->stack_ptr);
 			break;
 		case BCOP_CALL:
+			assert(curinst->seg == SEG_TEXT);
+			pc = ((curinst - prog) << 3) | (SEG_TEXT & 0x7);
+			*(uint64_t*)(mem->stack_ptr) = pc;
+			mem->stack_ptr += sizeof(pc);
 			break;
 		case BCOP_RET:
+			mem->stack_ptr -= sizeof(pc);
+			pc = *(uint64_t*)(mem->stack_ptr) >> 3;
+			curinst = prog + pc;
 			break;
 		case BCOP_INT:
+			myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__,__func__);
 			break;
 		case BCOP_HALT:
 			return 0;
 		}
 
-		++pc;
+		++curinst;
 	}
 }
 
@@ -1732,12 +1733,14 @@ void myerror(char *fmt, ...) {
 	Debug_info *dbg;
 	va_start(args, fmt);
 	s = NULL;
+	fprintf(stderr, "jcc: error: ");
 	while(true) {
 		s = strstr(fmt,"%DBG");
 		if(s == NULL) {
 			vfprintf(stderr, fmt, args);
 			break;
 		}
+		assert(s-fmt < 256);
 		strncpy(buf, fmt, s - fmt);
 		buf[s-fmt] = 0;
 		vfprintf(stderr, buf, args);
@@ -1945,11 +1948,11 @@ int lex(void) {
 	s = tp;
 	if(s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { /* hex */
 		s += 2;
-		for(check = 0; *s && (isdigit(*s) || (*s >= 'a' && *s <= 'f') || (*s >= 'A' && *s <= 'F')); ++s)
+		for(check = 0; *s && (isdigit(*s) || (*s >= 'a' && *s <= 'f') || (*s >= 'A' && *s <= 'F') || *s == '_'); ++s)
 			++check;
 	} else if(s[0] == '0' && (s[1] == 'b' || s[1] == 'B')) { /* binary */
 		s += 2;
-		for(check = 0; *s && (*s == '0' || *s == '1'); ++s)
+		for(check = 0; *s && (*s == '0' || *s == '1' || *s == '_'); ++s)
 			++check;
 	} else if(s[0] == '0' && isdigit(s[1])) { /* octal */
 		++s;
@@ -3531,7 +3534,7 @@ void compile(void) {
 	/* build global tab */
 }
 
-void cleanup(void) {
+void cleanup() {
 	pool_free(&ast.pool);
 	pool_free(&string_pool);
 	pool_free(&type_pool);
@@ -3540,6 +3543,51 @@ void cleanup(void) {
 	free(globaltab.data);
 	free(functab.data);
 	fmapclose(&fm);
+}
+
+void test_sym_tab() {
+	AST_node *node, *child, *tmp;
+	sym_tab_build(&globaltab, ast.root);
+	sym_tab_print(&globaltab);
+
+	fprintf(stderr,"#### TESTING SYMBOL TABLE ####\n\n");
+
+	for(node = ast.root; node; node = node->next) {
+		if(node->kind != N_DEC && node->kind != N_CONSTDEC)
+			continue;
+		child = node->down;
+		assert(child->kind == N_ID || child->kind == N_IDLIST);
+		if(child->kind == N_ID)
+			functab.name = child->val.str;
+		else
+			functab.name = NULL;
+		while(child && child->kind != N_INITIALIZER)
+			child = child->next;
+		if(!child)
+			continue;
+		child = child->down;
+		if(child->kind != N_FUNCTION)
+			continue;
+		child = child->down;
+		while(child->kind != N_ARGUMENTS && child->kind != N_BLOCK)
+			child = child->next;
+		if(child->kind == N_ARGUMENTS) {
+			fprintf(stderr,"#### ARGUMENT SCOPE ####\n");
+			tmp = child->down;
+			functab.scope = SCOPE_ARGUMENT;
+			sym_tab_build(&functab, tmp);
+			sym_tab_print(&functab);
+			sym_tab_clear(&functab);
+		}
+		fprintf(stderr,"#### LOCAL SCOPE ####\n");
+		functab.scope = SCOPE_LOCAL;
+		while(child->kind != N_BLOCK)
+			child = child->next;
+		child = child->down;
+		sym_tab_build(&functab, child);
+		sym_tab_print(&functab);
+		sym_tab_clear(&functab);
+	}
 }
 
 int main(int argc, char **argv) {
@@ -3570,34 +3618,9 @@ int main(int argc, char **argv) {
 	ast_print(ast.root, 0);
 
 	globaltab.name = argv[1];
-	sym_tab_build(&globaltab, ast.root);
-	sym_tab_print(&globaltab);
-
-	for(AST_node *node = ast.root; node; node = node->next) {
-		AST_node *child;
-		if(node->kind != N_DEC && node->kind != N_CONSTDEC)
-			continue;
-		child = node->down;
-		assert(child->kind == N_ID || child->kind == N_IDLIST);
-		if(child->kind == N_ID)
-			functab.name = child->val.str;
-		else
-			functab.name = NULL;
-		while(child && child->kind != N_INITIALIZER)
-			child = child->next;
-		if(!child)
-			continue;
-		child = child->down;
-		if(child->kind != N_FUNCTION)
-			continue;
-		child = child->down;
-		while(child->kind != N_BLOCK)
-			child = child->next;
-		child = child->down;
-		sym_tab_build(&functab, child);
-		sym_tab_print(&functab);
-		sym_tab_clear(&functab);
-	}
-
+	test_sym_tab();
+	sym_tab_clear(&globaltab);
+	sym_tab_clear(&pendingtab);
+	sym_tab_clear(&functab);
 	return 0;
 }
