@@ -982,6 +982,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 
 	assert(node->kind != N_EXPRESSION);
 
+	tinfo = NULL;
 	symptr = NULL;
 
 	switch(node->kind) {
