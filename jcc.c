@@ -510,12 +510,6 @@ typedef struct Sym Sym;
 typedef struct Sym_tab Sym_tab;
 typedef uint64_t BCreg;
 typedef struct BCinst BCinst;
-typedef struct BCinst_Arith BCinst_Arith;
-typedef struct BCinst_Jump BCinst_Jump;
-typedef struct BCinst_Mov BCinst_Mov;
-typedef struct BCinst_Stack BCinst_Stack;
-typedef struct BCinst_Call BCinst_Call;
-typedef struct BCinst_Ret BCinst_Ret;
 
 struct Debug_info {
 	int line;
