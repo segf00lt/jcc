@@ -147,6 +147,7 @@ enum SEGMENTS {
 	SEG_HEAP,
 	SEG_ARG,
 	SEG_STACK,
+	SEG_COMPILER, // internal use only
 };
 
 char *segments_debug[] = {
@@ -156,6 +157,7 @@ char *segments_debug[] = {
 	"SEG_HEAP",
 	"SEG_ARG",
 	"SEG_STACK",
+	"SEG_COMPILER",
 };
 
 enum NODES {
@@ -173,6 +175,7 @@ enum NODES {
 	N_ENUMERATION,
 	N_BLOCK,
 	N_FUNCSIGNATURE,
+	N_LABEL,
 	N_STATEMENT,
 	N_IFSTATEMENT,
 	N_ELSESTATEMENT,
@@ -222,6 +225,7 @@ char *nodes_debug[] = {
 	"N_ENUMERATION",
 	"N_BLOCK",
 	"N_FUNCSIGNATURE",
+	"N_LABEL",
 	"N_STATEMENT",
 	"N_IFSTATEMENT",
 	"N_ELSESTATEMENT",
@@ -634,26 +638,6 @@ struct Type_info {
 	};
 };
 
-Type_info builtin_types[] = {
-	{ .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } },
-	{ .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 1 } },
-	{ .tag = TY_VOID },
-	{ .tag = TY_BOOL, .bytes = 1u },
-	{ .tag = TY_FLOAT, .bytes = 4u, .Float = { .bits = 32u } },
-	{ .tag = TY_FLOAT, .bytes = 4u, .Float = { .bits = 32u} },
-	{ .tag = TY_FLOAT, .bytes = 8u, .Float = { .bits = 64u} },
-	{ .tag = TY_TYPE, .bytes = sizeof(Type_info) },
-	{ .tag = TY_STRING },
-	{ .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 0 } },
-	{ .tag = TY_INT, .bytes = 2u, .Int = { .bits = 16u, .sign = 0 } },
-	{ .tag = TY_INT, .bytes = 4u, .Int = { .bits = 32u, .sign = 0 } },
-	{ .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 0 } },
-	{ .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 1 } },
-	{ .tag = TY_INT, .bytes = 2u, .Int = { .bits = 16u, .sign = 1 } },
-	{ .tag = TY_INT, .bytes = 4u, .Int = { .bits = 32u, .sign = 1 } },
-	{ .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } },
-};
-
 struct Sym {
 	char *name;
 	unsigned int constant : 1;
@@ -661,8 +645,9 @@ struct Sym {
 	uint64_t addr : 64 - 3; /* address in memory segment */
 	Type_info *type;
 	union {
-		Type_info *t;
-		AST_node *a;
+		Type_info *tinfo;
+		AST_node *ast;
+		uint64_t label : 64 - 3;
 	} val;
 	Debug_info debug_info;
 };
@@ -729,10 +714,28 @@ Lexer lexer;
 AST ast;
 Sym_tab pendingtab; /* unresolved symbols get defined here */
 Sym_tab globaltab;
-Sym_tab functab;
-Sym_tab blocktab[8]; /* hard limit on amount of nesting that can be done */
+Sym_tab tabstack[9]; /* hard limit on amount of nesting that can be done */
 int scope_depth = -1;
 BCmem bcmem;
+Type_info builtin_types[] = {
+	{ .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } },
+	{ .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 1 } },
+	{ .tag = TY_VOID },
+	{ .tag = TY_BOOL, .bytes = 1u },
+	{ .tag = TY_FLOAT, .bytes = 4u, .Float = { .bits = 32u } },
+	{ .tag = TY_FLOAT, .bytes = 4u, .Float = { .bits = 32u} },
+	{ .tag = TY_FLOAT, .bytes = 8u, .Float = { .bits = 64u} },
+	{ .tag = TY_TYPE, .bytes = sizeof(Type_info) },
+	{ .tag = TY_STRING },
+	{ .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 0 } },
+	{ .tag = TY_INT, .bytes = 2u, .Int = { .bits = 16u, .sign = 0 } },
+	{ .tag = TY_INT, .bytes = 4u, .Int = { .bits = 32u, .sign = 0 } },
+	{ .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 0 } },
+	{ .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 1 } },
+	{ .tag = TY_INT, .bytes = 2u, .Int = { .bits = 16u, .sign = 1 } },
+	{ .tag = TY_INT, .bytes = 4u, .Int = { .bits = 32u, .sign = 1 } },
+	{ .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } },
+};
 
 /* utility functions */
 void cleanup(void);
@@ -741,7 +744,7 @@ void parse_error(char *expect);
 
 /* AST functions */
 AST_node* ast_alloc_node(AST *ast, int kind, Debug_info *debug_info);
-void ast_print(AST_node *node, size_t depth);
+void ast_print(AST_node *node, size_t depth, bool skip_next);
 
 /* lexer functions */
 void lexer_init(Lexer *l, char *buf);
@@ -759,6 +762,7 @@ AST_node* unionation(void);
 AST_node* enumeration(void);
 AST_node* block(void);
 AST_node* statement(void);
+AST_node* label(void);
 AST_node* ifstatement(void);
 AST_node* whilestatement(void);
 AST_node* forstatement(void);
@@ -795,7 +799,15 @@ void sym_tab_print(Sym_tab *tab);
 /* bytecode interpreter */
 int bc_interpreter(BCinst *prog, BCmem *mem);
 
-void ast_print(AST_node *node, size_t depth) {
+/* compilation stage 1 functions */
+void compile(AST_node *root);
+void compile_function(AST_node *node);
+void compile_statements(AST_node *node);
+void compile_expression(AST_node *node);
+void compile_term(AST_node *node);
+void compile_call(AST_node *node);
+
+void ast_print(AST_node *node, size_t depth, bool skip_next) {
 	int i;
 	for(; node; node = node->next) {
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
@@ -818,7 +830,9 @@ void ast_print(AST_node *node, size_t depth) {
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		fprintf(stderr, "next: %u\n\n", node->next ? node->next->id : 0);
 		if(node->down)
-			ast_print(node->down, depth+1);
+			ast_print(node->down, depth+1, false);
+		if(skip_next)
+			break;
 	}
 }
 
@@ -870,7 +884,7 @@ void type_info_print(Type_info *tp, size_t depth) {
 		fprintf(stderr, "max_index: %zu\n", tp->Array.max_index);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		fprintf(stderr, "array_of: %s\n", type_tag_debug[tp->Array.array_of->tag]);
-		ast_print(tp->Array.max_index_expr, depth+1);
+		ast_print(tp->Array.max_index_expr, depth+1, true);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		type_info_print(tp->Array.array_of, depth+1);
 		break;
@@ -894,7 +908,7 @@ void type_info_print(Type_info *tp, size_t depth) {
 			fprintf(stderr, "byte_offset: %zu\n", member->byte_offset);
 			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 			fprintf(stderr, "initial_val_expr:\n");
-			ast_print(member->initial_val_expr, depth+1);
+			ast_print(member->initial_val_expr, depth+1, true);
 			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 			fprintf(stderr, "type:\n");
 			type_info_print(member->type, depth+1);
@@ -914,7 +928,7 @@ void type_info_print(Type_info *tp, size_t depth) {
 			fprintf(stderr, "byte_offset: %zu\n", member->byte_offset);
 			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 			fprintf(stderr, "initial_val_expr:\n");
-			ast_print(member->initial_val_expr, depth+1);
+			ast_print(member->initial_val_expr, depth+1, true);
 			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 			fprintf(stderr, "type:\n");
 			type_info_print(member->type, depth+1);
@@ -946,7 +960,7 @@ void type_info_print(Type_info *tp, size_t depth) {
 			fprintf(stderr, "byte_offset: %zu\n", member->byte_offset);
 			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 			fprintf(stderr, "initial_val_expr:\n");
-			ast_print(member->initial_val_expr, depth+1);
+			ast_print(member->initial_val_expr, depth+1, true);
 			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 			fprintf(stderr, "type:\n");
 			if(member->type->tag == TY_POINTER || member->type->tag == TY_ARRAY) {
@@ -1217,12 +1231,10 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 		 * in the table, create the symptr and append tinfo to the pending list */
 		is_pending = false;
 		for(int i = scope_depth; i >= 0; --i) {
-			symptr = sym_tab_look(blocktab+scope_depth, node->val.str);
+			symptr = sym_tab_look(tabstack+scope_depth, node->val.str);
 			if(symptr)
 				break;
 		}
-		if(!symptr)
-			symptr = sym_tab_look(&functab, node->val.str);
 		if(!symptr)
 			symptr = sym_tab_look(&globaltab, node->val.str);
 		if(!symptr) {
@@ -1233,23 +1245,23 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 		if(symptr) {
 			if(!symptr->constant && !is_pending)
 				myerror("use of non constant symbol '%s' as type%DBG", symptr->name, &(node->debug_info));
-			tinfo = symptr->val.t;
+			tinfo = symptr->val.tinfo;
 			break;
 		} else { /* define symbol in pendingtab */
 			symbol.name = node->val.str;
-			symbol.val.t = pool_alloc(type_pool);
-			symbol.val.t->bytes = 0;
+			symbol.val.tinfo = pool_alloc(type_pool);
+			symbol.val.tinfo->bytes = 0;
 			symbol.debug_info = node->debug_info;
 			sym_tab_def(&pendingtab, &symbol);
-			tinfo = symbol.val.t;
+			tinfo = symbol.val.tinfo;
 			/* NOTE when we find the definition of this symbol remember not to
-			 * allocate a new Type_info for val.t */
+			 * allocate a new Type_info for val.tinfo */
 		}
 		break;
 	default:
 		fprintf(stderr, "######### printing node\n");
 		fwrite(node->debug_info.line_s, 1, node->debug_info.line_e - node->debug_info.line_s, stderr);
-		ast_print(node,0);
+		ast_print(node,0,true);
 		assert(0);
 		break;
 	}
@@ -1305,7 +1317,7 @@ void resolve_compound_type(Type_info *tinfo) {
 }
 
 void sym_tab_build(Sym_tab *tab, AST_node *root) {
-	AST_node *node, *child, *sibling;
+	AST_node *node, *child, *sibling, *initializer_node, *prev;
 	Type_info *tinfo;
 	Sym sym;
 	Sym *symptr;
@@ -1318,6 +1330,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 
 		tinfo = NULL;
 		child = node->down;
+		initializer_node = NULL;
 
 		sibling = child->next;
 		if(sibling->kind != N_INITIALIZER)
@@ -1328,59 +1341,62 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		assert(sibling->kind == N_INITIALIZER);
 
 		sibling = sibling->down;
-		if(sibling->kind != N_STRUCTURE && sibling->kind != N_UNIONATION && sibling->kind != N_ENUMERATION)
+		if(sibling->kind < N_STRUCTURE || sibling->kind > N_ENUMERATION)
 			continue;
+		initializer_node = sibling;
 
-		node->visited = true;
 		sym = (Sym){0};
 
 		sym.constant = (node->kind == N_CONSTDEC);
 		sym.type = builtin_types + TY_TYPE;
 
-		assert(child->kind == N_ID || child->kind == N_IDLIST);
+		assert(child);
+		assert(child->kind == N_ID);
 
-		if(child->kind == N_IDLIST)
-			child = child->down;
-		while(child && child->kind == N_ID) {
-			sym.name = child->val.str;
-			sym.debug_info = child->debug_info;
+		sym.name = child->val.str;
+		sym.debug_info = child->debug_info;
 
-			symptr = sym_tab_look(&pendingtab, sym.name);
+		symptr = sym_tab_look(&pendingtab, sym.name);
 
-			if(!symptr)
-				tinfo = pool_alloc(&type_pool);
-			if(symptr) {
-				if(!sym.constant)
-					myerror("'%s' was not declared as constant, to use it in type declarations it must be constant%DBG", symptr->name, &(child->debug_info));
-				tinfo = symptr->val.t;
-				*symptr = (Sym){0};
-			}
-
-			sym.val.t = tinfo;
-			sym.seg = SEG_DATA;
-			sym.addr = tab->seg_count.data;
-			tab->seg_count.data += sym.type->bytes;
-
-			if(!sym_tab_def(tab, &sym)) {
-				myerror("redefinition of '%s'%DBG", child->val.str, &(child->debug_info));
-			}
-
-			type_info_build(&type_pool, &member_pool, sibling, tinfo);
-
-			if(tinfo->tag == TY_STRUCT) {
-				tinfo->Struct.name = sym.name;
-				tinfo->Struct.debug_info = sym.debug_info;
-			} else if(tinfo->tag == TY_UNION) {
-				tinfo->Union.name = sym.name;
-				tinfo->Union.debug_info = sym.debug_info;
-			} else if(tinfo->tag == TY_ENUM) {
-				tinfo->Enum.name = sym.name;
-				tinfo->Enum.debug_info = sym.debug_info;
-			} else
-				assert(0);
-
-			child = child->next;
+		if(!symptr)
+			tinfo = pool_alloc(&type_pool);
+		if(symptr) {
+			if(!sym.constant)
+				myerror("'%s' was not declared as constant, to use it in type declarations it must be constant%DBG", symptr->name, &(child->debug_info));
+			tinfo = symptr->val.tinfo;
+			*symptr = (Sym){0};
 		}
+
+		sym.val.tinfo = tinfo;
+		sym.seg = SEG_DATA;
+		sym.addr = tab->seg_count.data;
+		tab->seg_count.data += sym.type->bytes;
+
+		if(!sym_tab_def(tab, &sym)) {
+			myerror("redefinition of '%s'%DBG", child->val.str, &(child->debug_info));
+		}
+
+		type_info_build(&type_pool, &member_pool, initializer_node, tinfo);
+
+		if(tinfo->tag == TY_STRUCT) {
+			tinfo->Struct.name = sym.name;
+			tinfo->Struct.debug_info = sym.debug_info;
+		} else if(tinfo->tag == TY_UNION) {
+			tinfo->Union.name = sym.name;
+			tinfo->Union.debug_info = sym.debug_info;
+		} else if(tinfo->tag == TY_ENUM) {
+			tinfo->Enum.name = sym.name;
+			tinfo->Enum.debug_info = sym.debug_info;
+		} else
+			assert(0);
+
+		/* rewrite ast */
+		assert(child->kind == N_ID);
+		assert(initializer_node->kind >= N_STRUCTURE && initializer_node->kind <= N_ENUMERATION);
+		initializer_node->val.str = child->val.str;
+		initializer_node->next = node->next;
+		*node = *initializer_node;
+		node->visited = true;
 	}
 
 	for(size_t i = 0; i < pendingtab.cap; ++i) {
@@ -1403,9 +1419,11 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		}
 	}
 
-	for(node = root; node; node = node->next) {
+	for(prev = NULL, node = root; node; prev = node, node = node->next) {
 		if(node->visited || (node->kind != N_CONSTDEC && node->kind != N_DEC && node->kind != N_ENUMERATION))
 			continue;
+
+		initializer_node = NULL;
 
 		if(node->kind == N_ENUMERATION) {
 			myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__); // TODO implement anonymous enum
@@ -1421,6 +1439,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			tinfo = type_info_build(&type_pool, &member_pool, sibling, NULL);
 			sibling = sibling->next;
 		} else if(sibling->kind == N_INITIALIZER) {
+			initializer_node = sibling->down;
 			assert(sibling->down->kind != N_EXPRESSION);
 			tinfo = type_info_build(&type_pool, &member_pool, sibling->down, NULL);
 		} else {
@@ -1429,19 +1448,21 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 
 		sym.type = tinfo;
 		if(sibling) {
+			assert(sibling->kind == N_INITIALIZER);
+			initializer_node = sibling->down;
 			if(tinfo->tag == TY_TYPE) {
 				if(sibling->down->down->kind != N_TYPE)
 					myerror("attempted to initialize var of type 'Type' with wrong initializer%DBG", &(sibling->debug_info));
-				sym.val.t = type_info_build(&type_pool, &member_pool, sibling->down->down, NULL);
+				sym.val.tinfo = type_info_build(&type_pool, &member_pool, sibling->down->down, NULL);
 			} else
-				sym.val.a = sibling;
+				sym.val.ast = initializer_node;
 		}
 
 		sym.constant = (node->kind == N_CONSTDEC);
 
 		switch(tab->scope) {
 		case SCOPE_GLOBAL:
-			if(sym.val.a == NULL && sym.val.t == NULL) {
+			if(sym.val.ast == NULL && sym.val.tinfo == NULL) {
 				sym.seg = SEG_BSS;
 				seg_count = &(tab->seg_count.bss);
 			} else {
@@ -1468,6 +1489,21 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 
 		if(child->kind == N_IDLIST)
 			child = child->down;
+
+		/* rewrite ast */
+		if(initializer_node && initializer_node->kind >= N_FUNCTION && initializer_node->kind <= N_ENUMERATION) {
+			assert(child->kind == N_ID);
+			initializer_node->val.str = child->val.str;
+			initializer_node->next = node->next;
+			*node = *initializer_node;
+		} else {
+			if(prev) {
+				prev->next = node->next;
+			} else {
+				*root = *node->next;
+			}
+		}
+
 		while(child && child->kind == N_ID) {
 			sym.name = child->val.str;
 			sym.debug_info = child->debug_info;
@@ -1500,7 +1536,8 @@ size_t sym_tab_hash(Sym_tab *tab, char *name) {
 }
 
 int sym_tab_def(Sym_tab *tab, Sym *symbol) {
-	if(tab->count >= tab->cap) sym_tab_grow(tab);
+	if(tab->count >= tab->cap)
+		sym_tab_grow(tab);
 	size_t i = sym_tab_hash(tab, symbol->name);
 	while(tab->data[i].name) {
 		if(!strcmp(tab->data[i].name, symbol->name))
@@ -1557,9 +1594,9 @@ void sym_tab_print(Sym_tab *tab) {
 		type_info_print(tab->data[i].type, 2);
 		fprintf(stderr, "*   val:\n");
 		if(tab->data[i].type->tag == TY_TYPE)
-			type_info_print(tab->data[i].val.t, 2);
+			type_info_print(tab->data[i].val.tinfo, 2);
 		else
-			ast_print(tab->data[i].val.a, 2);
+			ast_print(tab->data[i].val.ast, 2, true);
 	}
 }
 
@@ -2011,16 +2048,16 @@ void parse(void) {
 }
 
 /*
- * declaration: identifier (',' identifier)* ':' type? ('='|':') (literal';'|function|structure|unionation|enumeration)
+ * declaration: identifier ':' type? ('='|':') (literal';'|function|structure|unionation|enumeration)
  */
 AST_node* declaration(void) {
 	register int t;
-	AST_node *root, *child, *tmp;
-	char *unget1, *unget2;
+	AST_node *root, *child;
+	char *unget;
 	bool explicit_type = false;
 
 	t = lex();
-	unget1 = lexer.unget;
+	unget = lexer.unget;
 
 	if(t == T_ENUM) {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
@@ -2034,21 +2071,13 @@ AST_node* declaration(void) {
 		return NULL;
 	}
 
-	unget2 = lexer.unget;
-	while((t = lex()) == ',') {
-		t = lex();
-		if(t != T_ID)
-			break;
-	}
-
+	t = lex();
+	lexer.debug_info.col -= lexer.ptr - unget;
+	lexer.ptr = unget;
 	if(t != ':') {
-		lexer.debug_info.col -= lexer.ptr - unget1;
-		lexer.ptr = unget1;
 		return NULL;
 	}
 
-	lexer.debug_info.col -= lexer.ptr - unget2;
-	lexer.ptr = unget2;
 	t = lex();
 
 	root = ast_alloc_node(&ast, N_DEC, &lexer.debug_info);
@@ -2056,23 +2085,6 @@ AST_node* declaration(void) {
 	child->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 
 	t = lex();
-
-	if(t == ',') {
-		tmp = child;
-		root->down = child = ast_alloc_node(&ast, N_IDLIST, &lexer.debug_info);
-		child->down = tmp;
-	}
-
-	while(t == ',') {
-		t = lex();
-		if(t != T_ID)
-			parse_error("identifier");
-		tmp->next = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
-		tmp = tmp->next;
-		tmp->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
-		t = lex();
-	}
-
 	if(t != ':')
 		parse_error("':'");
 
@@ -2182,13 +2194,16 @@ AST_node* vardec(void) {
 
 	t = lex();
 
-	if(child->next && (t == ',' || t == ')')) {
+	if(child->next && (t == ',' || t == ')' || t == '{')) {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
 		return root;
 	}
-	else if(!child->next && (t == ',' || t == ')'))
+	else if(!child->next && (t == ',' || t == ')' || t == '{'))
 		parse_error("type");
+
+	if(t == ';')
+		return root;
 
 	if(child->next)
 		child = child->next;
@@ -2204,10 +2219,17 @@ AST_node* vardec(void) {
 	else
 		child->down = literal();
 
-	if(child->down)
-		return root;
+	if(child->down) {
+		t = lex();
+		if(t == ',' || t == ')' || t == '{') {
+			lexer.debug_info.col -= lexer.ptr - lexer.unget;
+			lexer.ptr = lexer.unget;
+		} else if(t != ';')
+			parse_error("';'");
 
-	parse_error("initializer");
+		return root;
+	} else
+		parse_error("initializer");
 
 	return NULL;
 }
@@ -2569,6 +2591,7 @@ AST_node* block(void) {
 	else if((child = whilestatement())) root->down = child;
 	else if((child = forstatement())) root->down = child;
 	else if((child = declaration())) root->down = child;
+	else if((child = vardec())) root->down = child;
 	else if((child = statement())) root->down = child;
 
 	t = lex();
@@ -2591,6 +2614,7 @@ AST_node* block(void) {
 		if((child->next = whilestatement())) continue;
 		if((child->next = forstatement())) continue;
 		if((child->next = declaration())) continue;
+		if((child->next = vardec())) continue;
 		if((child->next = statement())) continue;
 
 		if((t = lex()) == '{') {
@@ -2634,7 +2658,7 @@ AST_node* structure(void) {
 	if(t == T_ID) {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
-		child = declaration();
+		child = vardec();
 	} else if(t == T_UNION) {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
@@ -2667,7 +2691,7 @@ AST_node* structure(void) {
 		if(t == T_ID) {
 			lexer.debug_info.col -= lexer.ptr - lexer.unget;
 			lexer.ptr = lexer.unget;
-			child->next = declaration();
+			child->next = vardec();
 		} else if(t == T_UNION) {
 			lexer.debug_info.col -= lexer.ptr - lexer.unget;
 			lexer.ptr = lexer.unget;
@@ -2725,7 +2749,7 @@ AST_node* unionation(void) {
 	if(t == T_ID) {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
-		child = declaration();
+		child = vardec();
 	} else if(t == T_UNION) {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
@@ -2758,7 +2782,7 @@ AST_node* unionation(void) {
 		if(t == T_ID) {
 			lexer.debug_info.col -= lexer.ptr - lexer.unget;
 			lexer.ptr = lexer.unget;
-			child->next = declaration();
+			child->next = vardec();
 		} else if(t == T_UNION) {
 			lexer.debug_info.col -= lexer.ptr - lexer.unget;
 			lexer.ptr = lexer.unget;
@@ -2912,15 +2936,48 @@ AST_node* statement(void) {
 	return root;
 }
 
+AST_node* label(void) {
+	register int t;
+	AST_node *root;
+	char *unget;
+	char *text_s, *text_e;
+
+	unget = lexer.ptr;
+
+	t = lex();
+	if(t != T_ID) {
+		lexer.debug_info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		return NULL;
+	}
+
+	text_s = lexer.text_s;
+	text_e = lexer.text_e;
+
+	t = lex();
+	if(t != ':') {
+		lexer.debug_info.col -= lexer.ptr - unget;
+		lexer.ptr = unget;
+		return NULL;
+	}
+
+	root = ast_alloc_node(&ast, N_LABEL, &lexer.debug_info);
+	root->val.str = pool_alloc_string(&string_pool, text_e - text_s, text_s);
+
+	return root;
+}
+
 /*
  * ifstatement:
- * 	'if' ' ' expression '{' block '}' ('elif' ' ' expression '{' block '}')* ('else' '{' block '}')?
+ * 	'if' ' ' (identifier ':')? expression '{' block '}' ('elif' ' ' expression '{' block '}')* ('else' '{' block '}')?
  */
 AST_node* ifstatement(void) {
 	register int t;
 	AST_node *root, *child;
 
-	if(lex() != T_IF) {
+	t = lex();
+
+	if(t != T_IF) {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
 		return NULL;
@@ -2928,7 +2985,16 @@ AST_node* ifstatement(void) {
 
 	root = ast_alloc_node(&ast, N_IFSTATEMENT, &lexer.debug_info);
 
-	root->down = child = expression();
+	child = label();
+
+	if(!child) {
+		child = expression();
+		root->down = child;
+	} else {
+		root->down = child;
+		child->next = expression();
+		child = child->next;
+	}
 
 	if(lex() != '{')
 		parse_error("'{'");
@@ -2961,9 +3027,10 @@ AST_node* ifstatement(void) {
 
 /*
  * whilestatement:
- * 	'while' ' ' expression '{' block '}'
+ * 	'while' ' ' (identifier ':')? expression '{' block '}'
  */
 AST_node* whilestatement(void) {
+	register int t;
 	AST_node *root, *child;
 
 	if(lex() != T_WHILE) {
@@ -2974,12 +3041,23 @@ AST_node* whilestatement(void) {
 
 	root = ast_alloc_node(&ast, N_WHILESTATEMENT, &lexer.debug_info);
 
-	root->down = child = expression();
+	child = label();
 
-	if(lex() != '{')
+	if(!child) {
+		child = expression();
+		root->down = child;
+	} else {
+		root->down = child;
+		child->next = expression();
+		child = child->next;
+	}
+
+	t = lex();
+	if(t != '{')
 		parse_error("'{'");
 	child->next = block();
-	if(lex() != '}')
+	t = lex();
+	if(t != '}')
 		parse_error("'}'");
 
 	return root;
@@ -3016,11 +3094,11 @@ AST_node* returnstatement(void) {
 }
 
 /*
- * forstatement: 'for' (vardec ','?)* ';' expression ';' expression '{' block '}'
+ * forstatement: 'for' ' ' (identifier ':')? (vardec ','?)* ';' expression ';' expression '{' block '}'
  */
 AST_node* forstatement(void) {
 	register int t;
-	AST_node *root, *child;
+	AST_node *root, *child, *node;
 
 	t = lex();
 	if(t != T_FOR) {
@@ -3030,15 +3108,32 @@ AST_node* forstatement(void) {
 	}
 
 	root = ast_alloc_node(&ast, N_FORSTATEMENT, &lexer.debug_info);
-	root->down = child = vardec();
+
+	child = label();
+
+	node = vardec();
+	if(!node)
+		node = assignment();
+
+	if(!child) {
+		child = node;
+		root->down = child;
+	} else {
+		root->down = child;
+		child->next = node;
+		child = child->next;
+	}
 
 	t = lex();
 	while(child && t == ',') {
 		child->next = vardec();
 		if(child->next)
 			child = child->next;
-		else
-			break;
+		else {
+			child->next = assignment();
+			if(!child->next)
+				break;
+		}
 		t = lex();
 	}
 
@@ -3522,29 +3617,57 @@ AST_node* call(void) {
 	return root;
 }
 
-void compile(void) {
-	//AST_node *root = ast.root;
+void compile(AST_node *root) {
+	AST_node *node;
+	//TODO process directives (import, load, etc)
 
-	/* build global tab */
+	sym_tab_build(&globaltab, root);
+
+	for(node = root; node; node = node->next) {
+		if(node->kind != N_FUNCTION)
+			continue;
+		compile_function(node);
+	}
 }
 
-void cleanup() {
+void compile_function(AST_node *node) {
+	ast_print(node,0,true);
+}
+
+void compile_statements(AST_node *node) {
+}
+
+void compile_expression(AST_node *node) {
+}
+
+void compile_term(AST_node *node) {
+}
+
+void compile_call(AST_node *node) {
+}
+
+void cleanup(void) {
 	pool_free(&ast.pool);
 	pool_free(&string_pool);
 	pool_free(&type_pool);
 	pool_free(&member_pool);
+	for(int i = 0; i < ARRLEN(tabstack); ++i)
+		if(tabstack[i].data)
+			free(tabstack[i].data);
 	free(pendingtab.data);
 	free(globaltab.data);
-	free(functab.data);
 	fmapclose(&fm);
 }
 
 void test_sym_tab() {
 	AST_node *node, *child, *tmp;
+	Sym_tab functab;
+	fprintf(stderr,"#### TESTING SYMBOL TABLE ####\n\n");
+
 	sym_tab_build(&globaltab, ast.root);
 	sym_tab_print(&globaltab);
 
-	fprintf(stderr,"#### TESTING SYMBOL TABLE ####\n\n");
+	SYM_TAB_INIT(functab,0);
 
 	for(node = ast.root; node; node = node->next) {
 		if(node->kind != N_DEC && node->kind != N_CONSTDEC)
@@ -3582,6 +3705,7 @@ void test_sym_tab() {
 		sym_tab_print(&functab);
 		sym_tab_clear(&functab);
 	}
+	free(functab.data);
 }
 
 int main(int argc, char **argv) {
@@ -3600,7 +3724,6 @@ int main(int argc, char **argv) {
 
 	SYM_TAB_INIT(pendingtab,SCOPE_GLOBAL);
 	SYM_TAB_INIT(globaltab,SCOPE_GLOBAL);
-	SYM_TAB_INIT(functab,SCOPE_LOCAL);
 	fmapread(&fm);
 	lexer_init(&lexer, fm.buf);
 	pool_init(&ast.pool, sizeof(AST_node), 256, 4);
@@ -3609,12 +3732,14 @@ int main(int argc, char **argv) {
 	pool_init(&member_pool, sizeof(Type_member), 128, 1);
 
 	parse();
-	ast_print(ast.root, 0);
+	ast_print(ast.root, 0, false);
 
 	globaltab.name = argv[1];
 	test_sym_tab();
+	fprintf(stderr,"################ TESTING COMPILE FUNCTIONS #####################\n");
+	compile(ast.root);
+	//ast_print(ast.root, 0, false);
 	sym_tab_clear(&globaltab);
 	sym_tab_clear(&pendingtab);
-	sym_tab_clear(&functab);
 	return 0;
 }

@@ -21,4 +21,14 @@ main :: func() {
 	b.x = 0;
 	b.y = 1;
 	vec3_add(&c, &a, &b);
+
+	while outer: i < 10 {
+		defer i++;
+		// do stuff
+	}
+
+	for l_i: i = 0; i < 10; i++ {
+	}
 }
+
+test_var := 1;
