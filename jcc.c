@@ -24,10 +24,15 @@
 #define ARRLEN(x) (sizeof(x) / sizeof(*x))
 #define STRLEN(x) (sizeof(x) / sizeof(*x)) - 1 /* compile-time strlen */
 
-#define SYM_TAB_INIT(tab) {\
+#define SYM_TAB_INIT(tab, s) {\
 	tab.cap = 128;\
 	tab.data = calloc(tab.cap, sizeof(Sym));\
-	tab.count = tab.global_count = tab.arg_count = tab.local_count = 0;\
+	tab.count = 0;\
+	tab.scope = s;\
+	tab.seg_count.data = 0;\
+	tab.seg_count.bss = 0;\
+	tab.seg_count.arg = 0;\
+	tab.seg_count.stack = 0;\
 }
 
 enum TOKENS {
@@ -136,23 +141,25 @@ char *tokens_debug[] = {
 };
 
 enum SEGMENTS {
-	S_ARGUMENT = 0,
-	S_LOCAL,
-	S_TEMP,
-	S_STATIC,
-	S_CONSTANT,
+	SEG_DATA,
+	SEG_BSS,
+	SEG_TEXT,
+	SEG_HEAP,
+	SEG_ARG,
+	SEG_STACK,
 };
 
-char *segments[] = {
-	"argument",
-	"local",
-	"temp",
-	"static",
-	"constant",
+char *segments_debug[] = {
+	"SEG_DATA",
+	"SEG_BSS",
+	"SEG_TEXT",
+	"SEG_HEAP",
+	"SEG_ARG",
+	"SEG_STACK",
 };
 
 enum NODES {
-	N_DEC = 1,
+	N_DEC,
 	N_CONSTDEC,
 	N_IDLIST,
 	N_TYPE,
@@ -201,7 +208,6 @@ enum NODES {
 };
 
 char *nodes_debug[] = {
-	0,
 	"N_DEC",
 	"N_CONSTDEC",
 	"N_IDLIST",
@@ -271,11 +277,6 @@ char *keyword[] = {
 	"for", "goto", "continue", "break",
 	"switch", "case", "default",
 	"and", "or", "not",
-};
-
-char *constant[] = {
-	"true",
-	"false",
 };
 
 size_t keyword_length[] = {
@@ -491,6 +492,19 @@ char *opcode_debug[] = {
 	"BCOP_HALT",
 };
 
+enum SCOPE {
+	SCOPE_GLOBAL,
+	SCOPE_ARGUMENT,
+	SCOPE_LOCAL,
+};
+
+char *scope_debug[] = {
+	"SCOPE_GLOBAL",
+	"SCOPE_ARGUMENT",
+	"SCOPE_LOCAL",
+};
+
+/* typedefs */
 typedef struct Debug_info Debug_info;
 typedef struct Lexer Lexer;
 typedef struct AST_node AST_node;
@@ -509,6 +523,8 @@ typedef struct Type_info_pending Type_info_pending;
 typedef struct Sym Sym;
 typedef struct Sym_tab Sym_tab;
 typedef uint64_t BCreg;
+typedef uint8_t BCbyte;
+typedef struct BCmem BCmem;
 typedef struct BCinst BCinst;
 
 struct Debug_info {
@@ -534,10 +550,11 @@ struct AST_node {
 	int kind;
 	bool visited;
 	union {
-		char *val;
+		char *str;
 		int op;
 		int typesig;
-	};
+		int boolean;
+	} val;
 	AST_node *down; /* down */
 	AST_node *next; /* across */
 	Debug_info debug_info;
@@ -640,10 +657,10 @@ Type_info builtin_types[] = {
 struct Sym {
 	char *name;
 	unsigned int constant : 1;
-	unsigned int seg : 3; /* memory segment */
-	size_t pos; /* position in memory segment */
+	uint64_t seg : 3; /* memory segment */
+	uint64_t addr : 64 - 3; /* address in memory segment */
 	Type_info *type;
-	union { /* initial value may be Type_info* or AST_node* */
+	union {
 		Type_info *t;
 		AST_node *a;
 	} val;
@@ -652,55 +669,55 @@ struct Sym {
 
 struct Sym_tab {
 	Sym *data;
+	int scope;
 	char *name;
 	size_t cap;
 	size_t count;
-	/* TODO segment count union */
+	size_t text_count;
 	union {
-		size_t global_count;
 		struct {
-			size_t arg_count;
-			size_t local_count;
+			size_t data;
+			size_t bss;
 		};
-	};
+		struct {
+			size_t arg;
+			size_t stack;
+		};
+	} seg_count;
 };
-
-/*
- * this machine has 4 registers
- * Z, A, B, M
- * Z is the zero register, A and B are data registers,
- * M is the pointer dereference register
- *
- * ARITH: (add, sub, and, or, xor, lshift, rshift, not, mul, div, mod)
- * 	func dest_reg, reg1, reg2, constant
- *
- * JUMP: (jmp, jgt, jlt, jeq, jne)
- * 	func jump_reg, reg1, reg2, constant
- *
- * MOV: (lw, lb, lh, sw, sb, sh)
- * 	func dest_reg, src_reg, dest_offset, src_offset
- *
- * STACK: (push, pop)
- * 	func reg constant
- *
- * CALL:
- * 	call reg offset
- *
- * NOTE the call instruction assumes the address given is relative to the
- * interpreters text segment
- */
 
 struct BCinst {
 	uint64_t opcode;
 	union {
 		uint64_t dest_r;
-		uint64_t addr;
+		struct {
+			uint64_t seg : 3;
+			uint64_t addr : 64 - 3;
+		};
 	};
 	uint64_t r1;
 	union {
 		uint64_t r2;
 		uint64_t imm;
 	};
+};
+
+struct BCmem {
+	BCreg *regs;
+	/* the memory 6 segments are:
+	 * data
+	 * bss
+	 * text
+	 * heap
+	 * arg
+	 * stack
+	 * 
+	 * we use the first 3 bits of an addr to
+	 * index the segment, the rest of the bits
+	 * are used for indexing within that segment
+	 */
+	BCbyte *seg[6];
+	BCbyte *stack_ptr;
 };
 
 /* globals */
@@ -715,8 +732,7 @@ Sym_tab globaltab;
 Sym_tab functab;
 Sym_tab blocktab[8]; /* hard limit on amount of nesting that can be done */
 int scope_depth = -1;
-BCreg *bc_registers;
-unsigned char *bc_memory;
+BCmem bcmem;
 
 /* utility functions */
 void cleanup(void);
@@ -724,7 +740,7 @@ void myerror(char *fmt, ...);
 void parse_error(char *expect);
 
 /* AST functions */
-AST_node* ast_alloc_node(AST *ast, int kind, char *val, Debug_info *debug_info);
+AST_node* ast_alloc_node(AST *ast, int kind, Debug_info *debug_info);
 void ast_print(AST_node *node, size_t depth);
 
 /* lexer functions */
@@ -777,7 +793,7 @@ void sym_tab_clear(Sym_tab *tab);
 void sym_tab_print(Sym_tab *tab);
 
 /* bytecode interpreter */
-int bc_interpreter(BCinst *prog);
+int bc_interpreter(BCinst *prog, BCmem *mem);
 
 void ast_print(AST_node *node, size_t depth) {
 	int i;
@@ -790,11 +806,13 @@ void ast_print(AST_node *node, size_t depth) {
 		fprintf(stderr, "kind: %s\n", nodes_debug[node->kind]);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		if(node->kind == N_BUILTINTYPE)
-			fprintf(stderr, "type: %s\n", type_tag_debug[node->typesig]);
+			fprintf(stderr, "type: %s\n", type_tag_debug[node->val.typesig]);
 		else if(node->kind != N_OP && node->kind != N_UNOP)
-			fprintf(stderr, "val: %s\n", node->val);
+			fprintf(stderr, "str: %s\n", node->val.str);
+		else if(node->kind == N_BOOLLIT)
+			fprintf(stderr, "boolean: %u\n", node->val.boolean);
 		else
-			fprintf(stderr, "op: %s\n", operators_debug[node->op-OP_ASSIGNPLUS]);
+			fprintf(stderr, "op: %s\n", operators_debug[node->val.op-OP_ASSIGNPLUS]);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		fprintf(stderr, "down: %u\n", node->down ? node->down->id : 0);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
@@ -804,13 +822,12 @@ void ast_print(AST_node *node, size_t depth) {
 	}
 }
 
-AST_node* ast_alloc_node(AST *ast, int kind, char *val, Debug_info *debug_info) {
+AST_node* ast_alloc_node(AST *ast, int kind, Debug_info *debug_info) {
 	register AST_node *node;
 	node = pool_alloc(&(ast->pool));
 	*node = (AST_node){
 			.id = ast->nodecount++,
 			.kind = kind,
-			.val = val,
 			.down = NULL,
 			.next = NULL,
 			.debug_info = *debug_info
@@ -1002,7 +1019,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 		tinfo = builtin_types + TY_CHAR;
 		break;
 	case N_BUILTINTYPE:
-		tinfo = builtin_types + node->typesig;
+		tinfo = builtin_types + node->val.typesig;
 		break;
 	case N_POINTER:
 		if(dest)
@@ -1104,7 +1121,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 
 				member_type = type_info_build(type_pool, member_pool, sibling,NULL);
 				while(child->kind == N_ID) {
-					member->name = child->val;
+					member->name = child->val.str;
 					member->type = member_type;
 					member->initial_val_expr = member_initial_val_expr;
 					child = child->next;
@@ -1169,7 +1186,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 					member->initial_val_expr = sibling;
 				member->constant = (node->kind == N_CONSTDEC);
 				while(true) {
-					member->name = child->val;
+					member->name = child->val.str;
 					child = child->next;
 					if(!(child && child->kind == N_ID))
 						break;
@@ -1205,16 +1222,16 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 		 * in the table, create the symptr and append tinfo to the pending list */
 		is_pending = false;
 		for(int i = scope_depth; i >= 0; --i) {
-			symptr = sym_tab_look(blocktab+scope_depth, node->val);
+			symptr = sym_tab_look(blocktab+scope_depth, node->val.str);
 			if(symptr)
 				break;
 		}
 		if(!symptr)
-			symptr = sym_tab_look(&functab, node->val);
+			symptr = sym_tab_look(&functab, node->val.str);
 		if(!symptr)
-			symptr = sym_tab_look(&globaltab, node->val);
+			symptr = sym_tab_look(&globaltab, node->val.str);
 		if(!symptr) {
-			symptr = sym_tab_look(&pendingtab, node->val);
+			symptr = sym_tab_look(&pendingtab, node->val.str);
 			is_pending = true;
 		}
 
@@ -1225,7 +1242,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 			tinfo = symptr->val.t;
 			break;
 		} else { /* define symbol in pendingtab */
-			symbol.name = node->val;
+			symbol.name = node->val.str;
 			symbol.val.t = pool_alloc(type_pool);
 			symbol.val.t->bytes = 0;
 			symbol.debug_info = node->debug_info;
@@ -1300,6 +1317,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 	Type_info *tinfo;
 	Sym sym;
 	Sym *symptr;
+	size_t *seg_count;
 
 	/* declare compound types first */
 	for(node = root; node; node = node->next) {
@@ -1332,8 +1350,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		if(child->kind == N_IDLIST)
 			child = child->down;
 		while(child && child->kind == N_ID) {
-			// TODO set segment and location
-			sym.name = child->val;
+			sym.name = child->val.str;
 			sym.debug_info = child->debug_info;
 
 			symptr = sym_tab_look(&pendingtab, sym.name);
@@ -1349,10 +1366,13 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			}
 
 			sym.val.t = tinfo;
+			sym.seg = SEG_DATA;
+			sym.addr = tab->seg_count.data;
+			tab->seg_count.data += sym.type->bytes;
 
 			if(!sym_tab_def(tab, &sym)) {
 				myerror("jcc: error: redefinition of '%s', line: %i, col: %i\n",
-						child->val, child->debug_info.line, child->debug_info.col);
+						child->val.str, child->debug_info.line, child->debug_info.col);
 			}
 
 			type_info_build(&type_pool, &member_pool, sibling, tinfo);
@@ -1428,17 +1448,46 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			} else
 				sym.val.a = sibling;
 		}
+
 		sym.constant = (node->kind == N_CONSTDEC);
+
+		switch(tab->scope) {
+		case SCOPE_GLOBAL:
+			if(sym.val.a == NULL && sym.val.t == NULL) {
+				sym.seg = SEG_BSS;
+				seg_count = &(tab->seg_count.bss);
+			} else {
+				sym.seg = SEG_DATA;
+				seg_count = &(tab->seg_count.data);
+			}
+			break;
+		case SCOPE_ARGUMENT:
+			sym.seg = SEG_ARG;
+			seg_count = &(tab->seg_count.arg);
+			break;
+		case SCOPE_LOCAL:
+			sym.seg = SEG_STACK;
+			seg_count = &(tab->seg_count.stack);
+			break;
+		default:
+			assert(0);
+		}
+
+		if(tinfo->tag == TY_FUNC) {
+			sym.seg = SEG_TEXT;
+			seg_count = &(tab->text_count);
+		}
 
 		if(child->kind == N_IDLIST)
 			child = child->down;
 		while(child && child->kind == N_ID) {
-			// TODO set segment and location
-			sym.name = child->val;
+			sym.name = child->val.str;
 			sym.debug_info = child->debug_info;
+			sym.addr = *seg_count;
+			*seg_count += sym.type->bytes;
 			if(!sym_tab_def(tab, &sym)) {
 				myerror("jcc: error: redefinition of '%s', line: %i, col: %i\n",
-						child->val, child->debug_info.line, child->debug_info.col);
+						child->val.str, child->debug_info.line, child->debug_info.col);
 			}
 			child = child->next;
 		}
@@ -1502,7 +1551,11 @@ Sym* sym_tab_look(Sym_tab *tab, char *name) {
 
 void sym_tab_clear(Sym_tab *tab) {
 	/* NOTE make sure you still have a pointer to the string pool when you call this */
-	tab->count = tab->global_count = tab->arg_count = tab->local_count = 0;
+	tab->count = 0;
+	tab->seg_count.data = 0;
+	tab->seg_count.bss = 0;
+	tab->seg_count.arg = 0;
+	tab->seg_count.stack = 0;
 	for(size_t i = 0; i < tab->cap; ++i)
 		tab->data[i].name = NULL;
 }
@@ -1512,8 +1565,8 @@ void sym_tab_print(Sym_tab *tab) {
 	for(size_t i = 0; i < tab->cap; ++i) {
 		if(tab->data[i].name == 0)
 			continue;
-		fprintf(stderr, "SYM\n*   name: %s\n*   constant: %i\n*   seg: %u\n*   pos: %zu\n*   type:\n",
-				tab->data[i].name, tab->data[i].constant, tab->data[i].seg, tab->data[i].pos);
+		fprintf(stderr, "SYM\n*   name: %s\n*   constant: %i\n*   seg: %s\n*   addr: %lu\n*   type:\n",
+				tab->data[i].name, tab->data[i].constant, segments_debug[tab->data[i].seg], (uint64_t)(tab->data[i].addr));
 		type_info_print(tab->data[i].type, 2);
 		fprintf(stderr, "*   val:\n");
 		if(tab->data[i].type->tag == TY_TYPE)
@@ -1523,56 +1576,57 @@ void sym_tab_print(Sym_tab *tab) {
 	}
 }
 
-int bc_interpreter(BCinst *prog) {
+int bc_interpreter(BCinst *prog, BCmem *mem) {
 	BCinst *pc;
 	BCreg *r1, *r2;
-	register uint64_t r1_data, r2_data, imm, addr;
+	register uint64_t r1_data, r2_data, imm, addr, seg;
 
 	pc = prog;
 	while(true) {
-		r1 = bc_registers + pc->r1;
-		r2 = bc_registers + pc->r2;
+		r1 = mem->regs + pc->r1;
+		r2 = mem->regs + pc->r2;
 		r1_data = *r1;
 		r2_data = *r2;
 		imm = pc->imm;
 		addr = pc->addr;
+		seg = pc->seg;
 
 		switch(pc->opcode) {
 		case BCOP_SET:
-			bc_registers[pc->dest_r] = imm;
+			mem->regs[pc->dest_r] = imm;
 			break;
 		case BCOP_ADD:
-			bc_registers[pc->dest_r] = r1_data + r2_data;
+			mem->regs[pc->dest_r] = r1_data + r2_data;
 			break;
 		case BCOP_SUB:
-			bc_registers[pc->dest_r] = r1_data - r2_data;
+			mem->regs[pc->dest_r] = r1_data - r2_data;
 			break;
 		case BCOP_MUL:
-			bc_registers[pc->dest_r] = r1_data * r2_data;
+			mem->regs[pc->dest_r] = r1_data * r2_data;
 			break;
 		case BCOP_DIV:
-			bc_registers[pc->dest_r] = r1_data / r2_data;
+			mem->regs[pc->dest_r] = r1_data / r2_data;
 			break;
 		case BCOP_MOD:
-			bc_registers[pc->dest_r] = r1_data % r2_data;
+			mem->regs[pc->dest_r] = r1_data % r2_data;
 			break;
 		case BCOP_AND:
-			bc_registers[pc->dest_r] = r1_data & r2_data;
+			mem->regs[pc->dest_r] = r1_data & r2_data;
 			break;
 		case BCOP_OR:
-			bc_registers[pc->dest_r] = r1_data | r2_data;
+			mem->regs[pc->dest_r] = r1_data | r2_data;
 			break;
 		case BCOP_XOR:
-			bc_registers[pc->dest_r] = r1_data ^ r2_data;
+			mem->regs[pc->dest_r] = r1_data ^ r2_data;
 			break;
 		case BCOP_NOT:
-			bc_registers[pc->dest_r] = ~r1_data;
+			mem->regs[pc->dest_r] = ~r1_data;
 			break;
 		case BCOP_LSHIFT:
-			bc_registers[pc->dest_r] = r1_data << r2_data;
+			mem->regs[pc->dest_r] = r1_data << r2_data;
 			break;
 		case BCOP_RSHIFT:
-			bc_registers[pc->dest_r] = r1_data >> r2_data;
+			mem->regs[pc->dest_r] = r1_data >> r2_data;
 			break;
 		case BCOP_JMP:
 			pc = prog + addr;
@@ -1594,44 +1648,60 @@ int bc_interpreter(BCinst *prog) {
 				pc = prog + addr;
 			break;
 		case BCOP_LOADB:
-			*r1 = *(uint8_t*)(bc_memory+addr) & 0xff;
+			*r1 = *(uint8_t*)(mem->seg[seg]+addr) & 0xff;
 			break;
 		case BCOP_LOADS:
-			*r1 = *(uint16_t*)(bc_memory+addr) & 0xffff;
+			*r1 = *(uint16_t*)(mem->seg[seg]+addr) & 0xffff;
 			break;
 		case BCOP_LOADH:
-			*r1 = *(uint32_t*)(bc_memory+addr) & 0xffffffff;
+			*r1 = *(uint32_t*)(mem->seg[seg]+addr) & 0xffffffff;
 			break;
 		case BCOP_LOADW:
-			*r1 = *(uint64_t*)(bc_memory+addr);
+			*r1 = *(uint64_t*)(mem->seg[seg]+addr);
 			break;
 		case BCOP_STOREB:
-			*(uint8_t*)(bc_memory+addr) = (uint8_t)(*r1 & 0xff);
+			*(uint8_t*)(mem->seg[seg]+addr) = (uint8_t)(*r1 & 0xff);
 			break;
 		case BCOP_STORES:
-			*(uint16_t*)(bc_memory+addr) = (uint16_t)(*r1 & 0xffff);
+			*(uint16_t*)(mem->seg[seg]+addr) = (uint16_t)(*r1 & 0xffff);
 			break;
 		case BCOP_STOREH:
-			*(uint32_t*)(bc_memory+addr) = (uint32_t)(*r1 & 0xffffffff);
+			*(uint32_t*)(mem->seg[seg]+addr) = (uint32_t)(*r1 & 0xffffffff);
 			break;
 		case BCOP_STOREW:
-			*(uint64_t*)(bc_memory+addr) = *r1;
+			*(uint64_t*)(mem->seg[seg]+addr) = *r1;
 			break;
 		case BCOP_PUSHW:
+			*(uint64_t*)(mem->stack_ptr) = *r1;
+			mem->stack_ptr += sizeof(uint64_t);
 			break;
 		case BCOP_POPW:
+			*r1 = *(uint64_t*)(mem->stack_ptr);
+			mem->stack_ptr -= sizeof(uint64_t);
 			break;
 		case BCOP_PUSHH:
+			*(uint32_t*)(mem->stack_ptr) = *r1;
+			mem->stack_ptr += sizeof(uint32_t);
 			break;
 		case BCOP_POPH:
-			break;
-		case BCOP_PUSHB:
-			break;
-		case BCOP_POPB:
+			*r1 = *(uint32_t*)(mem->stack_ptr);
+			mem->stack_ptr -= sizeof(uint32_t);
 			break;
 		case BCOP_PUSHS:
+			*(uint16_t*)(mem->stack_ptr) = *r1;
+			mem->stack_ptr += sizeof(uint16_t);
 			break;
 		case BCOP_POPS:
+			*r1 = *(uint16_t*)(mem->stack_ptr);
+			mem->stack_ptr -= sizeof(uint16_t);
+			break;
+		case BCOP_PUSHB:
+			*(uint8_t*)(mem->stack_ptr) = *r1;
+			mem->stack_ptr += sizeof(uint8_t);
+			break;
+		case BCOP_POPB:
+			*r1 = *(uint8_t*)(mem->stack_ptr);
+			mem->stack_ptr -= sizeof(uint8_t);
 			break;
 		case BCOP_CALL:
 			break;
@@ -1972,15 +2042,15 @@ AST_node* declaration(void) {
 	lexer.ptr = unget2;
 	t = lex();
 
-	root = ast_alloc_node(&ast, N_DEC, NULL, &lexer.debug_info);
-	root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.debug_info);
-	child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+	root = ast_alloc_node(&ast, N_DEC, &lexer.debug_info);
+	root->down = child = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+	child->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 
 	t = lex();
 
 	if(t == ',') {
 		tmp = child;
-		root->down = child = ast_alloc_node(&ast, N_IDLIST, NULL, &lexer.debug_info);
+		root->down = child = ast_alloc_node(&ast, N_IDLIST, &lexer.debug_info);
 		child->down = tmp;
 	}
 
@@ -1988,9 +2058,9 @@ AST_node* declaration(void) {
 		t = lex();
 		if(t != T_ID)
 			parse_error("identifier");
-		tmp->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.debug_info);
+		tmp->next = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
 		tmp = tmp->next;
-		tmp->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		tmp->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
 	}
 
@@ -2010,7 +2080,7 @@ AST_node* declaration(void) {
 	if(child->next)
 		child = child->next;
 
-	child->next = ast_alloc_node(&ast, N_INITIALIZER, NULL, &lexer.debug_info);
+	child->next = ast_alloc_node(&ast, N_INITIALIZER, &lexer.debug_info);
 	child = child->next;
 
 	if(t == ':')
@@ -2073,15 +2143,15 @@ AST_node* vardec(void) {
 	lexer.ptr = unget2;
 	t = lex();
 
-	root = ast_alloc_node(&ast, N_DEC, NULL, &lexer.debug_info);
-	root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.debug_info);
-	child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+	root = ast_alloc_node(&ast, N_DEC, &lexer.debug_info);
+	root->down = child = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+	child->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 
 	t = lex();
 
 	if(t == ',') {
 		tmp = child;
-		root->down = child = ast_alloc_node(&ast, N_IDLIST, NULL, &lexer.debug_info);
+		root->down = child = ast_alloc_node(&ast, N_IDLIST, &lexer.debug_info);
 		child->down = tmp;
 	}
 
@@ -2089,9 +2159,9 @@ AST_node* vardec(void) {
 		t = lex();
 		if(t != T_ID)
 			parse_error("identifier");
-		tmp->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.debug_info);
+		tmp->next = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
 		tmp = tmp->next;
-		tmp->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		tmp->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
 	}
 
@@ -2114,7 +2184,7 @@ AST_node* vardec(void) {
 	if(child->next)
 		child = child->next;
 
-	child->next = ast_alloc_node(&ast, N_INITIALIZER, NULL, &lexer.debug_info);
+	child->next = ast_alloc_node(&ast, N_INITIALIZER, &lexer.debug_info);
 	child = child->next;
 
 	if(t != '=')
@@ -2141,7 +2211,7 @@ AST_node* literal(void) {
 	t = lex();
 
 	if((t >= T_INTEGER  && t <= T_FALSE) || t == T_BAR || t == '{')
-		root = ast_alloc_node(&ast, 0, NULL, &lexer.debug_info);
+		root = ast_alloc_node(&ast, 0, &lexer.debug_info);
 	else if(t != T_ID) {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
@@ -2154,19 +2224,19 @@ AST_node* literal(void) {
 	switch(t) {
 	case T_INTEGER:
 		root->kind = N_INTLIT;
-		root->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		root->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
 	case T_STR:
 		root->kind = N_STRLIT;
-		root->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		root->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
 	case T_CHARACTER:
 		root->kind = N_CHARLIT;
-		root->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		root->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
 	case T_TRUE: case T_FALSE:
 		root->kind = N_BOOLLIT;
-		root->val = constant[t - T_TRUE];
+		root->val.boolean = (t == T_TRUE);
 		break;
 	case T_BAR:
 		root->kind = N_UNINIT;
@@ -2202,13 +2272,13 @@ AST_node* type(void) {
 		/* TODO this is HORRIBLE */
 		indirect = 1;
 
-		root = ast_alloc_node(&ast, N_TYPE, NULL, &lexer.debug_info);
+		root = ast_alloc_node(&ast, N_TYPE, &lexer.debug_info);
 
 		if(t == '*') {
-			root->down = child = ast_alloc_node(&ast, N_POINTER, NULL, &lexer.debug_info);
+			root->down = child = ast_alloc_node(&ast, N_POINTER, &lexer.debug_info);
 			loop = true;
 		} else {
-			root->down = child = ast_alloc_node(&ast, N_ARRAY, NULL, &lexer.debug_info);
+			root->down = child = ast_alloc_node(&ast, N_ARRAY, &lexer.debug_info);
 
 			t = lex();
 			if(t != ']') {
@@ -2232,10 +2302,10 @@ AST_node* type(void) {
 
 			if(t == '*') {
 				if(lastwasexpr) {
-					child->next = ast_alloc_node(&ast, N_POINTER, NULL, &lexer.debug_info);
+					child->next = ast_alloc_node(&ast, N_POINTER, &lexer.debug_info);
 					child = child->next;
 				} else {
-					child->down = ast_alloc_node(&ast, N_POINTER, NULL, &lexer.debug_info);
+					child->down = ast_alloc_node(&ast, N_POINTER, &lexer.debug_info);
 					child = child->down;
 				}
 				lastwasexpr = false;
@@ -2247,10 +2317,10 @@ AST_node* type(void) {
 			}
 
 			if(lastwasexpr) {
-				child->next = ast_alloc_node(&ast, N_ARRAY, NULL, &lexer.debug_info);
+				child->next = ast_alloc_node(&ast, N_ARRAY, &lexer.debug_info);
 				child = child->next;
 			} else {
-				child->down = ast_alloc_node(&ast, N_ARRAY, NULL, &lexer.debug_info);
+				child->down = ast_alloc_node(&ast, N_ARRAY, &lexer.debug_info);
 				child = child->down;
 			}
 
@@ -2306,10 +2376,10 @@ AST_node* type(void) {
 	}
 
 	if(!node)
-		node = ast_alloc_node(&ast, 0, NULL, &lexer.debug_info);
+		node = ast_alloc_node(&ast, 0, &lexer.debug_info);
 
 	if(!indirect) {
-		root = ast_alloc_node(&ast, N_TYPE, NULL, &lexer.debug_info);
+		root = ast_alloc_node(&ast, N_TYPE, &lexer.debug_info);
 		root->down = child = node;
 	} else {
 		if(lastwasexpr) {
@@ -2326,14 +2396,14 @@ AST_node* type(void) {
 		break;
 	case T_ID:
 		child->kind = N_ID;
-		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
 	case T_FUNC:
 		child->kind = N_FUNCSIGNATURE;
 		t = lex();
 		if(t != '(')
 			parse_error("'('");
-		child->down = ast_alloc_node(&ast, N_ARGUMENTS, NULL, &lexer.debug_info);
+		child->down = ast_alloc_node(&ast, N_ARGUMENTS, &lexer.debug_info);
 		child = child->down;
 		child->down = node = type();
 		t = lex();
@@ -2351,7 +2421,7 @@ AST_node* type(void) {
 			lexer.debug_info.col -= lexer.ptr - lexer.unget;
 			lexer.ptr = lexer.unget;
 		} else {
-			child->next = ast_alloc_node(&ast, N_RETURNTYPE, NULL, &lexer.debug_info);
+			child->next = ast_alloc_node(&ast, N_RETURNTYPE, &lexer.debug_info);
 			child = child->next;
 			child->down = node = type();
 			t = lex();
@@ -2369,7 +2439,7 @@ AST_node* type(void) {
 	default: /* builtin type */
 		assert(t >= T_INT && t <= T_S64);
 		child->kind = N_BUILTINTYPE;
-		child->typesig = t - T_INT + TY_INT;
+		child->val.typesig = t - T_INT + TY_INT;
 		break;
 	}
 
@@ -2393,13 +2463,13 @@ AST_node* function(void) {
 
 	child = NULL;
 
-	root = ast_alloc_node(&ast, N_FUNCTION, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_FUNCTION, &lexer.debug_info);
 
 	t = lex();
 	if(t == '(') {
 		node = vardec();
 		if(node) {
-			root->down = child = ast_alloc_node(&ast, N_ARGUMENTS, NULL, &lexer.debug_info);
+			root->down = child = ast_alloc_node(&ast, N_ARGUMENTS, &lexer.debug_info);
 			child->down = node;
 		}
 
@@ -2422,10 +2492,10 @@ AST_node* function(void) {
 	node = type();
 	if(node) {
 		if(!child) {
-			root->down = child = ast_alloc_node(&ast, N_RETURNTYPE, NULL, &lexer.debug_info);
+			root->down = child = ast_alloc_node(&ast, N_RETURNTYPE, &lexer.debug_info);
 			child->down = node;
 		} else {
-			child->next = ast_alloc_node(&ast, N_RETURNTYPE, NULL, &lexer.debug_info);
+			child->next = ast_alloc_node(&ast, N_RETURNTYPE, &lexer.debug_info);
 			child = child->next;
 			child->down = node;
 		}
@@ -2446,7 +2516,8 @@ AST_node* function(void) {
 	}
 
 	if(t == T_INLINE) {
-		node = ast_alloc_node(&ast, N_STORAGEQUALIFIER, keyword[T_INLINE - T_ENUM], &lexer.debug_info);
+		node = ast_alloc_node(&ast, N_STORAGEQUALIFIER, &lexer.debug_info);
+		node->val.str = keyword[T_INLINE-T_ENUM];
 		if(!child)
 			root->down = child = node;
 		else {
@@ -2482,7 +2553,7 @@ AST_node* block(void) {
 	register int t;
 	AST_node *root, *child;
 
-	root = ast_alloc_node(&ast, N_BLOCK, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_BLOCK, &lexer.debug_info);
 
 	if((child = returnstatement())) root->down = child;
 	else if((child = ifstatement())) root->down = child;
@@ -2544,7 +2615,7 @@ AST_node* structure(void) {
 	}
 
 	child = NULL;
-	root = ast_alloc_node(&ast, N_STRUCTURE, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_STRUCTURE, &lexer.debug_info);
 
 	t = lex();
 	if(t != '{')
@@ -2635,7 +2706,7 @@ AST_node* unionation(void) {
 	}
 
 	child = NULL;
-	root = ast_alloc_node(&ast, N_UNIONATION, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_UNIONATION, &lexer.debug_info);
 
 	t = lex();
 	if(t != '{')
@@ -2727,12 +2798,12 @@ AST_node* enumeration(void) {
 	}
 
 	child = NULL;
-	root = ast_alloc_node(&ast, N_ENUMERATION, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_ENUMERATION, &lexer.debug_info);
 
 	t = lex();
 	if(t >= T_INT && t <= T_S64) {
-		root->down = child = ast_alloc_node(&ast, N_BUILTINTYPE, NULL, &lexer.debug_info);
-		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		root->down = child = ast_alloc_node(&ast, N_BUILTINTYPE, &lexer.debug_info);
+		child->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
 	}
 
@@ -2744,12 +2815,12 @@ AST_node* enumeration(void) {
 		parse_error("identifier");
 
 	if(!child) {
-		root->down = child = ast_alloc_node(&ast, N_ID, NULL, &lexer.debug_info);
-		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		root->down = child = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+		child->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 	} else {
-		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.debug_info);
+		child->next = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
 		child = child->next;
-		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 	}
 
 	t = lex();
@@ -2757,11 +2828,11 @@ AST_node* enumeration(void) {
 		t = lex();
 		if(t != T_INTEGER && t != T_CHARACTER)
 			parse_error("numerical or character constant");
-		child->next = ast_alloc_node(&ast, N_INTLIT, NULL, &lexer.debug_info);
+		child->next = ast_alloc_node(&ast, N_INTLIT, &lexer.debug_info);
 		child = child->next;
 		if(t == T_CHARACTER)
 			child->kind = N_CHARLIT;
-		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
 	}
 
@@ -2776,19 +2847,19 @@ AST_node* enumeration(void) {
 
 		if(t != T_ID)
 			parse_error("identifier");
-		child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.debug_info);
+		child->next = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
 		child = child->next;
-		child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		child->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
 		if(t == '=') {
 			t = lex();
 			if(t != T_INTEGER && t != T_CHARACTER)
 				parse_error("numerical or character constant");
-			child->next = ast_alloc_node(&ast, N_INTLIT, NULL, &lexer.debug_info);
+			child->next = ast_alloc_node(&ast, N_INTLIT, &lexer.debug_info);
 			child = child->next;
 			if(t == T_CHARACTER)
 				child->kind = N_CHARLIT;
-			child->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+			child->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 			t = lex();
 		}
 
@@ -2814,12 +2885,12 @@ AST_node* statement(void) {
 	}
 
 	if(t == T_DEFER) {
-		root = ast_alloc_node(&ast, N_DEFER, NULL, &lexer.debug_info);
+		root = ast_alloc_node(&ast, N_DEFER, &lexer.debug_info);
 		root->down = child = assignment();
 	} else {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
-		root = ast_alloc_node(&ast, N_STATEMENT, NULL, &lexer.debug_info);
+		root = ast_alloc_node(&ast, N_STATEMENT, &lexer.debug_info);
 		root->down = child = assignment();
 	}
 
@@ -2844,7 +2915,7 @@ AST_node* ifstatement(void) {
 		return NULL;
 	}
 
-	root = ast_alloc_node(&ast, N_IFSTATEMENT, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_IFSTATEMENT, &lexer.debug_info);
 
 	root->down = child = expression();
 
@@ -2890,7 +2961,7 @@ AST_node* whilestatement(void) {
 		return NULL;
 	}
 
-	root = ast_alloc_node(&ast, N_WHILESTATEMENT, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_WHILESTATEMENT, &lexer.debug_info);
 
 	root->down = child = expression();
 
@@ -2916,7 +2987,7 @@ AST_node* returnstatement(void) {
 		return NULL;
 	}
 
-	root = ast_alloc_node(&ast, N_RETURNSTATEMENT, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_RETURNSTATEMENT, &lexer.debug_info);
 
 	root->down = child = assignment();
 
@@ -2947,7 +3018,7 @@ AST_node* forstatement(void) {
 		return NULL;
 	}
 
-	root = ast_alloc_node(&ast, N_FORSTATEMENT, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_FORSTATEMENT, &lexer.debug_info);
 	root->down = child = vardec();
 
 	t = lex();
@@ -3015,9 +3086,9 @@ AST_node* assignment(void) {
 		return child;
 	}
 
-	root = ast_alloc_node(&ast, N_ASSIGNMENT, NULL, &lexer.debug_info);
-	root->down = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
-	root->down->op = (t == '=') ? OP_ASSIGN : (t - T_ASSIGNPLUS) + OP_ASSIGNPLUS;
+	root = ast_alloc_node(&ast, N_ASSIGNMENT, &lexer.debug_info);
+	root->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+	root->down->val.op = (t == '=') ? OP_ASSIGN : (t - T_ASSIGNPLUS) + OP_ASSIGNPLUS;
 	root->down->down = child;
 	root->down->next = expression();
 
@@ -3032,7 +3103,7 @@ AST_node* expression(void) {
 	if(!child)
 		return NULL;
 
-	root = ast_alloc_node(&ast, N_EXPRESSION, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
 	root->down = child;
 
 	return root;
@@ -3055,9 +3126,9 @@ AST_node* logical(void) {
 		return child;
 	}
 
-	root = ast_alloc_node(&ast, N_LOGICAL, NULL, &lexer.debug_info);
-	root->down = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
-	root->down->op = (t == T_AND) ? OP_LAND : OP_LOR;
+	root = ast_alloc_node(&ast, N_LOGICAL, &lexer.debug_info);
+	root->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+	root->down->val.op = (t == T_AND) ? OP_LAND : OP_LOR;
 	root->down->down = child;
 	root->down->next = logical();
 
@@ -3083,17 +3154,17 @@ AST_node* compare(void) {
 		return child;
 	}
 
-	root = ast_alloc_node(&ast, N_COMPARE, NULL, &lexer.debug_info);
-	root->down = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_COMPARE, &lexer.debug_info);
+	root->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
 	switch(t) {
 	case '<':
-		root->down->op = OP_LT;
+		root->down->val.op = OP_LT;
 		break;
 	case '>':
-		root->down->op = OP_GT;
+		root->down->val.op = OP_GT;
 		break;
 	case T_EQ: case T_NEQ: case T_LTEQ: case T_GTEQ:
-		root->down->op = (t - T_EQ) + OP_EQ;
+		root->down->val.op = (t - T_EQ) + OP_EQ;
 		break;
 	}
 	root->down->down = child;
@@ -3121,9 +3192,9 @@ AST_node* shift(void) {
 		return child;
 	}
 
-	root = ast_alloc_node(&ast, N_SHIFT, NULL, &lexer.debug_info);
-	root->down = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
-	root->down->op = (t == T_LSHIFT) ? OP_LSHIFT : OP_RSHIFT;
+	root = ast_alloc_node(&ast, N_SHIFT, &lexer.debug_info);
+	root->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+	root->down->val.op = (t == T_LSHIFT) ? OP_LSHIFT : OP_RSHIFT;
 	root->down->down = child;
 	root->down->next = shift();
 
@@ -3149,17 +3220,17 @@ AST_node* bitwise(void) {
 		return child;
 	}
 
-	root = ast_alloc_node(&ast, N_BITWISE, NULL, &lexer.debug_info);
-	root->down = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_BITWISE, &lexer.debug_info);
+	root->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
 	switch(t) {
 	case '&':
-		root->down->op = OP_AND;
+		root->down->val.op = OP_AND;
 		break;
 	case '|':
-		root->down->op = OP_OR;
+		root->down->val.op = OP_OR;
 		break;
 	case '^':
-		root->down->op = OP_XOR;
+		root->down->val.op = OP_XOR;
 		break;
 	}
 	root->down->down = child;
@@ -3187,9 +3258,9 @@ AST_node* arith(void) {
 		return child;
 	}
 
-	root = ast_alloc_node(&ast, N_ARITH, NULL, &lexer.debug_info);
-	root->down = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
-	root->down->op = (t == '+') ? OP_ADD : OP_SUB;
+	root = ast_alloc_node(&ast, N_ARITH, &lexer.debug_info);
+	root->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+	root->down->val.op = (t == '+') ? OP_ADD : OP_SUB;
 	root->down->down = child;
 	root->down->next = arith();
 
@@ -3215,17 +3286,17 @@ AST_node* factor(void) {
 		return child;
 	}
 
-	root = ast_alloc_node(&ast, N_FACTOR, NULL, &lexer.debug_info);
-	root->down = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_FACTOR, &lexer.debug_info);
+	root->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
 	switch(t) {
 	case '*':
-		root->down->op = OP_MUL;
+		root->down->val.op = OP_MUL;
 		break;
 	case '/':
-		root->down->op = OP_DIV;
+		root->down->val.op = OP_DIV;
 		break;
 	case '%':
-		root->down->op = OP_MOD;
+		root->down->val.op = OP_MOD;
 		break;
 	}
 	root->down->down = child;
@@ -3246,50 +3317,50 @@ AST_node* unary(void) {
 
 	switch(t) {
 		case '*':
-			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
-			child->op = OP_DEREF;
+			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			child->val.op = OP_DEREF;
 			child->next = unary();
 			if(!child)
 				parse_error("term");
 			break;
 		case '&':
-			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
-			child->op = OP_ADDR;
+			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			child->val.op = OP_ADDR;
 			child->next = unary();
 			if(!child)
 				parse_error("term");
 			break;
 		case T_NOT:
-			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
-			child->op = OP_LNOT;
+			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			child->val.op = OP_LNOT;
 			child->next = unary();
 			if(!child)
 				parse_error("term");
 			break;
 		case '-':
-			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
-			child->op = OP_NEG;
+			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			child->val.op = OP_NEG;
 			child->next = unary();
 			if(!child)
 				parse_error("term");
 			break;
 		case '~':
-			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
-			child->op = OP_NOT;
+			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			child->val.op = OP_NOT;
 			child->next = unary();
 			if(!child)
 				parse_error("term");
 			break;
 		case T_INC:
-			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
-			child->op = OP_INC;
+			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			child->val.op = OP_INC;
 			child->next = unary();
 			if(!child)
 				parse_error("term");
 			break;
 		case T_DEC:
-			child = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
-			child->op = OP_DEC;
+			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			child->val.op = OP_DEC;
 			child->next = unary();
 			if(!child)
 				parse_error("term");
@@ -3314,7 +3385,7 @@ AST_node* unary(void) {
 	if(!child)
 		return member();
 
-	root = ast_alloc_node(&ast, N_UNARY, NULL, &lexer.debug_info);
+	root = ast_alloc_node(&ast, N_UNARY, &lexer.debug_info);
 	root->down = child;
 	return root;
 }
@@ -3331,8 +3402,8 @@ AST_node* member(void) {
 	t = lex();
 	while(t == '[' || t == '.') {
 		if(t == '[') {
-			child->next = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
-			child->next->op = OP_INDEX;
+			child->next = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			child->next->val.op = OP_INDEX;
 			child = child->next;
 			child->down = expression();
 			if(!child->down)
@@ -3341,14 +3412,14 @@ AST_node* member(void) {
 			if(t != ']')
 				parse_error("']'");
 		} else if(t == '.') {
-			child->next = ast_alloc_node(&ast, N_OP, NULL, &lexer.debug_info);
-			child->next->op = OP_DOT;
+			child->next = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			child->next->val.op = OP_DOT;
 			child = child->next;
 			t = lex();
 			if(t != T_ID)
 				parse_error("identifier");
-			child->next = ast_alloc_node(&ast, N_ID, NULL, &lexer.debug_info);
-			child->next->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+			child->next = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+			child->next->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 			child = child->next;
 		}
 
@@ -3375,8 +3446,8 @@ AST_node* term(void) {
 
 	t = lex();
 	if(t == T_ID) {
-		node = ast_alloc_node(&ast, N_ID, NULL, &lexer.debug_info);
-		node->val = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		node = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+		node->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		return node;
 	}
 
@@ -3421,8 +3492,8 @@ AST_node* call(void) {
 		return NULL;
 	}
 
-	root = ast_alloc_node(&ast, N_CALL, NULL, &lexer.debug_info);
-	root->val = pool_alloc_string(&string_pool, e - s, s);
+	root = ast_alloc_node(&ast, N_CALL, &lexer.debug_info);
+	root->val.str = pool_alloc_string(&string_pool, e - s, s);
 
 	root->down = child = expression();
 	while((t = lex()) == ',') {
@@ -3467,9 +3538,9 @@ int main(int argc, char **argv) {
 
 	atexit(cleanup);
 
-	SYM_TAB_INIT(pendingtab);
-	SYM_TAB_INIT(globaltab);
-	SYM_TAB_INIT(functab);
+	SYM_TAB_INIT(pendingtab,SCOPE_GLOBAL);
+	SYM_TAB_INIT(globaltab,SCOPE_GLOBAL);
+	SYM_TAB_INIT(functab,SCOPE_LOCAL);
 	fmapread(&fm);
 	lexer_init(&lexer, fm.buf);
 	pool_init(&ast.pool, sizeof(AST_node), 256, 4);
@@ -3491,7 +3562,7 @@ int main(int argc, char **argv) {
 		child = node->down;
 		assert(child->kind == N_ID || child->kind == N_IDLIST);
 		if(child->kind == N_ID)
-			functab.name = child->val;
+			functab.name = child->val.str;
 		else
 			functab.name = NULL;
 		while(child && child->kind != N_INITIALIZER)

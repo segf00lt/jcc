@@ -80,6 +80,6 @@ one :: func(i: int) int inline {
 	return 1;
 }
 
-abc :: func(a, b, c: int) int {
+abc :: func(a: int, b: int, c: int) int {
 }
 
