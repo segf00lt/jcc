@@ -807,10 +807,10 @@ void ast_print(AST_node *node, size_t depth) {
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		if(node->kind == N_BUILTINTYPE)
 			fprintf(stderr, "type: %s\n", type_tag_debug[node->val.typesig]);
-		else if(node->kind != N_OP && node->kind != N_UNOP)
-			fprintf(stderr, "str: %s\n", node->val.str);
 		else if(node->kind == N_BOOLLIT)
 			fprintf(stderr, "boolean: %u\n", node->val.boolean);
+		else if(node->kind != N_OP && node->kind != N_UNOP)
+			fprintf(stderr, "str: %s\n", node->val.str);
 		else
 			fprintf(stderr, "op: %s\n", operators_debug[node->val.op-OP_ASSIGNPLUS]);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
@@ -1175,8 +1175,8 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 				child = node->down;
 				sibling = child->next;
 				if(sibling->kind != N_TYPE)
-					myerror("jcc: error: struct or union member missing explicit type\nline: %i, col: %i\n",
-							sibling->debug_info.line, sibling->debug_info.col);
+					myerror("jcc: error: struct or union member missing explicit type%DBG",
+							&(sibling->debug_info));
 				if(child->kind == N_IDLIST)
 					child = child->down;
 				member->type = type_info_build(type_pool, member_pool, sibling,NULL);
@@ -1237,8 +1237,8 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 
 		if(symptr) {
 			if(!symptr->constant && !is_pending)
-				myerror("jcc: error: use of non constant symbol '%s' as type\nline: %i, col: %i\n",
-						symptr->name, node->debug_info.line, node->debug_info.col);
+				myerror("jcc: error: use of non constant symbol '%s' as type%DBG",
+						symptr->name, &(node->debug_info));
 			tinfo = symptr->val.t;
 			break;
 		} else { /* define symbol in pendingtab */
@@ -1277,8 +1277,8 @@ void resolve_compound_type(Type_info *tinfo) {
 
 		while(member) {
 			if(member->type == tinfo)
-				myerror("jcc: error: struct '%s' was recursively defined on line: %i, col: %i\n",
-						tinfo->Struct.name, tinfo->Struct.debug_info.line, tinfo->Struct.debug_info.col);
+				myerror("jcc: error: struct '%s' was recursively defined at%DBG",
+						tinfo->Struct.name, &(tinfo->Struct.debug_info));
 
 			if(member->type->bytes == 0)
 				resolve_compound_type(member->type);
@@ -1295,8 +1295,8 @@ void resolve_compound_type(Type_info *tinfo) {
 
 		while(member) {
 			if(member->type == tinfo)
-				myerror("jcc: error: union '%s' was recursively defined on line: %i, col: %i\n",
-						tinfo->Union.name, tinfo->Union.debug_info.line, tinfo->Union.debug_info.col);
+				myerror("jcc: error: union '%s' was recursively defined at%DBG",
+						tinfo->Union.name, &(tinfo->Union.debug_info));
 
 			if(member->type->bytes == 0)
 				resolve_compound_type(member->type);
@@ -1359,8 +1359,8 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 				tinfo = pool_alloc(&type_pool);
 			if(symptr) {
 				if(!sym.constant)
-					myerror("jcc: error: '%s' was not declared as constant, to use it in type declarations it must be constant\nline: %i, col: %i\n",
-							symptr->name, child->debug_info.line, child->debug_info.col);
+					myerror("jcc: error: '%s' was not declared as constant, to use it in type declarations it must be constant%DBG",
+							symptr->name, &(child->debug_info));
 				tinfo = symptr->val.t;
 				*symptr = (Sym){0};
 			}
@@ -1371,8 +1371,8 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			tab->seg_count.data += sym.type->bytes;
 
 			if(!sym_tab_def(tab, &sym)) {
-				myerror("jcc: error: redefinition of '%s', line: %i, col: %i\n",
-						child->val.str, child->debug_info.line, child->debug_info.col);
+				myerror("jcc: error: redefinition of '%s'%DBG",
+						child->val.str, &(child->debug_info));
 			}
 
 			type_info_build(&type_pool, &member_pool, sibling, tinfo);
@@ -1396,8 +1396,8 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 	for(size_t i = 0; i < pendingtab.cap; ++i) {
 		symptr = pendingtab.data + i;
 		if(symptr->name != NULL)
-			myerror("jcc: error: '%s' was not defined, first referenced on line: %i, col: %i\n",
-						symptr->name, symptr->debug_info.line, symptr->debug_info.col);
+			myerror("jcc: error: '%s' was not defined, first referenced at%DBG",
+						symptr->name, &(symptr->debug_info.line));
 	}
 
 	/* set sizes of structs and unions */
@@ -1443,7 +1443,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		if(sibling) {
 			if(tinfo->tag == TY_TYPE) {
 				if(sibling->down->down->kind != N_TYPE)
-					myerror("jcc: error: attempted to initialize var of type 'Type' with wrong initializer\nline: %i, col: %i\n", sibling->debug_info.line, sibling->debug_info.col);
+					myerror("jcc: error: attempted to initialize var of type 'Type' with wrong initializer%DBG", &(sibling->debug_info));
 				sym.val.t = type_info_build(&type_pool, &member_pool, sibling->down->down, NULL);
 			} else
 				sym.val.a = sibling;
@@ -1486,8 +1486,8 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			sym.addr = *seg_count;
 			*seg_count += sym.type->bytes;
 			if(!sym_tab_def(tab, &sym)) {
-				myerror("jcc: error: redefinition of '%s', line: %i, col: %i\n",
-						child->val.str, child->debug_info.line, child->debug_info.col);
+				myerror("jcc: error: redefinition of '%s' at%DBG",
+						child->val.str, &(child->debug_info));
 			}
 			child = child->next;
 		}
@@ -1718,7 +1718,7 @@ int bc_interpreter(BCinst *prog, BCmem *mem) {
 }
 
 void parse_error(char *expect) {
-	fprintf(stderr, "jcc: parse error: expected %s got '", expect);
+	fprintf(stderr, "jcc: error: parser expected %s got '", expect);
 	fwrite(lexer.text_s, 1, lexer.text_e - lexer.text_s, stderr);
 	fprintf(stderr, "'\n>\tline: %i, col: %i\n>\t", lexer.debug_info.line, lexer.debug_info.col - (int)(lexer.ptr - lexer.unget));
 	fwrite(lexer.debug_info.line_s, 1, lexer.debug_info.line_e - lexer.debug_info.line_s, stderr);
@@ -1727,9 +1727,25 @@ void parse_error(char *expect) {
 
 void myerror(char *fmt, ...) {
 	va_list args;
-
+	char *s;
+	char buf[256];
+	Debug_info *dbg;
 	va_start(args, fmt);
-	vfprintf(stderr, fmt, args);
+	s = NULL;
+	while(true) {
+		s = strstr(fmt,"%DBG");
+		if(s == NULL) {
+			vfprintf(stderr, fmt, args);
+			break;
+		}
+		strncpy(buf, fmt, s - fmt);
+		buf[s-fmt] = 0;
+		vfprintf(stderr, buf, args);
+		fmt = s + STRLEN("%DBG");
+		dbg = va_arg(args, Debug_info*);
+		fprintf(stderr, "\n>\tline: %i, col: %i\n>\t", dbg->line, dbg->col);
+		fwrite(dbg->line_s, 1, dbg->line_e - dbg->line_s, stderr);
+	}
 	va_end(args);
 	exit(1);
 }
@@ -2895,8 +2911,10 @@ AST_node* statement(void) {
 	}
 
 	t = lex();
-	if(t != ';')
+
+	if(t != ';') {
 		parse_error("';'");
+	}
 
 	return root;
 }
