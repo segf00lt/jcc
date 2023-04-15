@@ -1722,7 +1722,7 @@ int bc_interpreter(BCinst *prog, BCmem *mem) {
 void parse_error(char *expect) {
 	fprintf(stderr, "jcc: error: parser expected %s got '", expect);
 	fwrite(lexer.text_s, 1, lexer.text_e - lexer.text_s, stderr);
-	fprintf(stderr, "'\n>\tline: %i, col: %i\n>\t", lexer.debug_info.line, lexer.debug_info.col - (int)(lexer.ptr - lexer.unget));
+	fprintf(stderr, "'\n> line: %i, col: %i\n> ", lexer.debug_info.line, lexer.debug_info.col - (int)(lexer.ptr - lexer.unget));
 	fwrite(lexer.debug_info.line_s, 1, lexer.debug_info.line_e - lexer.debug_info.line_s, stderr);
 	exit(1);
 }
@@ -1747,7 +1747,7 @@ void myerror(char *fmt, ...) {
 		vfprintf(stderr, buf, args);
 		fmt = s + STRLEN("%DBG");
 		dbg = va_arg(args, Debug_info*);
-		fprintf(stderr, "\n>\tline: %i, col: %i\n>\t", dbg->line, dbg->col);
+		fprintf(stderr, "\n> line: %i, col: %i\n> ", dbg->line, dbg->col);
 		fwrite(dbg->line_s, 1, dbg->line_e - dbg->line_s, stderr);
 	}
 	va_end(args);
@@ -2006,20 +2006,9 @@ void parse(void) {
 		for(node->next = declaration(); node->next; node->next = declaration())
 			node = node->next;
 	if(!lexer.eof) {
-		parse_error("end of file");
+		myerror("illegal top level statement at%DBG", &lexer.debug_info);
 	}
 }
-
-/*
- * TODO
- * globalstatement
-AST_node* globalstatement(void) {
-	register size_t t;
-	AST_node *node;
-
-
-}
- */
 
 /*
  * declaration: identifier (',' identifier)* ':' type? ('='|':') (literal';'|function|structure|unionation|enumeration)
@@ -3360,35 +3349,35 @@ AST_node* unary(void) {
 			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
 			child->val.op = OP_DEREF;
 			child->next = unary();
-			if(!child)
+			if(!child->next)
 				parse_error("term");
 			break;
 		case '&':
 			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
 			child->val.op = OP_ADDR;
 			child->next = unary();
-			if(!child)
+			if(!child->next)
 				parse_error("term");
 			break;
 		case T_NOT:
 			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
 			child->val.op = OP_LNOT;
 			child->next = unary();
-			if(!child)
+			if(!child->next)
 				parse_error("term");
 			break;
 		case '-':
 			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
 			child->val.op = OP_NEG;
 			child->next = unary();
-			if(!child)
+			if(!child->next)
 				parse_error("term");
 			break;
 		case '~':
 			child = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
 			child->val.op = OP_NOT;
 			child->next = unary();
-			if(!child)
+			if(!child->next)
 				parse_error("term");
 			break;
 		case T_CAST:
