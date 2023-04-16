@@ -1,3 +1,4 @@
+/*
 Vec2 :: struct {
 	x, y: f32;
 }
@@ -8,8 +9,6 @@ ptr: **void = 0;
 function_pointer_pointer_pointer : **func(int, char, func(int)(char)) (bool, bool);
 matrix: [1][2][0+3]float;
 pointer: *[3]*[0&1]int;
-bleh: *[][2]*void;
-other_ptr: ***[]****void;
 
 other_thing :: struct {
 	x, y: f32;
@@ -25,4 +24,7 @@ v: Vec2;
 thingy: struct { x, y: f32; } = void;
 
 //arr: [2][2]char;
+*/
 fn: func(int)(int,int);
+other_ptr: ***[]****void;
+bleh: *[2][2]*void;

@@ -8,7 +8,7 @@ anon :: struct {
 }
 
 // variable struct
-foo, foo2 := struct {
+foo := struct {
 	bar: float;
 	kiss: Array;
 }
@@ -44,6 +44,6 @@ test :: union {
 }
 
 recurse :: struct {
-	r: []recurse;
+	r: [1<<4]recurse;
 }
 
