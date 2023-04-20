@@ -2259,7 +2259,7 @@ AST_node* type(void) {
 	AST_node *tail;
 	AST_node *head;
 
-	child = NULL;
+	tail = head = child = NULL;
 
 	t = lex();
 	if(t == '*' || t == '[') {
@@ -2485,34 +2485,10 @@ AST_node* function(void) {
 AST_node* block(void) {
 	register int t;
 	AST_node *root, *child;
+	AST_node tmp;
 
+	child = &tmp;
 	root = ast_alloc_node(&ast, N_BLOCK, &lexer.debug_info);
-
-	if((child = returnstatement())) root->down = child;
-	else if((child = ifstatement())) root->down = child;
-	else if((child = whilestatement())) root->down = child;
-	else if((child = forstatement())) root->down = child;
-	else if((child = declaration())) root->down = child;
-	else if((child = vardec())) {
-		root->down = child;
-		t = lex();
-		if(t != ';')
-			parse_error("';'");
-	} else if((child = statement())) root->down = child;
-
-	t = lex();
-	if(t == '{') {
-		child = block();
-		if((t = lex()) != '}')
-			parse_error("'}'");
-	} else if(t == '}') {
-		lexer.debug_info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		return root;
-	} else {
-		lexer.debug_info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-	}
 
 	for(; child; child = child->next) {
 		if((child->next = returnstatement())) continue;
@@ -2541,6 +2517,8 @@ AST_node* block(void) {
 		break;
 	}
 
+	root->down = tmp.next;
+
 	return root;
 }
 
@@ -2550,6 +2528,7 @@ AST_node* block(void) {
 AST_node* structure(void) {
 	register int t;
 	AST_node *root, *child;
+	AST_node tmp;
 
 	t = lex();
 	if(t != T_STRUCT) {
@@ -2558,7 +2537,7 @@ AST_node* structure(void) {
 		return NULL;
 	}
 
-	child = NULL;
+	child = &tmp;
 	root = ast_alloc_node(&ast, N_STRUCTURE, &lexer.debug_info);
 
 	t = lex();
@@ -2566,42 +2545,7 @@ AST_node* structure(void) {
 		parse_error("'{'");
 
 	t = lex();
-	if(t == T_ID) {
-		lexer.debug_info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		child = vardec();
-		t = lex();
-		if(t != ';')
-			parse_error("';'");
-	} else if(t == T_UNION) {
-		lexer.debug_info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		child = unionation();
-		t = lex();
-		if(t == '=') {
-			parse_error("next member");
-		} else {
-			lexer.debug_info.col -= lexer.ptr - lexer.unget;
-			lexer.ptr = lexer.unget;
-		}
-	} else if(t == T_STRUCT) {
-		lexer.debug_info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		child = structure();
-		t = lex();
-		if(t == '=') {
-			parse_error("next member");
-		} else {
-			lexer.debug_info.col -= lexer.ptr - lexer.unget;
-			lexer.ptr = lexer.unget;
-		}
-	} else {
-		parse_error("identifier or 'union'");
-	}
-
-	root->down = child;
-
-	while((t = lex()) != '}') {
+	while(t != '}') {
 		if(t == T_ID) {
 			lexer.debug_info.col -= lexer.ptr - lexer.unget;
 			lexer.ptr = lexer.unget;
@@ -2636,7 +2580,10 @@ AST_node* structure(void) {
 		}
 
 		child = child->next;
+		t = lex();
 	}
+
+	root->down = tmp.next;
 
 	return root;
 }
@@ -2647,6 +2594,7 @@ AST_node* structure(void) {
 AST_node* unionation(void) {
 	register int t;
 	AST_node *root, *child;
+	AST_node tmp;
 
 	t = lex();
 	if(t != T_UNION) {
@@ -2655,7 +2603,7 @@ AST_node* unionation(void) {
 		return NULL;
 	}
 
-	child = NULL;
+	child = &tmp;
 	root = ast_alloc_node(&ast, N_UNIONATION, &lexer.debug_info);
 
 	t = lex();
@@ -2663,42 +2611,7 @@ AST_node* unionation(void) {
 		parse_error("'{'");
 
 	t = lex();
-	if(t == T_ID) {
-		lexer.debug_info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		child = vardec();
-		t = lex();
-		if(t != ';')
-			parse_error("';'");
-	} else if(t == T_UNION) {
-		lexer.debug_info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		child = unionation();
-		t = lex();
-		if(t == '=') {
-			parse_error("next member");
-		} else {
-			lexer.debug_info.col -= lexer.ptr - lexer.unget;
-			lexer.ptr = lexer.unget;
-		}
-	} else if(t == T_STRUCT) {
-		lexer.debug_info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		child = structure();
-		t = lex();
-		if(t == '=') {
-			parse_error("next member");
-		} else {
-			lexer.debug_info.col -= lexer.ptr - lexer.unget;
-			lexer.ptr = lexer.unget;
-		}
-	} else {
-		parse_error("identifier or 'union'");
-	}
-
-	root->down = child;
-
-	while((t = lex()) != '}') {
+	while(t != '}') {
 		if(t == T_ID) {
 			lexer.debug_info.col -= lexer.ptr - lexer.unget;
 			lexer.ptr = lexer.unget;
@@ -2733,7 +2646,10 @@ AST_node* unionation(void) {
 		}
 
 		child = child->next;
+		t = lex();
 	}
+
+	root->down = tmp.next;
 
 	return root;
 
