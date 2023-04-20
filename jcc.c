@@ -395,7 +395,7 @@ char *type_tag_debug[] = {
 };
 
 enum OPCODE {
-	BCOP_SET, // set register to immediate value
+	BCOP_SET,
 	BCOP_ADD,
 	BCOP_SUB,
 	BCOP_MUL,
@@ -408,26 +408,14 @@ enum OPCODE {
 	BCOP_LSHIFT,
 	BCOP_RSHIFT,
 	BCOP_JMP,
-	BCOP_JLT,
-	BCOP_JGE,
-	BCOP_JNE,
-	BCOP_JEQ,
-	BCOP_LOADB,
-	BCOP_LOADS,
-	BCOP_LOADH,
-	BCOP_LOADW,
-	BCOP_STOREB,
-	BCOP_STORES,
-	BCOP_STOREH,
-	BCOP_STOREW,
-	BCOP_PUSHW,
-	BCOP_POPW,
-	BCOP_PUSHH,
-	BCOP_POPH,
-	BCOP_PUSHB,
-	BCOP_POPB,
-	BCOP_PUSHS,
-	BCOP_POPS,
+	BCOP_BLT,
+	BCOP_BGE,
+	BCOP_BNE,
+	BCOP_BEQ,
+	BCOP_LOAD,
+	BCOP_STORE,
+	BCOP_PUSH,
+	BCOP_POP,
 	BCOP_CALL,
 	BCOP_RET,
 
@@ -450,26 +438,14 @@ char *opcode_debug[] = {
 	"BCOP_LSHIFT",
 	"BCOP_RSHIFT",
 	"BCOP_JMP",
-	"BCOP_JLT",
-	"BCOP_JGE",
-	"BCOP_JNE",
-	"BCOP_JEQ",
-	"BCOP_LOADB",
-	"BCOP_LOADS",
-	"BCOP_LOADH",
-	"BCOP_LOADW",
-	"BCOP_STOREB",
-	"BCOP_STORES",
-	"BCOP_STOREH",
-	"BCOP_STOREW",
-	"BCOP_PUSHW",
-	"BCOP_POPW",
-	"BCOP_PUSHH",
-	"BCOP_POPH",
-	"BCOP_PUSHB",
-	"BCOP_POPB",
-	"BCOP_PUSHS",
-	"BCOP_POPS",
+	"BCOP_BLT",
+	"BCOP_BGE",
+	"BCOP_BNE",
+	"BCOP_BEQ",
+	"BCOP_LOAD",
+	"BCOP_STORE",
+	"BCOP_PUSH",
+	"BCOP_POP",
 	"BCOP_CALL",
 	"BCOP_RET",
 	"BCOP_INT",
@@ -650,14 +626,21 @@ struct Sym_tab {
 };
 
 struct BCinst {
-	uint64_t opcode;
+	uint64_t opcode : 10;
+	uint64_t size : 7;
+	uint64_t sign : 1;
+	uint64_t floating : 1;
+	uint64_t immediate : 1;
 	union {
-		uint64_t dest_reg;
-		uint64_t address_reg;
+		uint64_t reg; /* data register */
+		uint64_t ptr; /* pointer register */
+		uint64_t addr; /* immediate address */
 	};
-	uint64_t r1;
 	union {
-		uint64_t r2;
+		struct {
+			uint64_t r1;
+			uint64_t r2;
+		};
 		uint64_t imm;
 	};
 };
@@ -1608,146 +1591,132 @@ BCbyte* bc_growheap(BCmem *mem) {
 
 int bc_interpreter(BCinst *prog, BCmem *mem) {
 	BCinst *curinst;
-	BCreg *dest_reg, *r1, *r2;
-	uint64_t r1_data, r2_data, imm, addr, seg, pc;
+	BCreg *data, *r1, *r2;
+	uint64_t r1_data, r2_data, imm, addr, seg, pc, size, sign;
+	uint64_t mask;
+	uint64_t *memptr;
 
 	pc = 0;
 	for(curinst = prog; ; ++curinst) {
-		dest_reg = mem->regs + curinst->dest_reg;;
+		size = curinst->size;
+		sign = curinst->sign;
+		mask = -1l << size;
+		data = mem->regs + curinst->reg;
 		r1 = mem->regs + curinst->r1;
 		r2 = mem->regs + curinst->r2;
 		r1_data = *r1;
 		r2_data = *r2;
 		imm = curinst->imm;
-		addr = mem->regs[curinst->address_reg] >> 3;
-		seg = mem->regs[curinst->address_reg] & 0x7;
+		if(curinst->immediate) {
+			addr = mem->regs[curinst->addr] >> 3;
+			seg = mem->regs[curinst->addr] & 0x7;
+		} else {
+			addr = mem->regs[curinst->ptr] >> 3;
+			seg = mem->regs[curinst->ptr] & 0x7;
+		}
+		memptr = (uint64_t*)(mem->seg[seg]+addr);
+		if(curinst->opcode >= BCOP_PUSH && curinst->opcode == BCOP_RET)
+			memptr = (uint64_t*)(mem->stack_ptr);
 
 		switch(curinst->opcode) {
 		case BCOP_SET:
-			*dest_reg = imm;
+			if(curinst->immediate)
+				*data = imm;
+			else
+				*data = *r1;
 			break;
 		case BCOP_ADD:
-			*dest_reg = r1_data + r2_data;
+			*data = r1_data + r2_data;
 			break;
 		case BCOP_SUB:
-			*dest_reg = r1_data - r2_data;
+			*data = r1_data - r2_data;
 			break;
 		case BCOP_MUL:
-			*dest_reg = r1_data * r2_data;
+			*data = r1_data * r2_data;
 			break;
 		case BCOP_DIV:
-			*dest_reg = r1_data / r2_data;
+			*data = r1_data / r2_data;
 			break;
 		case BCOP_MOD:
-			*dest_reg = r1_data % r2_data;
+			*data = r1_data % r2_data;
 			break;
 		case BCOP_AND:
-			*dest_reg = r1_data & r2_data;
+			*data = r1_data & r2_data;
 			break;
 		case BCOP_OR:
-			*dest_reg = r1_data | r2_data;
+			*data = r1_data | r2_data;
 			break;
 		case BCOP_XOR:
-			*dest_reg = r1_data ^ r2_data;
+			*data = r1_data ^ r2_data;
 			break;
 		case BCOP_NOT:
-			*dest_reg = ~r1_data;
+			*data = ~r1_data;
 			break;
 		case BCOP_LSHIFT:
-			*dest_reg = r1_data << r2_data;
+			*data = r1_data << r2_data;
 			break;
 		case BCOP_RSHIFT:
-			*dest_reg = r1_data >> r2_data;
+			*data = r1_data >> r2_data;
 			break;
 		case BCOP_JMP:
 			assert(seg == SEG_TEXT);
 			curinst = prog + addr;
 			break;
-		case BCOP_JLT:
+		case BCOP_BLT:
 			assert(seg == SEG_TEXT);
-			if(r1_data < r2_data)
-				curinst = prog + addr;
+			if(sign) {
+				if((int64_t)r1_data < (int64_t)r2_data)
+					curinst = prog + addr;
+			} else {
+				if(r1_data < r2_data)
+					curinst = prog + addr;
+			}
 			break;
-		case BCOP_JGE:
+		case BCOP_BGE:
 			assert(seg == SEG_TEXT);
-			if(r1_data >= r2_data)
-				curinst = prog + addr;
+			if(sign) {
+				if((int64_t)r1_data >= (int64_t)r2_data)
+					curinst = prog + addr;
+			} else {
+				if(r1_data >= r2_data)
+					curinst = prog + addr;
+			}
 			break;
-		case BCOP_JNE:
+		case BCOP_BNE:
 			assert(seg == SEG_TEXT);
 			if(r1_data != r2_data)
 				curinst = prog + addr;
 			break;
-		case BCOP_JEQ:
+		case BCOP_BEQ:
 			assert(seg == SEG_TEXT);
 			if(r1_data == r2_data)
 				curinst = prog + addr;
 			break;
-		case BCOP_LOADB:
-			*r1 = *(uint8_t*)(mem->seg[seg]+addr) & 0xff;
+		case BCOP_LOAD:
+			*r1 = *memptr ^ mask;
 			break;
-		case BCOP_LOADS:
-			*r1 = *(uint16_t*)(mem->seg[seg]+addr) & 0xffff;
+		case BCOP_STORE:
+			*memptr &= mask;
+			*memptr |= *r1 ^ mask;
 			break;
-		case BCOP_LOADH:
-			*r1 = *(uint32_t*)(mem->seg[seg]+addr) & 0xffffffff;
+		case BCOP_PUSH:
+			*memptr &= mask;
+			*memptr |= *r1 ^ mask;
+			mem->stack_ptr += sizeof(size >> 3);
 			break;
-		case BCOP_LOADW:
-			*r1 = *(uint64_t*)(mem->seg[seg]+addr);
-			break;
-		case BCOP_STOREB:
-			*(uint8_t*)(mem->seg[seg]+addr) = (uint8_t)(*r1 & 0xff);
-			break;
-		case BCOP_STORES:
-			*(uint16_t*)(mem->seg[seg]+addr) = (uint16_t)(*r1 & 0xffff);
-			break;
-		case BCOP_STOREH:
-			*(uint32_t*)(mem->seg[seg]+addr) = (uint32_t)(*r1 & 0xffffffff);
-			break;
-		case BCOP_STOREW:
-			*(uint64_t*)(mem->seg[seg]+addr) = *r1;
-			break;
-		case BCOP_PUSHW:
-			*(uint64_t*)(mem->stack_ptr) = *r1;
-			mem->stack_ptr += sizeof(uint64_t);
-			break;
-		case BCOP_POPW:
-			mem->stack_ptr -= sizeof(uint64_t);
-			*r1 = *(uint64_t*)(mem->stack_ptr);
-			break;
-		case BCOP_PUSHH:
-			*(uint32_t*)(mem->stack_ptr) = *r1;
-			mem->stack_ptr += sizeof(uint32_t);
-			break;
-		case BCOP_POPH:
-			mem->stack_ptr -= sizeof(uint32_t);
-			*r1 = *(uint32_t*)(mem->stack_ptr);
-			break;
-		case BCOP_PUSHS:
-			*(uint16_t*)(mem->stack_ptr) = *r1;
-			mem->stack_ptr += sizeof(uint16_t);
-			break;
-		case BCOP_POPS:
-			mem->stack_ptr -= sizeof(uint16_t);
-			*r1 = *(uint16_t*)(mem->stack_ptr);
-			break;
-		case BCOP_PUSHB:
-			*(uint8_t*)(mem->stack_ptr) = *r1;
-			mem->stack_ptr += sizeof(uint8_t);
-			break;
-		case BCOP_POPB:
-			mem->stack_ptr -= sizeof(uint8_t);
-			*r1 = *(uint8_t*)(mem->stack_ptr);
+		case BCOP_POP:
+			mem->stack_ptr -= sizeof(size >> 3);
+			*r1 = *memptr ^ mask;
 			break;
 		case BCOP_CALL:
 			assert(seg == SEG_TEXT);
 			pc = ((curinst - prog) << 3) | (SEG_TEXT & 0x7);
-			*(uint64_t*)(mem->stack_ptr) = pc;
+			*memptr = pc;
 			mem->stack_ptr += sizeof(pc);
 			break;
 		case BCOP_RET:
 			mem->stack_ptr -= sizeof(pc);
-			pc = *(uint64_t*)(mem->stack_ptr) >> 3;
+			pc = *memptr >> 3;
 			curinst = prog + pc;
 			break;
 		case BCOP_INT:
@@ -1756,6 +1725,12 @@ int bc_interpreter(BCinst *prog, BCmem *mem) {
 		case BCOP_HALT:
 			return 0;
 		}
+
+		// check for overflows
+		*data ^= mask;
+
+		// sign extend LOAD and POP
+		*r1 = -((sign << size) - *r1);
 	}
 }
 
