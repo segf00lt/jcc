@@ -81,6 +81,7 @@ enum TOKENS {
 
 	T_TRUE, T_FALSE,
 	T_INTEGER,
+	T_FLOATING,
 	T_STR,
 	T_CHARACTER,
 	T_BAR,
@@ -132,6 +133,7 @@ char *tokens_debug[] = {
 	"T_AND", "T_OR", "T_NOT",
 	"T_TRUE", "T_FALSE",
 	"T_INTEGER",
+	"T_FLOATING",
 	"T_STR",
 	"T_CHARACTER",
 	"T_BAR",
@@ -322,9 +324,9 @@ enum OPERATORS {
 	OP_XOR,
 	OP_NOT,
 	OP_NEG,
+	OP_ADDR,
 	OP_DOT,
 	OP_CAST,
-	OP_ADDR,
 	OP_DEREF,
 	OP_SUBSCRIPT,
 };
@@ -753,6 +755,7 @@ AST_node* call(void);
 void type_info_print(Type_info *tp, size_t depth);
 Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, Type_info *dest);
 void resolve_compound_type(Type_info *tinfo);
+Type_info* typecheck(AST_node *node, Sym_tab *tab);
 
 /* symbol table functions */
 void sym_tab_build(Sym_tab *tab, AST_node *node);
@@ -1963,6 +1966,17 @@ int lex(void) {
 	} else {
 		for(check = 0, s = tp; *s && isdigit(*s); ++s)
 			++check;
+		if(*s == '.') {
+			++s;
+			for(check = 0; *s && isdigit(*s); ++s)
+				++check;
+			if(check) {
+				lexer.debug_info.col += s - tp;
+				lexer.text_s = tp;
+				lexer.text_e = lexer.ptr = s;
+				return (lexer.token = T_FLOATING);
+			}
+		}
 	}
 	if(check) {
 		lexer.debug_info.col += s - tp;
@@ -2216,6 +2230,10 @@ AST_node* literal(void) {
 	switch(t) {
 	case T_INTEGER:
 		root->kind = N_INTLIT;
+		root->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		break;
+	case T_FLOATING:
+		root->kind = N_FLOATLIT;
 		root->val.str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
 	case T_STR:
@@ -3025,7 +3043,7 @@ AST_node* assignment(void) {
 	child = expression();
 
 	t = lex();
-	if(t != '=' && !(t >= T_ASSIGNPLUS && t <= T_ASSIGNRSHIFT) && t != T_INC && t != T_DEC) {
+	if(t != '=' && t != ',' && !(t >= T_ASSIGNPLUS && t <= T_ASSIGNRSHIFT) && t != T_INC && t != T_DEC) {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
 		return child;
@@ -3039,8 +3057,20 @@ AST_node* assignment(void) {
 
 	root = ast_alloc_node(&ast, N_ASSIGNMENT, &lexer.debug_info);
 	root->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
-	root->down->val.op = (t == '=') ? OP_ASSIGN : (t - T_ASSIGNPLUS) + OP_ASSIGNPLUS;
 	root->down->down = child;
+
+	if(t == ',') {
+		root->down->down = ast_alloc_node(&ast, N_IDLIST, &lexer.debug_info);
+		root->down->down->down = child;
+	}
+
+	while(t == ',') {
+		child->next = expression();
+		child = child->next;
+		t = lex();
+	}
+
+	root->down->val.op = (t == '=') ? OP_ASSIGN : (t - T_ASSIGNPLUS) + OP_ASSIGNPLUS;
 
 	if(t == T_INC) {
 		root->down->val.op = OP_INC;
@@ -3486,7 +3516,7 @@ void compile_function(AST_node *node) {
 void compile_block(AST_node *node) {
 	AST_node *child;
 	AST_node defer_head;
-	AST_node *defer_list = &defer_head;
+	AST_node *defer_tail = &defer_head;
 	assert(0);
 //	BCinst *inst;
 
@@ -3498,8 +3528,8 @@ void compile_block(AST_node *node) {
 		case N_STATEMENT:
 			if(child->kind == N_DEFER) {
 				node->down = child->next;
-				defer_list->next = node;
-				defer_list = defer_list->next;
+				defer_tail->next = node;
+				defer_tail = defer_tail->next;
 				continue;
 			}
 
@@ -3527,6 +3557,98 @@ void compile_block(AST_node *node) {
 			break;
 		}
 	}
+}
+
+Type_info* typecheck(AST_node *node, Sym_tab *tab) {
+	Type_info *tinfo_left, *tinfo_right;
+	Sym *symbol;
+
+	if(node->kind != N_OP) {
+		assert((node->kind >= N_INTLIT && node->kind <= N_STRUCTLIT) ||
+				node->kind == N_ID || node->kind == N_CALL);
+		tinfo_left = NULL;
+		switch(node->kind) {
+		case N_INTLIT: // TODO differentiate between int literals
+			tinfo_left = builtin_types + TY_INT;
+			break;
+		case N_FLOATLIT:
+			tinfo_left = builtin_types + TY_FLOAT;
+			break;
+			break;
+		case N_CHARLIT:
+			tinfo_left = builtin_types + TY_CHAR;
+			break;
+		case N_BOOLLIT:
+			tinfo_left = builtin_types + TY_BOOL;
+			break;
+		case N_ID:
+			symbol = sym_tab_look(tab, node->val.str);
+			tinfo_left = symbol->type;
+			break;
+		case N_CALL:
+		//TODO typecheck calls and assignments from multiple return values
+		case N_STRLIT:
+		case N_ARRAYLIT:
+		case N_STRUCTLIT:
+			myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
+			break;
+		}
+
+		return tinfo_left;
+	}
+
+	if(node->down)
+		tinfo_left = typecheck(node->down, tab);
+	if(node->next)
+		tinfo_right = typecheck(node->next, tab);
+
+	switch(node->val.op) {
+	// numeric
+	case OP_ASSIGNPLUS: case OP_ASSIGNSUB:
+	case OP_ASSIGNMUL: case OP_ASSIGNDIV:
+	case OP_INC: case OP_DEC:
+		break;
+	// int only
+	case OP_ASSIGNMOD: case OP_ASSIGNNOT:
+	case OP_ASSIGNAND: case OP_ASSIGNOR:
+	case OP_ASSIGNXOR:
+	case OP_ASSIGNLSHIFT: case OP_ASSIGNRSHIFT:
+		break;
+	// all
+	case OP_ASSIGN:
+		break;
+	// bool only
+	case OP_EQ:
+	case OP_NEQ:
+	case OP_LTEQ:
+	case OP_GTEQ:
+	case OP_LT:
+	case OP_GT:
+	case OP_LAND: case OP_LOR:
+	case OP_LNOT:
+		break;
+	// int and pointer
+	case OP_LSHIFT: case OP_RSHIFT:
+	case OP_MOD:
+	case OP_AND: case OP_OR: case OP_XOR: case OP_NOT:
+		break;
+	// numeric
+	case OP_ADD:
+	case OP_SUB:
+	case OP_MUL:
+	case OP_DIV:
+	case OP_NEG:
+		break;
+	case OP_ADDR:
+		break;
+	case OP_DOT:
+		break;
+	case OP_CAST:
+		break;
+	case OP_DEREF: case OP_SUBSCRIPT:
+		break;
+	}
+	return NULL;
 }
 
 void compile_expression(AST_node *node) {
@@ -3575,7 +3697,8 @@ int main(int argc, char **argv) {
 	pool_init(&member_pool, sizeof(Type_member), 128, 1);
 
 	parse();
-	//ast_print(ast.root, 0, false);
+	ast_print(ast.root, 0, false);
+	exit(0);
 
 	globaltab.name = argv[1];
 	fprintf(stderr,"################ TESTING COMPILE FUNCTIONS #####################\n");
