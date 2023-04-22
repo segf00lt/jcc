@@ -8,11 +8,16 @@ Norm :: struct {
 }
 
 main :: func {
+	ptr: *void;
 	v: Vec3;
+	vp: *Vec3;
 	a, b, c: int;
 	f: float = 0.1;
 	b = 2;
 	c = 3;
 	a = b + c;
 	f = v.n.l;
+	v = *vp;
+	*vp = v;
+	v = ptr + 1;
 }

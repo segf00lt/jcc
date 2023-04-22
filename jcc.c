@@ -1090,6 +1090,18 @@ Type_info* typecheck(AST_node *node) {
 		tinfo = tinfo_down;
 	}
 
+	if(node->val.op != OP_ASSIGN && node->val.op != OP_CAST) {
+		opstr = operators_debug[node->val.op];
+		if(
+			(tinfo_down && 
+			 tinfo_down->tag == TY_POINTER && tinfo_down->Pointer.pointer_to->tag == TY_VOID) ||
+			(tinfo_next &&
+			 tinfo_next->tag == TY_POINTER && tinfo_next->Pointer.pointer_to->tag == TY_VOID))
+		{
+			myerror("attempt to use *void as operand in %s at%DBG", opstr, &(node->debug_info));
+		}
+	}
+
 	switch(node->val.op) {
 	case OP_INC: case OP_DEC:
 		unary = true;
@@ -1182,7 +1194,6 @@ Type_info* typecheck(AST_node *node) {
 			 tinfo_next->tag != TY_POINTER &&
 			 tinfo_next->tag != TY_ARRAY);
 		break;
-	// NOTE errors in the following cases are handled within them
 	case OP_CAST:
 		unary = true;
 		break;
