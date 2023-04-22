@@ -969,8 +969,10 @@ void type_info_print(Type_info *tp, size_t depth) {
 
 Type_info* typecheck(AST_node *node) {
 	Type_info *tinfo, *tinfo_down, *tinfo_next;
+	Type_member *memberptr;
 	Sym *symptr;
 	char *tstr_down, *tstr_next, *opstr;
+	char *memberstr;
 	bool unary = false, invalid = false;
 
 	tinfo = NULL;
@@ -1023,6 +1025,49 @@ Type_info* typecheck(AST_node *node) {
 		return tinfo;
 	}
 
+	if(node->val.op == OP_DOT) {
+		for(int i = scope_depth; i >= 0; --i) {
+			symptr = sym_tab_look(tabstack+scope_depth, node->down->val.str);
+			if(symptr)
+				break;
+		}
+		if(!symptr)
+			symptr = sym_tab_look(&globaltab, node->down->val.str);
+		tinfo = symptr->type;
+
+		for(; node && node->kind == N_OP; node = node->next) {
+			if(node->next->kind == N_ID)
+				memberstr = node->next->val.str;
+			else
+				memberstr = node->next->down->val.str;
+
+			switch(tinfo->tag) {
+			case TY_ENUM:
+				myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
+				memberptr = tinfo->Enum.members;
+				break;
+			case TY_STRUCT:
+				memberptr = tinfo->Struct.members;
+				break;
+			case TY_UNION:
+				memberptr = tinfo->Union.members;
+				break;
+			default:
+				myerror("use of OP_DOT on scalar type at%DBG", &(node->debug_info));
+				break;
+			}
+
+			for(; memberptr; memberptr = memberptr->next) {
+				if(!strcmp(memberstr, memberptr->name)) {
+					tinfo = memberptr->type;
+					break;
+				}
+			}
+		}
+
+		return tinfo;
+	}
+
 	if(node->down)
 		tinfo_down = typecheck(node->down);
 	if(node->next)
@@ -1048,19 +1093,35 @@ Type_info* typecheck(AST_node *node) {
 	switch(node->val.op) {
 	case OP_INC: case OP_DEC:
 		unary = true;
-		invalid = (tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER);
+		invalid =
+			(tinfo_down->tag != TY_INT &&
+			 tinfo_down->tag != TY_FLOAT &&
+			 tinfo_down->tag != TY_POINTER &&
+			 tinfo_down->tag != TY_ARRAY);
 		break;
 	case OP_ASSIGNPLUS: case OP_ASSIGNSUB:
 	case OP_ASSIGNMUL: case OP_ASSIGNDIV:
-		invalid = (tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER) ||
-			(tinfo_next->tag != TY_INT && tinfo_next->tag != TY_FLOAT && tinfo_next->tag != TY_POINTER);
+		invalid =
+			(tinfo_down->tag != TY_INT && 
+			 tinfo_down->tag != TY_POINTER &&
+			 tinfo_down->tag != TY_ARRAY)
+			||
+			(tinfo_next->tag != TY_INT &&
+			 tinfo_next->tag != TY_POINTER &&
+			 tinfo_next->tag != TY_ARRAY);
 		break;
 	case OP_ASSIGNMOD: case OP_ASSIGNNOT:
 	case OP_ASSIGNAND: case OP_ASSIGNOR:
 	case OP_ASSIGNXOR:
 	case OP_ASSIGNLSHIFT: case OP_ASSIGNRSHIFT:
-		invalid = (tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER) ||
-			(tinfo_next->tag != TY_INT && tinfo_next->tag != TY_POINTER);
+		invalid =
+			(tinfo_down->tag != TY_INT && 
+			 tinfo_down->tag != TY_POINTER &&
+			 tinfo_down->tag != TY_ARRAY)
+			||
+			(tinfo_next->tag != TY_INT &&
+			 tinfo_next->tag != TY_POINTER &&
+			 tinfo_next->tag != TY_ARRAY);
 		break;
 	// all
 	case OP_ASSIGN:
@@ -1081,23 +1142,45 @@ Type_info* typecheck(AST_node *node) {
 		break;
 	case OP_NOT:
 		unary = true;
-		invalid = (tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER);
+		invalid =
+			(tinfo_down->tag != TY_INT &&
+			 tinfo_down->tag != TY_POINTER &&
+			 tinfo_down->tag != TY_ARRAY);
 		break;
 	case OP_LSHIFT: case OP_RSHIFT:
 	case OP_MOD:
 	case OP_AND: case OP_OR: case OP_XOR:
-		invalid = ((tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER) || (tinfo_next->tag != TY_INT && tinfo_next->tag != TY_POINTER));
+		invalid =
+			(tinfo_down->tag != TY_INT && 
+			 tinfo_down->tag != TY_POINTER &&
+			 tinfo_down->tag != TY_ARRAY)
+			||
+			(tinfo_next->tag != TY_INT &&
+			 tinfo_next->tag != TY_POINTER &&
+			 tinfo_next->tag != TY_ARRAY);
 		break;
 	case OP_NEG:
 		unary = true;
-		invalid = (tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER);
+		invalid =
+			(tinfo_down->tag != TY_INT &&
+			 tinfo_down->tag != TY_FLOAT &&
+			 tinfo_down->tag != TY_POINTER &&
+			 tinfo_down->tag != TY_ARRAY);
 		break;
 	case OP_ADD:
 	case OP_SUB:
 	case OP_MUL:
 	case OP_DIV:
-		invalid = (tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER) ||
-			(tinfo_next->tag != TY_INT && tinfo_next->tag != TY_FLOAT && tinfo_next->tag != TY_POINTER);
+		invalid =
+			(tinfo_down->tag != TY_INT && 
+			 tinfo_down->tag != TY_FLOAT &&
+			 tinfo_down->tag != TY_POINTER &&
+			 tinfo_down->tag != TY_ARRAY)
+			||
+			(tinfo_next->tag != TY_INT &&
+			 tinfo_next->tag != TY_FLOAT &&
+			 tinfo_next->tag != TY_POINTER &&
+			 tinfo_next->tag != TY_ARRAY);
 		break;
 	// NOTE errors in the following cases are handled within them
 	case OP_CAST:
@@ -1112,12 +1195,13 @@ Type_info* typecheck(AST_node *node) {
 			myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
 		}
 		break;
-	case OP_DOT:
-		unary = true;
-		break;
 	case OP_DEREF: case OP_SUBSCRIPT:
 		unary = true;
+		invalid = (tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY);
+		tinfo = (node->val.op == OP_DEREF) ? tinfo_down->Pointer.pointer_to : tinfo_down->Array.array_of;
 		break;
+	default:
+		assert(0);
 	}
 
 	if(!invalid)
@@ -3530,7 +3614,7 @@ AST_node* member(void) {
 		return NULL;
 
 	t = lex();
-	if(t != '.' && t != '-') {
+	if(t != '.') {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
 		return child;
@@ -3548,26 +3632,34 @@ AST_node* member(void) {
 }
 
 AST_node* subscript(void) {
+	/*TODO 
+	 * v[1][2][3]
+	 *
+	 * should parse as
+	 *
+	 * [3]
+	 *    [2]
+	 *       [1]
+	 *          v
+	 */
 	register int t;
 	AST_node *child, *node;
-	AST_node head;
+	AST_node tmp;
 
 	child = term();
 
 	if(!child)
 		return NULL;
 
-	node = &head;
+	node = &tmp;
 
 	t = lex();
 	while(t == '[') {
-		node->next = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
-		node = node->next;
+		node->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+		node = node->down;
 
 		node->val.op = OP_SUBSCRIPT;
-		node->down = expression();
-		if(!node->down)
-			parse_error("expression");
+		node->next = expression();
 		t = lex();
 		if(t != ']')
 			parse_error("']'");
@@ -3578,11 +3670,11 @@ AST_node* subscript(void) {
 	lexer.debug_info.col -= lexer.ptr - lexer.unget;
 	lexer.ptr = lexer.unget;
 
-	if(node == &head) {
+	if(node == &tmp) {
 		node = child;
 	} else {
-		node = head.next;
-		node->next = child;
+		node->down = child;
+		node = tmp.down;
 	}
 
 	return node;
@@ -3785,7 +3877,7 @@ int main(int argc, char **argv) {
 	pool_init(&member_pool, sizeof(Type_member), 128, 1);
 
 	parse();
-	ast_print(ast.root, 0, false);
+	//ast_print(ast.root, 0, false);
 
 	globaltab.name = argv[1];
 	fprintf(stderr,"################ TESTING COMPILE FUNCTIONS #####################\n");
