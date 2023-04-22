@@ -183,7 +183,6 @@ enum NODES {
 	N_WHILESTATEMENT,
 	N_RETURNSTATEMENT,
 	N_FORSTATEMENT,
-	N_ASSIGNMENT,
 	N_CALL,
 	N_POINTER,
 	N_ARRAY,
@@ -222,7 +221,6 @@ char *nodes_debug[] = {
 	"N_WHILESTATEMENT",
 	"N_RETURNSTATEMENT",
 	"N_FORSTATEMENT",
-	"N_ASSIGNMENT",
 	"N_CALL",
 	"N_POINTER",
 	"N_ARRAY",
@@ -289,7 +287,7 @@ size_t keyword_length[] = {
 };
 
 enum OPERATORS {
-	OP_ASSIGNPLUS = 9000,
+	OP_ASSIGNPLUS = 0,
 	OP_ASSIGNSUB,
 	OP_ASSIGNMUL,
 	OP_ASSIGNDIV,
@@ -324,9 +322,9 @@ enum OPERATORS {
 	OP_XOR,
 	OP_NOT,
 	OP_NEG,
-	OP_ADDR,
 	OP_DOT,
 	OP_CAST,
+	OP_ADDR,
 	OP_DEREF,
 	OP_SUBSCRIPT,
 };
@@ -705,6 +703,8 @@ Type_info builtin_types[] = {
 	{ .tag = TY_INT, .bytes = 2u, .Int = { .bits = 16u, .sign = 1 } },
 	{ .tag = TY_INT, .bytes = 4u, .Int = { .bits = 32u, .sign = 1 } },
 	{ .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } },
+	{ .tag = TY_ARRAY, .bytes = 8u },
+	{ .tag = TY_POINTER, .bytes = 8u },
 };
 
 /* utility functions */
@@ -755,7 +755,7 @@ AST_node* call(void);
 void type_info_print(Type_info *tp, size_t depth);
 Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, Type_info *dest);
 void resolve_compound_type(Type_info *tinfo);
-Type_info* typecheck(AST_node *node, Sym_tab *tab);
+Type_info* typecheck(AST_node *node);
 
 /* symbol table functions */
 void sym_tab_build(Sym_tab *tab, AST_node *node);
@@ -797,7 +797,7 @@ void ast_print(AST_node *node, size_t depth, bool skip_next) {
 		else if(node->kind != N_OP)
 			fprintf(stderr, "str: %s\n", node->val.str);
 		else
-			fprintf(stderr, "op: %s\n", operators_debug[node->val.op-OP_ASSIGNPLUS]);
+			fprintf(stderr, "op: %s\n", operators_debug[node->val.op]);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		fprintf(stderr, "down: %u\n", node->down ? node->down->id : 0);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
@@ -965,6 +965,174 @@ void type_info_print(Type_info *tp, size_t depth) {
 	default:
 		assert(0);
 	}
+}
+
+Type_info* typecheck(AST_node *node) {
+	Type_info *tinfo, *tinfo_down, *tinfo_next;
+	Sym *symptr;
+	char *tstr_down, *tstr_next, *opstr;
+	bool unary = false, invalid = false;
+
+	tinfo = NULL;
+	tinfo_down = NULL;
+	tinfo_next = NULL;
+	if(node->kind != N_OP) {
+		assert((node->kind >= N_INTLIT && node->kind <= N_STRUCTLIT) ||
+				node->kind == N_ID || node->kind == N_CALL);
+		switch(node->kind) {
+		case N_INTLIT: // TODO differentiate between int literals
+			tinfo = builtin_types + TY_INT;
+			break;
+		case N_FLOATLIT:
+			tinfo = builtin_types + TY_FLOAT;
+			break;
+			break;
+		case N_CHARLIT:
+			tinfo = builtin_types + TY_CHAR;
+			break;
+		case N_BOOLLIT:
+			tinfo = builtin_types + TY_BOOL;
+			break;
+		case N_ID:
+			for(int i = scope_depth; i >= 0; --i) {
+				symptr = sym_tab_look(tabstack+scope_depth, node->val.str);
+				if(symptr)
+					break;
+			}
+			if(!symptr)
+				symptr = sym_tab_look(&globaltab, node->val.str);
+			tinfo = symptr->type;
+			break;
+		case N_CALL:
+			for(int i = scope_depth; i >= 0; --i) {
+				symptr = sym_tab_look(tabstack+scope_depth, node->val.str);
+				if(symptr)
+					break;
+			}
+			if(!symptr)
+				symptr = sym_tab_look(&globaltab, node->val.str);
+			tinfo = symptr->type->Func.return_types->type;
+			break;
+		case N_STRLIT:
+		case N_ARRAYLIT:
+		case N_STRUCTLIT:
+			myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
+			break;
+		}
+
+		return tinfo;
+	}
+
+	if(node->down)
+		tinfo_down = typecheck(node->down);
+	if(node->next)
+		tinfo_next = typecheck(node->next);
+
+	if(tinfo_down && tinfo_next && tinfo_down != tinfo_next) {
+		if(tinfo_down->tag == tinfo_next->tag && 
+			tinfo_down >= builtin_types && tinfo_down < builtin_types + ARRLEN(builtin_types) &&
+			tinfo_next >= builtin_types && tinfo_next < builtin_types + ARRLEN(builtin_types))
+		{
+			tinfo = (tinfo_down->bytes >= tinfo_next->bytes) ? tinfo_down : tinfo_next;
+		} else if(tinfo_down->tag == TY_POINTER && tinfo_next->tag == TY_INT) {
+			tinfo = tinfo_down;
+		} else if(tinfo_next->tag == TY_POINTER && tinfo_down->tag == TY_INT) {
+			tinfo = tinfo_next;
+		} else {
+			invalid = true;
+		}
+	} else {
+		tinfo = tinfo_down;
+	}
+
+	switch(node->val.op) {
+	case OP_INC: case OP_DEC:
+		unary = true;
+		invalid = (tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER);
+		break;
+	case OP_ASSIGNPLUS: case OP_ASSIGNSUB:
+	case OP_ASSIGNMUL: case OP_ASSIGNDIV:
+		invalid = (tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER) ||
+			(tinfo_next->tag != TY_INT && tinfo_next->tag != TY_FLOAT && tinfo_next->tag != TY_POINTER);
+		break;
+	case OP_ASSIGNMOD: case OP_ASSIGNNOT:
+	case OP_ASSIGNAND: case OP_ASSIGNOR:
+	case OP_ASSIGNXOR:
+	case OP_ASSIGNLSHIFT: case OP_ASSIGNRSHIFT:
+		invalid = (tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER) ||
+			(tinfo_next->tag != TY_INT && tinfo_next->tag != TY_POINTER);
+		break;
+	// all
+	case OP_ASSIGN:
+	case OP_EQ:
+	case OP_NEQ:
+	case OP_LTEQ:
+	case OP_GTEQ:
+	case OP_LT:
+	case OP_GT:
+		break;
+	// bool only
+	case OP_LNOT:
+		unary = true;
+		invalid = (tinfo_down->tag != TY_BOOL);
+		break;
+	case OP_LAND: case OP_LOR:
+		invalid = (tinfo_down->tag != TY_BOOL || tinfo_next->tag != TY_BOOL);
+		break;
+	case OP_NOT:
+		unary = true;
+		invalid = (tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER);
+		break;
+	case OP_LSHIFT: case OP_RSHIFT:
+	case OP_MOD:
+	case OP_AND: case OP_OR: case OP_XOR:
+		invalid = ((tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER) || (tinfo_next->tag != TY_INT && tinfo_next->tag != TY_POINTER));
+		break;
+	case OP_NEG:
+		unary = true;
+		invalid = (tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER);
+		break;
+	case OP_ADD:
+	case OP_SUB:
+	case OP_MUL:
+	case OP_DIV:
+		invalid = (tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER) ||
+			(tinfo_next->tag != TY_INT && tinfo_next->tag != TY_FLOAT && tinfo_next->tag != TY_POINTER);
+		break;
+	// NOTE errors in the following cases are handled within them
+	case OP_CAST:
+		unary = true;
+		break;
+	case OP_ADDR:
+		unary = true;
+		if(node->down->kind == N_ID) {
+			tinfo = builtin_types + TY_POINTER;
+			tinfo->Pointer.pointer_to = tinfo_down;
+		} else { // address of struct member, array element or pointer dereference
+			myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
+		}
+		break;
+	case OP_DOT:
+		unary = true;
+		break;
+	case OP_DEREF: case OP_SUBSCRIPT:
+		unary = true;
+		break;
+	}
+
+	if(!invalid)
+		return tinfo;
+
+	tstr_down = type_tag_debug[tinfo_down->tag];
+	tstr_next = type_tag_debug[tinfo_next->tag];
+	opstr = operators_debug[node->val.op];
+
+	if(unary)
+		myerror("invalid operand %s to %s at%DBG", tstr_down, opstr, &(node->debug_info));
+	else
+		myerror("invalid operands %s and %s to %s at%DBG", tstr_down, tstr_next, opstr, &(node->debug_info));
+
+	return NULL;
 }
 
 Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, Type_info *dest) {
@@ -3055,13 +3223,12 @@ AST_node* assignment(void) {
 		parse_error("expression");
 	}
 
-	root = ast_alloc_node(&ast, N_ASSIGNMENT, &lexer.debug_info);
-	root->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
-	root->down->down = child;
+	root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+	root->down = child;
 
 	if(t == ',') {
-		root->down->down = ast_alloc_node(&ast, N_IDLIST, &lexer.debug_info);
-		root->down->down->down = child;
+		root->down = ast_alloc_node(&ast, N_IDLIST, &lexer.debug_info);
+		root->down->down = child;
 	}
 
 	while(t == ',') {
@@ -3070,15 +3237,15 @@ AST_node* assignment(void) {
 		t = lex();
 	}
 
-	root->down->val.op = (t == '=') ? OP_ASSIGN : (t - T_ASSIGNPLUS) + OP_ASSIGNPLUS;
+	root->val.op = (t == '=') ? OP_ASSIGN : (t - T_ASSIGNPLUS);
 
 	if(t == T_INC) {
-		root->down->val.op = OP_INC;
+		root->val.op = OP_INC;
 	} else if(t == T_DEC) {
-		root->down->val.op = OP_DEC;
+		root->val.op = OP_DEC;
 	} else {
-		root->down->next = expression();
-		if(!root->down->next) {
+		root->next = expression();
+		if(!root->next) {
 			lexer.debug_info.col -= lexer.ptr - lexer.unget;
 			lexer.ptr = lexer.unget;
 			parse_error("expression");
@@ -3505,12 +3672,24 @@ void compile(AST_node *root) {
 	for(node = root; node; node = node->next) {
 		if(node->kind != N_FUNCTION)
 			continue;
+		++scope_depth;
 		compile_function(node);
+		--scope_depth;
 	}
 }
 
 void compile_function(AST_node *node) {
-	ast_print(node,0,true);
+	//ast_print(node,0,true);
+	node = node->down;
+	while(node && node->kind != N_BLOCK)
+		node = node->next;
+	node = node->down;
+	sym_tab_build(tabstack+scope_depth, node);
+	for(; node; node = node->next) {
+		if(node->kind != N_STATEMENT)
+			continue;
+		typecheck(node->down);
+	}
 }
 
 void compile_block(AST_node *node) {
@@ -3538,8 +3717,6 @@ void compile_block(AST_node *node) {
 				continue;
 			}
 
-			assert(child->kind == N_ASSIGNMENT);
-			child = child->down;
 			assert(child->kind == N_OP);
 
 			if(child->val.op == OP_ASSIGN) {
@@ -3557,98 +3734,6 @@ void compile_block(AST_node *node) {
 			break;
 		}
 	}
-}
-
-Type_info* typecheck(AST_node *node, Sym_tab *tab) {
-	Type_info *tinfo_left, *tinfo_right;
-	Sym *symbol;
-
-	if(node->kind != N_OP) {
-		assert((node->kind >= N_INTLIT && node->kind <= N_STRUCTLIT) ||
-				node->kind == N_ID || node->kind == N_CALL);
-		tinfo_left = NULL;
-		switch(node->kind) {
-		case N_INTLIT: // TODO differentiate between int literals
-			tinfo_left = builtin_types + TY_INT;
-			break;
-		case N_FLOATLIT:
-			tinfo_left = builtin_types + TY_FLOAT;
-			break;
-			break;
-		case N_CHARLIT:
-			tinfo_left = builtin_types + TY_CHAR;
-			break;
-		case N_BOOLLIT:
-			tinfo_left = builtin_types + TY_BOOL;
-			break;
-		case N_ID:
-			symbol = sym_tab_look(tab, node->val.str);
-			tinfo_left = symbol->type;
-			break;
-		case N_CALL:
-		//TODO typecheck calls and assignments from multiple return values
-		case N_STRLIT:
-		case N_ARRAYLIT:
-		case N_STRUCTLIT:
-			myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
-			break;
-		}
-
-		return tinfo_left;
-	}
-
-	if(node->down)
-		tinfo_left = typecheck(node->down, tab);
-	if(node->next)
-		tinfo_right = typecheck(node->next, tab);
-
-	switch(node->val.op) {
-	// numeric
-	case OP_ASSIGNPLUS: case OP_ASSIGNSUB:
-	case OP_ASSIGNMUL: case OP_ASSIGNDIV:
-	case OP_INC: case OP_DEC:
-		break;
-	// int only
-	case OP_ASSIGNMOD: case OP_ASSIGNNOT:
-	case OP_ASSIGNAND: case OP_ASSIGNOR:
-	case OP_ASSIGNXOR:
-	case OP_ASSIGNLSHIFT: case OP_ASSIGNRSHIFT:
-		break;
-	// all
-	case OP_ASSIGN:
-		break;
-	// bool only
-	case OP_EQ:
-	case OP_NEQ:
-	case OP_LTEQ:
-	case OP_GTEQ:
-	case OP_LT:
-	case OP_GT:
-	case OP_LAND: case OP_LOR:
-	case OP_LNOT:
-		break;
-	// int and pointer
-	case OP_LSHIFT: case OP_RSHIFT:
-	case OP_MOD:
-	case OP_AND: case OP_OR: case OP_XOR: case OP_NOT:
-		break;
-	// numeric
-	case OP_ADD:
-	case OP_SUB:
-	case OP_MUL:
-	case OP_DIV:
-	case OP_NEG:
-		break;
-	case OP_ADDR:
-		break;
-	case OP_DOT:
-		break;
-	case OP_CAST:
-		break;
-	case OP_DEREF: case OP_SUBSCRIPT:
-		break;
-	}
-	return NULL;
 }
 
 void compile_expression(AST_node *node) {
@@ -3689,6 +3774,9 @@ int main(int argc, char **argv) {
 
 	SYM_TAB_INIT(pendingtab,SCOPE_GLOBAL);
 	SYM_TAB_INIT(globaltab,SCOPE_GLOBAL);
+	for(int i = 0; i < ARRLEN(tabstack); ++i) {
+		SYM_TAB_INIT(tabstack[i],SCOPE_LOCAL);
+	}
 	fmapread(&fm);
 	lexer_init(&lexer, fm.buf);
 	pool_init(&ast.pool, sizeof(AST_node), 256, 4);
@@ -3698,7 +3786,6 @@ int main(int argc, char **argv) {
 
 	parse();
 	ast_print(ast.root, 0, false);
-	exit(0);
 
 	globaltab.name = argv[1];
 	fprintf(stderr,"################ TESTING COMPILE FUNCTIONS #####################\n");

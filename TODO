@@ -1,4 +1,9 @@
-bytecode interpreter
+typecheck:
+- assignments
+- casts
+- function calls
+- assignment from multiple return values
+
 compile to bytecode
 add directives
 compile to x64

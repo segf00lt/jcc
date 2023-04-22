@@ -27,4 +27,5 @@ main :: func() {
 	bob.x[9].ptr = 2;
 	f: float = 10.45;
 	ptr, b = vec3_add(a, b);
+	a = -b;
 }
