@@ -28,7 +28,7 @@ main :: func() {
 	//f: float = 10.45;
 	//ptr, b = vec3_add(a, b);
 	//a = -b;
-	v[1][2][3];
 	t.s.c;
 	a+b;
+	v[1][2][3];
 }

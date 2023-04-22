@@ -3643,34 +3643,32 @@ AST_node* member(void) {
 }
 
 AST_node* subscript(void) {
-	/*TODO 
-	 * v[1][2][3]
-	 *
-	 * should parse as
-	 *
-	 * [3]
-	 *    [2]
-	 *       [1]
-	 *          v
-	 */
 	register int t;
 	AST_node *child, *node;
-	AST_node tmp;
+	AST_node tmp1, tmp2;
+	AST_node *head1, *tail1, *head2, *tail2;
 
 	child = term();
 
 	if(!child)
 		return NULL;
 
-	node = &tmp;
+	head1 = tail1 = &tmp1;
+	head2 = tail2 = &tmp2;
 
 	t = lex();
 	while(t == '[') {
-		node->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
-		node = node->down;
+		tail1->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+		tail1 = tail1->down;
 
-		node->val.op = OP_SUBSCRIPT;
-		node->next = expression();
+		tail1->val.op = OP_SUBSCRIPT;
+
+		head2 = expression();
+		head2->next = tail2;
+		tail2 = head2;
+
+		if(!head2)
+			parse_error("expression");
 		t = lex();
 		if(t != ']')
 			parse_error("']'");
@@ -3681,11 +3679,18 @@ AST_node* subscript(void) {
 	lexer.debug_info.col -= lexer.ptr - lexer.unget;
 	lexer.ptr = lexer.unget;
 
-	if(node == &tmp) {
-		node = child;
-	} else {
-		node->down = child;
-		node = tmp.down;
+	if(head1 == tail1)
+		return child;
+
+	head1 = head1->down;
+	node = head1;
+	tail1->down = child;
+	while(head1 && head2 && head1->kind == N_OP) {
+		head1->next = head2;
+		tail2 = head2->next;
+		head2->next = NULL;
+		head1 = head1->down;
+		head2 = tail2;
 	}
 
 	return node;
@@ -3888,7 +3893,8 @@ int main(int argc, char **argv) {
 	pool_init(&member_pool, sizeof(Type_member), 128, 1);
 
 	parse();
-	//ast_print(ast.root, 0, false);
+	ast_print(ast.root, 0, false);
+	exit(0);
 
 	globaltab.name = argv[1];
 	fprintf(stderr,"################ TESTING COMPILE FUNCTIONS #####################\n");
