@@ -19,5 +19,7 @@ main :: func {
 	f = v.n.l;
 	v = *vp;
 	*vp = v;
-	v = ptr + 1;
+	fp: *float;
+	fn: func(int)(int);
+	fn + 1;
 }

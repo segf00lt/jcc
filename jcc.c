@@ -1025,6 +1025,10 @@ Type_info* typecheck(AST_node *node) {
 		return tinfo;
 	}
 
+	if(node->val.op == OP_ASSIGN) {
+		myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
+	}
+
 	if(node->val.op == OP_DOT) {
 		for(int i = scope_depth; i >= 0; --i) {
 			symptr = sym_tab_look(tabstack+scope_depth, node->down->val.str);
@@ -1040,6 +1044,11 @@ Type_info* typecheck(AST_node *node) {
 				memberstr = node->next->val.str;
 			else
 				memberstr = node->next->down->val.str;
+
+			if(tinfo->tag == TY_POINTER
+					&& tinfo->Pointer.pointer_to->tag >= TY_STRUCT
+					&& tinfo->Pointer.pointer_to->tag <= TY_UNION)
+				tinfo = tinfo->Pointer.pointer_to;
 
 			switch(tinfo->tag) {
 			case TY_ENUM:
@@ -1073,16 +1082,18 @@ Type_info* typecheck(AST_node *node) {
 	if(node->next)
 		tinfo_next = typecheck(node->next);
 
+	opstr = operators_debug[node->val.op];
+
 	if(tinfo_down && tinfo_next && tinfo_down != tinfo_next) {
-		if(tinfo_down->tag == tinfo_next->tag && 
-			tinfo_down >= builtin_types && tinfo_down < builtin_types + ARRLEN(builtin_types) &&
-			tinfo_next >= builtin_types && tinfo_next < builtin_types + ARRLEN(builtin_types))
-		{
-			tinfo = (tinfo_down->bytes >= tinfo_next->bytes) ? tinfo_down : tinfo_next;
-		} else if(tinfo_down->tag == TY_POINTER && tinfo_next->tag == TY_INT) {
+		if(tinfo_down->tag == TY_POINTER && tinfo_next->tag == TY_INT) {
 			tinfo = tinfo_down;
 		} else if(tinfo_next->tag == TY_POINTER && tinfo_down->tag == TY_INT) {
 			tinfo = tinfo_next;
+		} else if(tinfo_down->tag == tinfo_next->tag && 
+				tinfo_down >= builtin_types && tinfo_down < builtin_types + ARRLEN(builtin_types)-2 &&
+				tinfo_next >= builtin_types && tinfo_next < builtin_types + ARRLEN(builtin_types)-2)
+		{
+			tinfo = (tinfo_down->bytes >= tinfo_next->bytes) ? tinfo_down : tinfo_next;
 		} else {
 			invalid = true;
 		}
@@ -1090,8 +1101,10 @@ Type_info* typecheck(AST_node *node) {
 		tinfo = tinfo_down;
 	}
 
+	if(node->val.op != OP_ASSIGN && ((tinfo_down && tinfo_down->tag == TY_FUNC) || (tinfo_next && tinfo_next->tag == TY_FUNC)))
+		myerror("attempt to use function as operand in %s at%DBG", opstr, &(node->debug_info));
+
 	if(node->val.op != OP_ASSIGN && node->val.op != OP_CAST) {
-		opstr = operators_debug[node->val.op];
 		if(
 			(tinfo_down && 
 			 tinfo_down->tag == TY_POINTER && tinfo_down->Pointer.pointer_to->tag == TY_VOID) ||
@@ -1116,11 +1129,18 @@ Type_info* typecheck(AST_node *node) {
 		invalid =
 			(tinfo_down->tag != TY_INT && 
 			 tinfo_down->tag != TY_POINTER &&
+			 tinfo_down->tag != TY_FLOAT &&
 			 tinfo_down->tag != TY_ARRAY)
 			||
 			(tinfo_next->tag != TY_INT &&
-			 tinfo_next->tag != TY_POINTER &&
-			 tinfo_next->tag != TY_ARRAY);
+			 tinfo_down->tag != TY_FLOAT)
+			||
+			(tinfo_down->tag == TY_FLOAT &&
+			 tinfo_next->tag != TY_INT &&
+			 tinfo_next->tag != TY_FLOAT)
+			||
+			((tinfo_down->tag == TY_POINTER || tinfo_down->tag == TY_ARRAY) &&
+			 tinfo_next->tag != TY_INT);
 		break;
 	case OP_ASSIGNMOD: case OP_ASSIGNNOT:
 	case OP_ASSIGNAND: case OP_ASSIGNOR:
@@ -1131,18 +1151,38 @@ Type_info* typecheck(AST_node *node) {
 			 tinfo_down->tag != TY_POINTER &&
 			 tinfo_down->tag != TY_ARRAY)
 			||
-			(tinfo_next->tag != TY_INT &&
-			 tinfo_next->tag != TY_POINTER &&
-			 tinfo_next->tag != TY_ARRAY);
+			(tinfo_next->tag != TY_INT);
 		break;
-	// all
-	case OP_ASSIGN:
 	case OP_EQ:
 	case OP_NEQ:
+		invalid = 
+			!(tinfo_down->tag == TY_FLOAT && tinfo_next->tag == TY_FLOAT)
+			|| 
+			!(tinfo_down->tag == TY_INT && tinfo_next->tag == TY_INT && tinfo_down->Int.sign == tinfo_next->Int.sign)
+			||
+			!(tinfo_down->tag == TY_POINTER && tinfo_next->tag == TY_POINTER && tinfo_down->Pointer.pointer_to == tinfo_next->Pointer.pointer_to)
+			||
+			!(tinfo_down->tag == TY_ARRAY && tinfo_next->tag == TY_ARRAY && tinfo_down->Array.array_of == tinfo_next->Array.array_of)
+			||
+			(tinfo_down->tag != tinfo_next->tag)
+			;
+		break;
 	case OP_LTEQ:
 	case OP_GTEQ:
 	case OP_LT:
 	case OP_GT:
+		invalid = 
+			!(tinfo_down->tag == TY_FLOAT && tinfo_next->tag == TY_FLOAT)
+			|| 
+			!(tinfo_down->tag == TY_INT && tinfo_next->tag == TY_INT && tinfo_down->Int.sign == tinfo_next->Int.sign)
+			||
+			!(tinfo_down->tag == TY_POINTER && tinfo_next->tag == TY_POINTER && tinfo_down->Pointer.pointer_to == tinfo_next->Pointer.pointer_to)
+			||
+			!(tinfo_down->tag == TY_ARRAY && tinfo_next->tag == TY_ARRAY && tinfo_down->Array.array_of == tinfo_next->Array.array_of)
+			||
+			(tinfo_down->tag != tinfo_next->tag)
+			||
+			tinfo_down->tag == TY_TYPE || (tinfo_down->tag >= TY_FUNC && tinfo_down->tag <= TY_UNION);
 		break;
 	// bool only
 	case OP_LNOT:
@@ -1169,7 +1209,11 @@ Type_info* typecheck(AST_node *node) {
 			||
 			(tinfo_next->tag != TY_INT &&
 			 tinfo_next->tag != TY_POINTER &&
-			 tinfo_next->tag != TY_ARRAY);
+			 tinfo_next->tag != TY_ARRAY)
+			||
+			(tinfo_down->tag != tinfo_next->tag &&
+			 tinfo_down->tag != TY_INT &&
+			 tinfo_next->tag != TY_INT);
 		break;
 	case OP_NEG:
 		unary = true;
@@ -1192,10 +1236,15 @@ Type_info* typecheck(AST_node *node) {
 			(tinfo_next->tag != TY_INT &&
 			 tinfo_next->tag != TY_FLOAT &&
 			 tinfo_next->tag != TY_POINTER &&
-			 tinfo_next->tag != TY_ARRAY);
+			 tinfo_next->tag != TY_ARRAY)
+			||
+			(tinfo_down->tag != tinfo_next->tag &&
+			 tinfo_down->tag != TY_INT &&
+			 tinfo_next->tag != TY_INT);
 		break;
 	case OP_CAST:
 		unary = true;
+		myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
 		break;
 	case OP_ADDR:
 		unary = true;
@@ -1220,7 +1269,6 @@ Type_info* typecheck(AST_node *node) {
 
 	tstr_down = type_tag_debug[tinfo_down->tag];
 	tstr_next = type_tag_debug[tinfo_next->tag];
-	opstr = operators_debug[node->val.op];
 
 	if(unary)
 		myerror("invalid operand %s to %s at%DBG", tstr_down, opstr, &(node->debug_info));
@@ -3893,8 +3941,8 @@ int main(int argc, char **argv) {
 	pool_init(&member_pool, sizeof(Type_member), 128, 1);
 
 	parse();
-	ast_print(ast.root, 0, false);
-	exit(0);
+	//ast_print(ast.root, 0, false);
+	//exit(0);
 
 	globaltab.name = argv[1];
 	fprintf(stderr,"################ TESTING COMPILE FUNCTIONS #####################\n");
