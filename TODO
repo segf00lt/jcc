@@ -1,9 +1,3 @@
-typecheck:
-- casts
-- function calls
-- multiple assignment
-- assignment from multiple return values
-
 compile to bytecode
 add directives
 compile to x64

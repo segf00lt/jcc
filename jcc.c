@@ -65,12 +65,11 @@ enum TOKENS {
 	T_DEFER,
 	T_CAST,
 
-	T_INT, T_CHAR, T_VOID, T_BOOL,
-	T_FLOAT, T_F32, T_F64,
-	T_TYPE,
-	T_STRING,
+	T_INT, T_BOOL, T_FLOAT, T_STRING, T_TYPE, T_VOID,
+	T_CHAR,
 	T_U8, T_U16, T_U32, T_U64,
 	T_S8, T_S16, T_S32, T_S64,
+	T_F32, T_F64,
 
 	T_IF, T_ELIF, T_ELSE,
 	T_WHILE, T_RETURN,
@@ -119,12 +118,11 @@ char *tokens_debug[] = {
 	"T_INLINE",
 	"T_DEFER",
 	"T_CAST",
-	"T_INT", "T_CHAR", "T_VOID", "T_BOOL",
-	"T_FLOAT", "T_F32", "T_F64",
-	"T_TYPE",
-	"T_STRING",
+	"T_INT", "T_BOOL", "T_FLOAT", "T_STRING", "T_TYPE", "T_VOID",
+	"T_CHAR",
 	"T_U8", "T_U16", "T_U32", "T_U64",
 	"T_S8", "T_S16", "T_S32", "T_S64",
+	"T_F32", "T_F64",
 	"T_IF", "T_ELIF", "T_ELSE",
 	"T_WHILE", "T_RETURN",
 	"T_FOR", "T_GOTO", "T_CONTINUE", "T_BREAK",
@@ -247,12 +245,11 @@ char *keyword[] = {
 	"inline",
 	"defer",
 	"cast",
-	"int", "char", "void", "bool",
-	"float", "f32", "f64",
-	"Type",
-	"string",
+	"int", "bool", "float", "string", "Type", "void",
+	"char",
 	"u8", "u16", "u32", "u64",
 	"s8", "s16", "s32", "s64",
+	"f32", "f64",
 	"if", "elif", "else",
 	"while", "return",
 	"for", "goto", "continue", "break",
@@ -271,12 +268,11 @@ size_t keyword_length[] = {
 	STRLEN("inline"),
 	STRLEN("defer"),
 	STRLEN("cast"),
-	STRLEN("int"), STRLEN("char"), STRLEN("void"), STRLEN("bool"),
-	STRLEN("float"), STRLEN("f32"), STRLEN("f64"),
-	STRLEN("Type"),
-	STRLEN("string"),
+	STRLEN("int"), STRLEN("bool"), STRLEN("float"), STRLEN("string"), STRLEN("Type"), STRLEN("void"),
+	STRLEN("char"),
 	STRLEN("u8"), STRLEN("u16"), STRLEN("u32"), STRLEN("u64"),
 	STRLEN("s8"), STRLEN("s16"), STRLEN("s32"), STRLEN("s64"),
+	STRLEN("f32"), STRLEN("f64"),
 	STRLEN("if"), STRLEN("elif"), STRLEN("else"),
 	STRLEN("while"), STRLEN("return"),
 	STRLEN("for"), STRLEN("goto"), STRLEN("continue"), STRLEN("break"),
@@ -373,24 +369,29 @@ char *operators_debug[] = {
 };
 
 enum TYPE_TAG {
-	TY_INT = 0, TY_CHAR, TY_VOID, TY_BOOL,
-	TY_FLOAT, TY_F32, TY_F64,
-	TY_TYPE, TY_STRING,
+	TY_INT = 0, TY_BOOL,
+	TY_FLOAT,
+	TY_STRING, TY_TYPE, TY_VOID,
+	TY_ARRAY, TY_POINTER, TY_VOIDPOINTER,
+
+	TY_CHAR, 
 	TY_U8, TY_U16, TY_U32, TY_U64,
 	TY_S8, TY_S16, TY_S32, TY_S64,
+	TY_F32, TY_F64,
 
-	TY_ARRAY, TY_POINTER,
 	TY_FUNC, TY_STRUCT, TY_ENUM, TY_UNION,
 };
 
 char *type_tag_debug[] = {
-	"TY_INT", "TY_CHAR", "TY_VOID", "TY_BOOL",
-	"TY_FLOAT", "TY_F32", "TY_F64",
-	"TY_TYPE", "TY_STRING",
+	"TY_INT", "TY_BOOL", "TY_FLOAT",
+	"TY_STRING","TY_TYPE", "TY_VOID", 
+	"TY_ARRAY", "TY_POINTER", "TY_VOIDPOINTER",
+
+	"TY_CHAR", 
 	"TY_U8", "TY_U16", "TY_U32", "TY_U64",
 	"TY_S8", "TY_S16", "TY_S32", "TY_S64",
+	"TY_F32", "TY_F64",
 
-	"TY_ARRAY", "TY_POINTER",
 	"TY_FUNC", "TY_STRUCT", "TY_ENUM", "TY_UNION",
 };
 
@@ -687,14 +688,15 @@ int scope_depth = -1;
 BCmem bcmem = {0};
 Type_info builtin_types[] = {
 	{ .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } },
-	{ .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 1 } },
-	{ .tag = TY_VOID },
 	{ .tag = TY_BOOL, .bytes = 1u },
 	{ .tag = TY_FLOAT, .bytes = 4u, .Float = { .bits = 32u } },
-	{ .tag = TY_FLOAT, .bytes = 4u, .Float = { .bits = 32u} },
-	{ .tag = TY_FLOAT, .bytes = 8u, .Float = { .bits = 64u} },
-	{ .tag = TY_TYPE, .bytes = sizeof(Type_info) },
 	{ .tag = TY_STRING },
+	{ .tag = TY_TYPE, .bytes = sizeof(Type_info) },
+	{ .tag = TY_VOID },
+	{ .tag = TY_ARRAY, .bytes = 8u },
+	{ .tag = TY_POINTER, .bytes = 8u },
+	{ .tag = TY_VOIDPOINTER, .bytes = 8u },
+	{ .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 1 } },
 	{ .tag = TY_INT, .bytes = 1u, .Int = { .bits = 8u, .sign = 0 } },
 	{ .tag = TY_INT, .bytes = 2u, .Int = { .bits = 16u, .sign = 0 } },
 	{ .tag = TY_INT, .bytes = 4u, .Int = { .bits = 32u, .sign = 0 } },
@@ -703,8 +705,8 @@ Type_info builtin_types[] = {
 	{ .tag = TY_INT, .bytes = 2u, .Int = { .bits = 16u, .sign = 1 } },
 	{ .tag = TY_INT, .bytes = 4u, .Int = { .bits = 32u, .sign = 1 } },
 	{ .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } },
-	{ .tag = TY_ARRAY, .bytes = 8u },
-	{ .tag = TY_POINTER, .bytes = 8u },
+	{ .tag = TY_FLOAT, .bytes = 4u, .Float = { .bits = 32u} },
+	{ .tag = TY_FLOAT, .bytes = 8u, .Float = { .bits = 64u} },
 };
 
 /* utility functions */
@@ -867,6 +869,10 @@ void type_info_print(Type_info *tp, size_t depth) {
 		fprintf(stderr, "pointer_to: %s\n", type_tag_debug[tp->Pointer.pointer_to->tag]);
 		type_info_print(tp->Pointer.pointer_to, depth+1);
 		break;
+	case TY_VOIDPOINTER:
+		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+		fprintf(stderr, "pointer_to: void\n");
+		break;
 	case TY_FUNC:
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		fprintf(stderr, "arguments:\n");
@@ -968,11 +974,13 @@ void type_info_print(Type_info *tp, size_t depth) {
 }
 
 Type_info* typecheck(AST_node *node) {
+	AST_node *save;
 	Type_info *tinfo, *tinfo_down, *tinfo_next;
 	Type_member *memberptr;
 	Sym *symptr;
 	char *tstr_down, *tstr_next, *opstr;
 	char *memberstr;
+	char *funcstr = node->val.str;
 	bool unary = false, invalid = false;
 
 	tinfo = NULL;
@@ -980,8 +988,13 @@ Type_info* typecheck(AST_node *node) {
 	tinfo_next = NULL;
 	if(node->kind != N_OP) {
 		assert((node->kind >= N_INTLIT && node->kind <= N_STRUCTLIT) ||
-				node->kind == N_ID || node->kind == N_CALL);
+				node->kind == N_ID || node->kind == N_CALL || node->kind == N_TYPE);
 		switch(node->kind) {
+		case N_TYPE:
+			node = node->down;
+			assert(node->kind == N_FUNCSIGNATURE ||node->kind == N_ID || node->kind == N_POINTER || node->kind == N_ARRAY || node->kind == N_BUILTINTYPE);
+			tinfo = type_info_build(&type_pool, &member_pool, node, NULL);
+			break;
 		case N_INTLIT: // TODO differentiate between int literals
 			tinfo = builtin_types + TY_INT;
 			break;
@@ -1003,9 +1016,12 @@ Type_info* typecheck(AST_node *node) {
 			}
 			if(!symptr)
 				symptr = sym_tab_look(&globaltab, node->val.str);
+			if(!symptr)
+				myerror("undefined identifier %s at %DBG", node->val.str, &(node->debug_info));
 			tinfo = symptr->type;
 			break;
 		case N_CALL:
+			funcstr = node->val.str;
 			for(int i = scope_depth; i >= 0; --i) {
 				symptr = sym_tab_look(tabstack+scope_depth, node->val.str);
 				if(symptr)
@@ -1013,31 +1029,48 @@ Type_info* typecheck(AST_node *node) {
 			}
 			if(!symptr)
 				symptr = sym_tab_look(&globaltab, node->val.str);
-			tinfo = symptr->type->Func.return_types->type;
+			if(!symptr)
+				myerror("undefined function %s at %DBG", node->val.str, &(node->debug_info));
+			if(!symptr->type->Func.return_types)
+				tinfo = builtin_types + TY_VOID;
+			else
+				tinfo = symptr->type->Func.return_types->type;
+			memberptr = symptr->type->Func.arg_types;
+			save = node;
+			node = node->down;
+			for(; node && memberptr; node = node->next, memberptr = memberptr->next) {
+				tinfo_down = typecheck(node);
+				tinfo_next = memberptr->type;
+
+				if(tinfo_down->tag == TY_FUNC || tinfo_next->tag == TY_FUNC)
+					myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
+
+				tstr_down = type_tag_debug[tinfo_down->tag];
+				tstr_next = type_tag_debug[tinfo_next->tag];
+				if(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes)
+					continue;
+				if((tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION) || (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION)) {
+					if(tinfo_down == tinfo_next)
+						return tinfo_down;
+				}
+				myerror("invalid argument of type %s where %s was expected at%DBG", tstr_next, tstr_down, &(node->debug_info));
+			}
+			
+			if(node || memberptr)
+				myerror("wrong number of arguments in call to %s at%DBG", funcstr, &(save->debug_info));
 			break;
 		case N_STRLIT:
 		case N_ARRAYLIT:
 		case N_STRUCTLIT:
-			myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
+			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
 			break;
 		}
 
 		return tinfo;
 	}
 
-	if(node->val.op == OP_ASSIGN) {
-		myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
-	}
-
 	if(node->val.op == OP_DOT) {
-		for(int i = scope_depth; i >= 0; --i) {
-			symptr = sym_tab_look(tabstack+scope_depth, node->down->val.str);
-			if(symptr)
-				break;
-		}
-		if(!symptr)
-			symptr = sym_tab_look(&globaltab, node->down->val.str);
-		tinfo = symptr->type;
+		tinfo = typecheck(node->down);
 
 		for(; node && node->kind == N_OP; node = node->next) {
 			if(node->next->kind == N_ID)
@@ -1052,7 +1085,7 @@ Type_info* typecheck(AST_node *node) {
 
 			switch(tinfo->tag) {
 			case TY_ENUM:
-				myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
+				myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
 				memberptr = tinfo->Enum.members;
 				break;
 			case TY_STRUCT:
@@ -1062,7 +1095,7 @@ Type_info* typecheck(AST_node *node) {
 				memberptr = tinfo->Union.members;
 				break;
 			default:
-				myerror("use of OP_DOT on scalar type at%DBG", &(node->debug_info));
+				myerror("use of '.' on scalar type at%DBG", &(node->debug_info));
 				break;
 			}
 
@@ -1077,12 +1110,154 @@ Type_info* typecheck(AST_node *node) {
 		return tinfo;
 	}
 
+	if(node->val.op == OP_ASSIGN) {
+		assert(node->down && node->next);
+		memberptr = NULL;
+
+		if(node->next->kind == N_CALL) {
+			for(int i = scope_depth; i >= 0; --i) {
+				symptr = sym_tab_look(tabstack+scope_depth, node->next->val.str);
+				if(symptr)
+					break;
+			}
+			if(!symptr)
+				symptr = sym_tab_look(&globaltab, node->next->val.str);
+			if(!symptr)
+				myerror("undefined function %s at %DBG", node->val.str, &(node->debug_info));
+			if(!symptr->type->Func.return_types)
+				myerror("attempt to assign from void function call at%DBG", &(node->debug_info));
+			tinfo_next = symptr->type->Func.return_types->type;
+			memberptr = symptr->type->Func.return_types;
+		} else {
+			tinfo_next = typecheck(node->next);
+		}
+
+		if(node->down->kind == N_IDLIST) {
+			save = node->down;
+			node = node->down->down;
+			if(memberptr) {
+				for(; node && memberptr; node = node->next, memberptr = memberptr->next) {
+					if(node->val.str == NULL)
+						continue;
+					tinfo_down = typecheck(node);
+					tinfo_next = memberptr->type;
+
+					if(tinfo_down->tag == TY_FUNC || tinfo_next->tag == TY_FUNC)
+						myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
+
+					tstr_down = type_tag_debug[tinfo_down->tag];
+					tstr_next = type_tag_debug[tinfo_next->tag];
+					if(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes)
+						continue;
+					if((tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION) || (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION)) {
+						if(tinfo_down == tinfo_next)
+							return tinfo_down;
+					}
+					myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &(node->debug_info));
+				}
+				
+				if(node || memberptr)
+					myerror("mismatched number of operands in assignment at%DBG", &(save->debug_info));
+			} else {
+				for(; node; node = node->next) {
+					if(node->val.str == NULL)
+						continue;
+					tinfo_down = typecheck(node);
+
+					if(tinfo_down->tag == TY_FUNC || tinfo_next->tag == TY_FUNC)
+						myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
+
+					tstr_down = type_tag_debug[tinfo_down->tag];
+					tstr_next = type_tag_debug[tinfo_next->tag];
+					if(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes)
+						continue;
+					if((tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION) || (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION)) {
+						if(tinfo_down == tinfo_next)
+							return tinfo_down;
+					}
+					myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &(node->debug_info));
+				}
+			}
+		} else {
+			tinfo_down = typecheck(node->down);
+			tstr_down = type_tag_debug[tinfo_down->tag];
+			tstr_next = type_tag_debug[tinfo_next->tag];
+
+			if(tinfo_down->tag == TY_FUNC || tinfo_next->tag == TY_FUNC)
+				myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
+
+			if(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes)
+				return tinfo_down;
+			if((tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION) || (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION)) {
+				if(tinfo_down == tinfo_next)
+					return tinfo_down;
+			}
+
+			myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &(node->debug_info));
+		}
+
+		return tinfo_down;
+	}
+
 	if(node->down)
 		tinfo_down = typecheck(node->down);
 	if(node->next)
 		tinfo_next = typecheck(node->next);
 
 	opstr = operators_debug[node->val.op];
+	if(tinfo_down)
+		tstr_down = type_tag_debug[tinfo_down->tag];
+	if(tinfo_next)
+		tstr_next = type_tag_debug[tinfo_next->tag];
+
+	if(node->val.op == OP_CAST) {
+		unsigned char cast_table[][5] = {
+			{TY_INT, TY_FLOAT, TY_VOIDPOINTER, TY_BOOL,-1},
+			{TY_BOOL, TY_INT,-1,-1,-1},
+			{TY_FLOAT, TY_INT, TY_BOOL,-1,-1},
+			{TY_STRING, TY_ARRAY, TY_POINTER, TY_VOIDPOINTER, TY_BOOL},
+			{-1},{-1}, // TYPE and VOID don't cast
+			{TY_ARRAY, TY_STRING, TY_POINTER, TY_VOIDPOINTER, TY_BOOL},
+			{TY_POINTER, TY_INT, TY_VOIDPOINTER, TY_BOOL,-1},
+			{TY_VOIDPOINTER, TY_INT, TY_POINTER, TY_BOOL,-1},
+		};
+
+		if(tinfo_down->tag == TY_FUNC || tinfo_down->tag == TY_VOID || tinfo_down->tag == TY_TYPE)
+			myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &(node->debug_info));
+
+		if(tinfo_down->tag >= TY_STRUCT) {
+			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__,__func__);
+		}
+
+		assert(tinfo_down->tag >= TY_INT && tinfo_down->tag <= TY_VOIDPOINTER);
+
+		for(int i = 0; i < ARRLEN(cast_table[tinfo_down->tag]); ++i)
+			if(tinfo_next->tag == cast_table[tinfo_down->tag][i]) {
+				tinfo = tinfo_next;
+				break;
+			}
+
+		if(!tinfo)
+			myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &(node->debug_info));
+
+		switch(tinfo_down->tag) {
+		case TY_STRING:
+			if((tinfo->tag == TY_ARRAY && tinfo->Array.array_of == builtin_types+TY_CHAR) ||
+			(tinfo->tag == TY_POINTER && tinfo->Pointer.pointer_to == builtin_types+TY_CHAR) ||
+			(tinfo->tag != TY_ARRAY && tinfo->tag != TY_POINTER))
+			{
+				return tinfo;
+			}
+			break;
+		case TY_ARRAY:
+			if(tinfo->tag == TY_STRING && tinfo_down->Array.array_of == builtin_types+TY_CHAR)
+				return tinfo;
+		default:
+			return tinfo;
+		}
+
+		myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &(node->debug_info));
+	}
 
 	if(tinfo_down && tinfo_next && tinfo_down != tinfo_next) {
 		if(tinfo_down->tag == TY_POINTER && tinfo_next->tag == TY_INT) {
@@ -1101,55 +1276,43 @@ Type_info* typecheck(AST_node *node) {
 		tinfo = tinfo_down;
 	}
 
-	if(node->val.op != OP_ASSIGN && ((tinfo_down && tinfo_down->tag == TY_FUNC) || (tinfo_next && tinfo_next->tag == TY_FUNC)))
+	assert(node->val.op != OP_ASSIGN && node->val.op != OP_CAST);
+
+	if((tinfo_down && tinfo_down->tag == TY_FUNC) || (tinfo_next && tinfo_next->tag == TY_FUNC))
 		myerror("attempt to use function as operand in %s at%DBG", opstr, &(node->debug_info));
 
-	if(node->val.op != OP_ASSIGN && node->val.op != OP_CAST) {
-		if(
-			(tinfo_down && 
-			 tinfo_down->tag == TY_POINTER && tinfo_down->Pointer.pointer_to->tag == TY_VOID) ||
-			(tinfo_next &&
-			 tinfo_next->tag == TY_POINTER && tinfo_next->Pointer.pointer_to->tag == TY_VOID))
-		{
-			myerror("attempt to use *void as operand in %s at%DBG", opstr, &(node->debug_info));
-		}
+	if(
+	(tinfo_down && 
+	 tinfo_down->tag == TY_POINTER && tinfo_down->Pointer.pointer_to->tag == TY_VOID) ||
+	(tinfo_next &&
+	 tinfo_next->tag == TY_POINTER && tinfo_next->Pointer.pointer_to->tag == TY_VOID))
+	{
+		myerror("attempt to use *void as operand in %s at%DBG", opstr, &(node->debug_info));
 	}
 
 	switch(node->val.op) {
 	case OP_INC: case OP_DEC:
 		unary = true;
 		invalid =
-			(tinfo_down->tag != TY_INT &&
-			 tinfo_down->tag != TY_FLOAT &&
-			 tinfo_down->tag != TY_POINTER &&
-			 tinfo_down->tag != TY_ARRAY);
+			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY);
 		break;
 	case OP_ASSIGNPLUS: case OP_ASSIGNSUB:
 	case OP_ASSIGNMUL: case OP_ASSIGNDIV:
 		invalid =
-			(tinfo_down->tag != TY_INT && 
-			 tinfo_down->tag != TY_POINTER &&
-			 tinfo_down->tag != TY_FLOAT &&
-			 tinfo_down->tag != TY_ARRAY)
+			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_ARRAY)
 			||
-			(tinfo_next->tag != TY_INT &&
-			 tinfo_down->tag != TY_FLOAT)
+			(tinfo_next->tag != TY_INT && tinfo_down->tag != TY_FLOAT)
 			||
-			(tinfo_down->tag == TY_FLOAT &&
-			 tinfo_next->tag != TY_INT &&
-			 tinfo_next->tag != TY_FLOAT)
+			(tinfo_down->tag == TY_FLOAT && tinfo_next->tag != TY_INT && tinfo_next->tag != TY_FLOAT)
 			||
-			((tinfo_down->tag == TY_POINTER || tinfo_down->tag == TY_ARRAY) &&
-			 tinfo_next->tag != TY_INT);
+			((tinfo_down->tag == TY_POINTER || tinfo_down->tag == TY_ARRAY) && tinfo_next->tag != TY_INT);
 		break;
 	case OP_ASSIGNMOD: case OP_ASSIGNNOT:
 	case OP_ASSIGNAND: case OP_ASSIGNOR:
 	case OP_ASSIGNXOR:
 	case OP_ASSIGNLSHIFT: case OP_ASSIGNRSHIFT:
 		invalid =
-			(tinfo_down->tag != TY_INT && 
-			 tinfo_down->tag != TY_POINTER &&
-			 tinfo_down->tag != TY_ARRAY)
+			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY)
 			||
 			(tinfo_next->tag != TY_INT);
 		break;
@@ -1184,76 +1347,45 @@ Type_info* typecheck(AST_node *node) {
 			||
 			tinfo_down->tag == TY_TYPE || (tinfo_down->tag >= TY_FUNC && tinfo_down->tag <= TY_UNION);
 		break;
-	// bool only
 	case OP_LNOT:
 		unary = true;
-		invalid = (tinfo_down->tag != TY_BOOL);
-		break;
 	case OP_LAND: case OP_LOR:
-		invalid = (tinfo_down->tag != TY_BOOL || tinfo_next->tag != TY_BOOL);
 		break;
 	case OP_NOT:
 		unary = true;
 		invalid =
-			(tinfo_down->tag != TY_INT &&
-			 tinfo_down->tag != TY_POINTER &&
-			 tinfo_down->tag != TY_ARRAY);
+			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY);
 		break;
 	case OP_LSHIFT: case OP_RSHIFT:
 	case OP_MOD:
 	case OP_AND: case OP_OR: case OP_XOR:
 		invalid =
-			(tinfo_down->tag != TY_INT && 
-			 tinfo_down->tag != TY_POINTER &&
-			 tinfo_down->tag != TY_ARRAY)
+			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY)
 			||
-			(tinfo_next->tag != TY_INT &&
-			 tinfo_next->tag != TY_POINTER &&
-			 tinfo_next->tag != TY_ARRAY)
+			(tinfo_next->tag != TY_INT && tinfo_next->tag != TY_POINTER && tinfo_next->tag != TY_ARRAY)
 			||
-			(tinfo_down->tag != tinfo_next->tag &&
-			 tinfo_down->tag != TY_INT &&
-			 tinfo_next->tag != TY_INT);
+			(tinfo_down->tag != tinfo_next->tag && tinfo_down->tag != TY_INT && tinfo_next->tag != TY_INT);
 		break;
 	case OP_NEG:
 		unary = true;
 		invalid =
-			(tinfo_down->tag != TY_INT &&
-			 tinfo_down->tag != TY_FLOAT &&
-			 tinfo_down->tag != TY_POINTER &&
-			 tinfo_down->tag != TY_ARRAY);
+			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY);
 		break;
 	case OP_ADD:
 	case OP_SUB:
 	case OP_MUL:
 	case OP_DIV:
 		invalid =
-			(tinfo_down->tag != TY_INT && 
-			 tinfo_down->tag != TY_FLOAT &&
-			 tinfo_down->tag != TY_POINTER &&
-			 tinfo_down->tag != TY_ARRAY)
+			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY)
 			||
-			(tinfo_next->tag != TY_INT &&
-			 tinfo_next->tag != TY_FLOAT &&
-			 tinfo_next->tag != TY_POINTER &&
-			 tinfo_next->tag != TY_ARRAY)
+			(tinfo_next->tag != TY_INT && tinfo_next->tag != TY_FLOAT && tinfo_next->tag != TY_POINTER && tinfo_next->tag != TY_ARRAY)
 			||
-			(tinfo_down->tag != tinfo_next->tag &&
-			 tinfo_down->tag != TY_INT &&
-			 tinfo_next->tag != TY_INT);
-		break;
-	case OP_CAST:
-		unary = true;
-		myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
+			(tinfo_down->tag != tinfo_next->tag && tinfo_down->tag != TY_INT && tinfo_next->tag != TY_INT);
 		break;
 	case OP_ADDR:
 		unary = true;
-		if(node->down->kind == N_ID) {
-			tinfo = builtin_types + TY_POINTER;
-			tinfo->Pointer.pointer_to = tinfo_down;
-		} else { // address of struct member, array element or pointer dereference
-			myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
-		}
+		tinfo = builtin_types + TY_POINTER;
+		tinfo->Pointer.pointer_to = tinfo_down;
 		break;
 	case OP_DEREF: case OP_SUBSCRIPT:
 		unary = true;
@@ -1266,9 +1398,6 @@ Type_info* typecheck(AST_node *node) {
 
 	if(!invalid)
 		return tinfo;
-
-	tstr_down = type_tag_debug[tinfo_down->tag];
-	tstr_next = type_tag_debug[tinfo_next->tag];
 
 	if(unary)
 		myerror("invalid operand %s to %s at%DBG", tstr_down, opstr, &(node->debug_info));
@@ -1297,11 +1426,11 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 
 	switch(node->kind) {
 	case N_STRUCTLIT:
-		myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
+		myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
 		break;
 	case N_STRLIT:
-		//tinfo = builtin_types + TY_STRING; TODO create string type
-		myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__);
+		tinfo = builtin_types + TY_STRING;
+		myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
 		break;
 	case N_BOOLLIT:
 		tinfo = builtin_types + TY_BOOL;
@@ -1323,6 +1452,11 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 			tinfo = dest;
 		else
 			tinfo = pool_alloc(type_pool);
+
+		if(node->next->kind == N_BUILTINTYPE && node->next->val.typesig == TY_VOID) {
+			tinfo = builtin_types + TY_VOIDPOINTER;
+			break;
+		}
 
 		tinfo->tag = TY_POINTER;
 		tinfo->bytes = 8u;
@@ -1353,7 +1487,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 		tinfo->tag = TY_FUNC;
 		tinfo->bytes = 8u;
 
-		if(node->kind == N_ARGUMENTS) {
+		if(node->kind == N_ARGUMENTS && node->down->kind != N_TYPE && node->down->down->val.typesig != TY_VOID) {
 			arguments = node->down;
 			child = arguments;
 			tinfo->Func.arg_types = member = pool_alloc(member_pool);
@@ -1372,6 +1506,9 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 			break;
 		else /* node is return type */
 			node = node->down;
+
+		if(node->down->kind == N_BUILTINTYPE && node->down->val.typesig == TY_VOID)
+			break;
 
 		tinfo->Func.return_types = member = pool_alloc(member_pool);
 		while(true) {
@@ -1393,7 +1530,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 
 		tinfo->tag = TY_FUNC;
 		tinfo->bytes = 8u;
-		if(node->kind == N_ARGUMENTS) {
+		if(node->kind == N_ARGUMENTS && node->down->kind != N_TYPE && node->down->down->val.typesig != TY_VOID) {
 			arguments = node->down;
 			tinfo->Func.arg_types = member = pool_alloc(member_pool);
 			while(arguments && arguments->kind == N_DEC) {
@@ -1437,6 +1574,9 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 			break;
 		else /* node is return type */
 			node = node->down;
+
+		if(node->down->kind == N_BUILTINTYPE && node->down->val.typesig == TY_VOID)
+			break;
 
 		tinfo->Func.return_types = member = pool_alloc(member_pool);
 		while(true) {
@@ -1494,7 +1634,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 				member->name = NULL;
 				member->type = type_info_build(type_pool, member_pool, node,NULL);
 			} else if(node->kind == N_ENUMERATION) {
-				myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__); // TODO what does this mean?
+				myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__); // TODO what does this mean?
 			} else {
 				assert(0);
 			}
@@ -1507,7 +1647,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 		}
 		break;
 	case N_ENUMERATION:
-		myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__); // TODO
+		myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__); // TODO
 		break;
 	case N_ID:
 		/* lookup identifier in symbol table, expect a Type if it isn't
@@ -1709,7 +1849,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		initializer_node = NULL;
 
 		if(node->kind == N_ENUMERATION) {
-			myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__, __func__); // TODO implement anonymous enum
+			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__); // TODO implement anonymous enum
 		}
 
 		sym = (Sym){0};
@@ -2034,7 +2174,7 @@ int bc_interpreter(BCinst *prog, BCmem *mem) {
 			curinst = prog + pc;
 			break;
 		case BCOP_INT:
-			myerror("feature unimplemented\non compiler source line: %i\n in function %s\n", __LINE__,__func__);
+			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__,__func__);
 			break;
 		case BCOP_HALT:
 			return 0;
@@ -2195,11 +2335,16 @@ int lex(void) {
 		case '=':
 			lexer.token = T_EQ;
 			break;
+		default:
+			check = 0;
+			break;
 		}
-		lexer.text_e = tp + 2;
-		lexer.ptr += 2;
-		lexer.debug_info.col += 2;
-		return lexer.token;
+		if(check) {
+			lexer.text_e = tp + 2;
+			lexer.ptr += 2;
+			lexer.debug_info.col += 2;
+			return lexer.token;
+		}
 	}
 
 	switch(*tp) {
@@ -2609,7 +2754,7 @@ AST_node* type(void) {
 		tail = node;
 	}
 
-	if(!(t >= T_INT && t <= T_S64) && t != T_ID &&
+	if(!(t >= T_INT && t <= T_F64) && t != T_ID &&
 			t != T_FUNC && t != T_STRUCT && t != T_UNION && t != T_ENUM) {
 		if(child)
 			parse_error("type");
@@ -2699,9 +2844,11 @@ AST_node* type(void) {
 		}
 		break;
 	default: /* builtin type */
-		assert(t >= T_INT && t <= T_S64);
+		assert(t >= T_INT && t <= T_F64);
 		child->kind = N_BUILTINTYPE;
-		child->val.typesig = t - T_INT + TY_INT;
+		child->val.typesig = t - T_INT;
+		if(t >= T_CHAR)
+			child->val.typesig += 3;
 		break;
 	}
 
@@ -2740,6 +2887,13 @@ AST_node* function(void) {
 			node->next = vardec();
 			if(node->next)
 				node = node->next;
+			t = lex();
+		}
+
+		if(t == T_VOID) {
+			node = ast_alloc_node(&ast, N_TYPE, &lexer.debug_info);
+			node->down = ast_alloc_node(&ast, N_BUILTINTYPE, &lexer.debug_info);
+			node->down->val.typesig = T_VOID;
 			t = lex();
 		}
 
@@ -3246,11 +3400,11 @@ AST_node* returnstatement(void) {
 
 	root = ast_alloc_node(&ast, N_RETURNSTATEMENT, &lexer.debug_info);
 
-	root->down = child = assignment();
+	root->down = child = expression();
 
 	t = lex();
 	while(t == ',') {
-		child->next = assignment();
+		child->next = expression();
 		child = child->next;
 		t = lex();
 	}
@@ -3376,9 +3530,14 @@ AST_node* assignment(void) {
 
 	while(t == ',') {
 		child->next = expression();
+		if(!child->next)
+			child->next = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
 		child = child->next;
 		t = lex();
 	}
+
+	if(t != '=' && root->down->kind == N_IDLIST)
+		myerror("multiple assignment must use '=' operator%DBG", &(root->down->debug_info));
 
 	root->val.op = (t == '=') ? OP_ASSIGN : (t - T_ASSIGNPLUS);
 
@@ -3840,12 +3999,14 @@ void compile_function(AST_node *node) {
 	while(node && node->kind != N_BLOCK)
 		node = node->next;
 	node = node->down;
+	//TODO add arguments to symbol table
 	sym_tab_build(tabstack+scope_depth, node);
 	for(; node; node = node->next) {
 		if(node->kind != N_STATEMENT)
 			continue;
 		typecheck(node->down);
 	}
+	sym_tab_clear(tabstack+scope_depth);
 }
 
 void compile_block(AST_node *node) {
@@ -3941,7 +4102,7 @@ int main(int argc, char **argv) {
 	pool_init(&member_pool, sizeof(Type_member), 128, 1);
 
 	parse();
-	//ast_print(ast.root, 0, false);
+	ast_print(ast.root, 0, false);
 	//exit(0);
 
 	globaltab.name = argv[1];

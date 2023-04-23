@@ -1,22 +1,19 @@
-/*
 Vec3 :: struct {
 	x, y, z: f32 = 0;
 }
 
-Person :: struct {
-	name: *char;
-}
-
-
-test_var := 1;
 vec3_add :: func(dest, a, b: *Vec3) {
+	dest, a, b: *Vec3;
 	tmp: *Vec3;
 	dest.x = a.x + b.x;
 	dest.y = a.y + b.y;
 	tmp = dest;
 }
 
-*/
+test :: func() int, int, int {
+	return 1, 2, 3;
+}
+
 main :: func() {
 	//a, b: int;
 	//ptr: *int;
@@ -28,7 +25,9 @@ main :: func() {
 	//f: float = 10.45;
 	//ptr, b = vec3_add(a, b);
 	//a = -b;
-	t.s.c;
-	a+b;
-	v[1][2][3];
+	i, j, k: int;
+	i = cast(int)1.0;
+	i,j = 0;
+	vec3_add(a, b, c);
+	i,j,k = test();
 }
