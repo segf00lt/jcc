@@ -3,6 +3,10 @@ Vec3 :: struct {
 	n: Norm;
 }
 
+bigU :: union {
+	recurse: *bigU;
+}
+
 Norm :: struct {
 	w, l: float;
 }
@@ -36,14 +40,18 @@ main :: func {
 	fp + 1;
 	cast(*void)a;
 	s: []char;
-	cast([]char)s;
+	arr_str : []int = cast([]char)s;
 	cast(*char)s;
 	cast(string)s;
 	va, vb, vc: *Vec3;
 	vec3_add(va, vb, vc);
 	i,j,k : int = 1;
 	i,j,k = test();
+	i,,k = test();
+	i,, = test();
 	ptr_1: *void;
 	ptr_1 = cast(*void)&a;
 	fp = &v.x;
+	fp = &f;
+	f = *fp;
 }

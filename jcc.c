@@ -1135,49 +1135,41 @@ Type_info* typecheck(AST_node *node) {
 		if(node->down->kind == N_IDLIST) {
 			save = node->down;
 			node = node->down->down;
-			if(memberptr) {
-				for(; node && memberptr; node = node->next, memberptr = memberptr->next) {
-					if(node->val.str == NULL)
-						continue;
+			for(; node; node = node->next) {
+				if(node->val.str == NULL)
+					invalid = false;
+				else
 					tinfo_down = typecheck(node);
+
+				if(tinfo_down->tag == TY_FUNC || tinfo_next->tag == TY_FUNC)
+					myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
+
+				tstr_down = type_tag_debug[tinfo_down->tag];
+				tstr_next = type_tag_debug[tinfo_next->tag];
+
+				bool tinfo_down_is_compound = (tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION);
+				bool tinfo_next_is_compound = (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION);
+
+				invalid = !(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes);
+
+				if(tinfo_down_is_compound && tinfo_next_is_compound && tinfo_down == tinfo_next)
+					return tinfo_down;
+
+				if(invalid)
+					myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &(node->debug_info));
+
+				if(memberptr) {
+					memberptr = memberptr->next;
+					if(!memberptr) {
+						node = node->next;
+						break;
+					}
 					tinfo_next = memberptr->type;
-
-					if(tinfo_down->tag == TY_FUNC || tinfo_next->tag == TY_FUNC)
-						myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
-
-					tstr_down = type_tag_debug[tinfo_down->tag];
-					tstr_next = type_tag_debug[tinfo_next->tag];
-					if(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes)
-						continue;
-					if((tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION) || (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION)) {
-						if(tinfo_down == tinfo_next)
-							return tinfo_down;
-					}
-					myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &(node->debug_info));
-				}
-				
-				if(node || memberptr)
-					myerror("mismatched number of operands in assignment at%DBG", &(save->debug_info));
-			} else {
-				for(; node; node = node->next) {
-					if(node->val.str == NULL)
-						continue;
-					tinfo_down = typecheck(node);
-
-					if(tinfo_down->tag == TY_FUNC || tinfo_next->tag == TY_FUNC)
-						myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
-
-					tstr_down = type_tag_debug[tinfo_down->tag];
-					tstr_next = type_tag_debug[tinfo_next->tag];
-					if(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes)
-						continue;
-					if((tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION) || (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION)) {
-						if(tinfo_down == tinfo_next)
-							return tinfo_down;
-					}
-					myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &(node->debug_info));
 				}
 			}
+
+			if(node || memberptr)
+				myerror("mismatched number of operands in assignment at%DBG", &(save->debug_info));
 		} else {
 			tinfo_down = typecheck(node->down);
 			tstr_down = type_tag_debug[tinfo_down->tag];
@@ -1240,40 +1232,51 @@ Type_info* typecheck(AST_node *node) {
 		if(!tinfo)
 			myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &(node->debug_info));
 
+		bool tinfo_is_array_of_char;
+		bool tinfo_is_pointer_to_char;
+		bool tinfo_is_not_array_or_pointer;
+		bool tinfo_is_string;
+		bool tinfo_down_is_array_of_char;
+
+		tinfo_is_array_of_char =
+			(tinfo->tag == TY_ARRAY && tinfo->Array.array_of == builtin_types+TY_CHAR);
+		tinfo_is_pointer_to_char =
+			(tinfo->tag == TY_POINTER && tinfo->Pointer.pointer_to == builtin_types+TY_CHAR);
+		tinfo_is_not_array_or_pointer =
+			(tinfo->tag != TY_ARRAY && tinfo->tag != TY_POINTER);
+		tinfo_is_string = (tinfo->tag == TY_STRING);
+		tinfo_down_is_array_of_char = (tinfo_down->Array.array_of == builtin_types+TY_CHAR);
+
+
 		switch(tinfo_down->tag) {
 		case TY_STRING:
-			if((tinfo->tag == TY_ARRAY && tinfo->Array.array_of == builtin_types+TY_CHAR) ||
-			(tinfo->tag == TY_POINTER && tinfo->Pointer.pointer_to == builtin_types+TY_CHAR) ||
-			(tinfo->tag != TY_ARRAY && tinfo->tag != TY_POINTER))
-			{
+			if(tinfo_is_array_of_char || tinfo_is_pointer_to_char || tinfo_is_not_array_or_pointer)
 				return tinfo;
-			}
 			break;
 		case TY_ARRAY:
-			if(tinfo->tag == TY_STRING && tinfo_down->Array.array_of == builtin_types+TY_CHAR)
+			if((tinfo_is_string || tinfo_is_pointer_to_char) && tinfo_down_is_array_of_char)
 				return tinfo;
+			break;
 		default:
 			return tinfo;
+			break;
 		}
-
 		myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &(node->debug_info));
 	}
 
-	if(tinfo_down && tinfo_next && tinfo_down != tinfo_next) {
-		if(tinfo_down->tag == TY_POINTER && tinfo_next->tag == TY_INT) {
-			tinfo = tinfo_down;
-		} else if(tinfo_next->tag == TY_POINTER && tinfo_down->tag == TY_INT) {
-			tinfo = tinfo_next;
-		} else if(tinfo_down->tag == tinfo_next->tag && 
-				tinfo_down >= builtin_types && tinfo_down < builtin_types + ARRLEN(builtin_types)-2 &&
-				tinfo_next >= builtin_types && tinfo_next < builtin_types + ARRLEN(builtin_types)-2)
-		{
-			tinfo = (tinfo_down->bytes >= tinfo_next->bytes) ? tinfo_down : tinfo_next;
-		} else {
-			invalid = true;
-		}
-	} else {
+	if(!tinfo_down || !tinfo_next || tinfo_down == tinfo_next) {
 		tinfo = tinfo_down;
+	} else if(tinfo_down->tag == TY_POINTER && tinfo_next->tag == TY_INT) {
+		tinfo = tinfo_down;
+	} else if(tinfo_next->tag == TY_POINTER && tinfo_down->tag == TY_INT) {
+		tinfo = tinfo_next;
+	} else if(!(tinfo_down->tag == tinfo_next->tag &&
+		tinfo_down >= builtin_types && tinfo_down < builtin_types + ARRLEN(builtin_types) &&
+		tinfo_next >= builtin_types && tinfo_next < builtin_types + ARRLEN(builtin_types)))
+	{
+		invalid = true;
+	} else {
+		tinfo = (tinfo_down->bytes >= tinfo_next->bytes) ? tinfo_down : tinfo_next;
 	}
 
 	assert(node->val.op != OP_ASSIGN && node->val.op != OP_CAST);
@@ -1281,14 +1284,12 @@ Type_info* typecheck(AST_node *node) {
 	if((tinfo_down && tinfo_down->tag == TY_FUNC) || (tinfo_next && tinfo_next->tag == TY_FUNC))
 		myerror("attempt to use function as operand in %s at%DBG", opstr, &(node->debug_info));
 
-	if(
-	(tinfo_down && 
-	 tinfo_down->tag == TY_POINTER && tinfo_down->Pointer.pointer_to->tag == TY_VOID) ||
-	(tinfo_next &&
-	 tinfo_next->tag == TY_POINTER && tinfo_next->Pointer.pointer_to->tag == TY_VOID))
-	{
-		myerror("attempt to use *void as operand in %s at%DBG", opstr, &(node->debug_info));
-	}
+	if(tinfo_down->tag == TY_VOIDPOINTER)
+		myerror("attempt to use %s of type *void as operand in %s at%DBG",
+				tstr_down, opstr, &(node->debug_info));
+	if(tinfo_next && tinfo_next->tag == TY_VOIDPOINTER)
+		myerror("attempt to use %s of type *void as operand in %s at%DBG",
+				tstr_next, opstr, &(node->debug_info));
 
 	switch(node->val.op) {
 	case OP_INC: case OP_DEC:
@@ -1650,8 +1651,6 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 		myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__); // TODO
 		break;
 	case N_ID:
-		/* lookup identifier in symbol table, expect a Type if it isn't
-		 * in the table, create the symptr and append tinfo to the pending list */
 		is_pending = false;
 		for(int i = scope_depth; i >= 0; --i) {
 			symptr = sym_tab_look(tabstack+scope_depth, node->val.str);
@@ -1670,21 +1669,16 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 				myerror("use of non constant symbol '%s' as type%DBG", symptr->name, &(node->debug_info));
 			tinfo = symptr->val.tinfo;
 			break;
-		} else { /* define symbol in pendingtab */
+		} else {
 			symbol.name = node->val.str;
 			symbol.val.tinfo = pool_alloc(type_pool);
 			symbol.val.tinfo->bytes = 0;
 			symbol.debug_info = node->debug_info;
 			sym_tab_def(&pendingtab, &symbol);
 			tinfo = symbol.val.tinfo;
-			/* NOTE when we find the definition of this symbol remember not to
-			 * allocate a new Type_info for val.tinfo */
 		}
 		break;
 	default:
-		fprintf(stderr, "######### printing node\n");
-		fwrite(node->debug_info.line_s, 1, node->debug_info.line_e - node->debug_info.line_s, stderr);
-		ast_print(node,0,true);
 		assert(0);
 		break;
 	}
@@ -1696,47 +1690,44 @@ void resolve_compound_type(Type_info *tinfo) {
 	Type_member *member;
 	size_t offset;
 	size_t largest;
+	char *type_tag_str,*name;
 
 	if(tinfo->bytes != 0 || tinfo->tag == TY_VOID)
 		return;
 
 	if(tinfo->tag == TY_STRUCT) {
 		member = tinfo->Struct.members;
-		offset = 0;
-
-		while(member) {
-			if(member->type == tinfo)
-				myerror("struct '%s' was recursively defined at%DBG", tinfo->Struct.name, &(tinfo->Struct.debug_info));
-
-			if(member->type->bytes == 0)
-				resolve_compound_type(member->type);
-			assert(member->type->bytes != 0);
-			member->byte_offset = offset;
-			offset += member->type->bytes;
-			member = member->next;
-		}
-
-		tinfo->bytes = offset;
+		name = tinfo->Struct.name;
+		type_tag_str = "struct";
 	} else if(tinfo->tag == TY_UNION) {
-		member = tinfo->Union.members;
-		largest = 0;
-
-		while(member) {
-			if(member->type == tinfo)
-				myerror("union '%s' was recursively defined at%DBG", tinfo->Union.name, &(tinfo->Union.debug_info));
-
-			if(member->type->bytes == 0)
-				resolve_compound_type(member->type);
-			assert(member->type->bytes != 0);
-			if(member->type->bytes > largest)
-				largest = member->type->bytes;
-			member = member->next;
-		}
-
-		tinfo->bytes = largest;
+	 	member = tinfo->Union.members;
+		name = tinfo->Union.name;
+		type_tag_str = "union";
 	} else {
-		assert(tinfo->bytes == 0);
+		assert(0);
 	}
+
+	offset = 0;
+	largest = 0;
+
+	while(member) {
+		if(member->type == tinfo)
+			myerror("%s %s was recursively defined at%DBG",
+				type_tag_str, name, &(tinfo->Struct.debug_info));
+
+		if(member->type->bytes == 0)
+			resolve_compound_type(member->type);
+		assert(member->type->bytes != 0);
+		member->byte_offset = offset;
+		offset += member->type->bytes;
+		if(member->type->bytes > largest)
+			largest = member->type->bytes;
+		member = member->next;
+	}
+
+	tinfo->bytes = offset;
+	if(tinfo->tag == TY_UNION)
+		tinfo->bytes = largest;
 }
 
 void sym_tab_build(Sym_tab *tab, AST_node *root) {
@@ -1822,7 +1813,8 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		node->visited = true;
 	}
 
-	for(size_t i = 0; i < pendingtab.cap; ++i) {
+	// TODO maybe make pending list to avoid walking throught the whole table
+	for(size_t i = 0; pendingtab.sym_count && pendingtab.text_count && i < pendingtab.cap; ++i) {
 		symptr = pendingtab.data + i;
 		if(symptr->name != NULL)
 			myerror("'%s' was not defined, first referenced at%DBG", symptr->name, &(symptr->debug_info.line));
@@ -2196,6 +2188,7 @@ void parse_error(char *expect) {
 	exit(1);
 }
 
+// TODO add more custom formats
 void myerror(char *fmt, ...) {
 	va_list args;
 	char *s;
