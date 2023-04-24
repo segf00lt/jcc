@@ -986,9 +986,8 @@ Type_info* typecheck(AST_node *node) {
 	tinfo = NULL;
 	tinfo_down = NULL;
 	tinfo_next = NULL;
+
 	if(node->kind != N_OP) {
-		assert((node->kind >= N_INTLIT && node->kind <= N_STRUCTLIT) ||
-				node->kind == N_ID || node->kind == N_CALL || node->kind == N_TYPE);
 		switch(node->kind) {
 		case N_TYPE:
 			node = node->down;
@@ -1079,12 +1078,15 @@ Type_info* typecheck(AST_node *node) {
 		case N_STRUCTLIT:
 			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
 			break;
+		default:
+			assert(0);
 		}
 
 		return tinfo;
 	}
 
 	if(node->val.op == OP_DOT) {
+		bool is_pointer_to_compound;
 		tinfo = typecheck(node->down);
 
 		for(; node && node->kind == N_OP; node = node->next) {
@@ -1093,9 +1095,11 @@ Type_info* typecheck(AST_node *node) {
 			else
 				memberstr = node->next->down->val.str;
 
-			if(tinfo->tag == TY_POINTER
-					&& tinfo->Pointer.pointer_to->tag >= TY_STRUCT
-					&& tinfo->Pointer.pointer_to->tag <= TY_UNION)
+			is_pointer_to_compound =
+				(tinfo->tag == TY_POINTER &&
+				 tinfo->Pointer.pointer_to->tag >= TY_STRUCT &&
+				 tinfo->Pointer.pointer_to->tag <= TY_UNION);
+			if(is_pointer_to_compound)
 				tinfo = tinfo->Pointer.pointer_to;
 
 			switch(tinfo->tag) {
@@ -1126,6 +1130,9 @@ Type_info* typecheck(AST_node *node) {
 	}
 
 	if(node->val.op == OP_ASSIGN) {
+		bool down_is_compound;
+		bool next_is_compound;
+
 		assert(node->down && node->next);
 		memberptr = NULL;
 
@@ -1162,12 +1169,12 @@ Type_info* typecheck(AST_node *node) {
 				tstr_down = type_tag_debug[tinfo_down->tag];
 				tstr_next = type_tag_debug[tinfo_next->tag];
 
-				bool tinfo_down_is_compound = (tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION);
-				bool tinfo_next_is_compound = (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION);
+				down_is_compound = (tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION);
+				next_is_compound = (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION);
 
-				invalid = !(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes);
+				invalid = (tinfo_down->tag != tinfo_next->tag || tinfo_down->bytes < tinfo_next->bytes);
 
-				if(tinfo_down_is_compound && tinfo_next_is_compound && tinfo_down == tinfo_next)
+				if(down_is_compound && next_is_compound && tinfo_down == tinfo_next)
 					return tinfo_down;
 
 				if(invalid)
@@ -1195,10 +1202,12 @@ Type_info* typecheck(AST_node *node) {
 
 			if(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes)
 				return tinfo_down;
-			if((tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION) || (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION)) {
-				if(tinfo_down == tinfo_next)
-					return tinfo_down;
-			}
+
+			down_is_compound = (tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION);
+			next_is_compound = (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION);
+
+			if(down_is_compound && next_is_compound && tinfo_down == tinfo_next)
+				return tinfo_down;
 
 			myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &(node->debug_info));
 		}
@@ -1217,8 +1226,10 @@ Type_info* typecheck(AST_node *node) {
 	if(tinfo_next)
 		tstr_next = type_tag_debug[tinfo_next->tag];
 
+	assert(tinfo_down);
+
 	if(node->val.op == OP_CAST) {
-		unsigned char cast_table[][5] = {
+		unsigned char cast_table[9][5] = {
 			{TY_INT, TY_FLOAT, TY_VOIDPOINTER, TY_BOOL,-1},
 			{TY_BOOL, TY_INT,-1,-1,-1},
 			{TY_FLOAT, TY_INT, TY_BOOL,-1,-1},
@@ -1247,29 +1258,29 @@ Type_info* typecheck(AST_node *node) {
 		if(!tinfo)
 			myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &(node->debug_info));
 
-		bool tinfo_is_array_of_char;
-		bool tinfo_is_pointer_to_char;
-		bool tinfo_is_not_array_or_pointer;
-		bool tinfo_is_string;
-		bool tinfo_down_is_array_of_char;
+		bool next_is_array_of_char;
+		bool next_is_pointer_to_char;
+		bool next_is_not_array_or_pointer;
+		bool next_is_string;
+		bool down_is_array_of_char;
 
-		tinfo_is_array_of_char =
+		next_is_array_of_char =
 			(tinfo->tag == TY_ARRAY && tinfo->Array.array_of == builtin_types+TY_CHAR);
-		tinfo_is_pointer_to_char =
+		next_is_pointer_to_char =
 			(tinfo->tag == TY_POINTER && tinfo->Pointer.pointer_to == builtin_types+TY_CHAR);
-		tinfo_is_not_array_or_pointer =
+		next_is_not_array_or_pointer =
 			(tinfo->tag != TY_ARRAY && tinfo->tag != TY_POINTER);
-		tinfo_is_string = (tinfo->tag == TY_STRING);
-		tinfo_down_is_array_of_char = (tinfo_down->Array.array_of == builtin_types+TY_CHAR);
+		next_is_string = (tinfo->tag == TY_STRING);
+		down_is_array_of_char = (tinfo_down->Array.array_of == builtin_types+TY_CHAR);
 
 
 		switch(tinfo_down->tag) {
 		case TY_STRING:
-			if(tinfo_is_array_of_char || tinfo_is_pointer_to_char || tinfo_is_not_array_or_pointer)
+			if(next_is_array_of_char || next_is_pointer_to_char || next_is_not_array_or_pointer)
 				return tinfo;
 			break;
 		case TY_ARRAY:
-			if((tinfo_is_string || tinfo_is_pointer_to_char) && tinfo_down_is_array_of_char)
+			if((next_is_string || next_is_pointer_to_char) && down_is_array_of_char)
 				return tinfo;
 			break;
 		default:
@@ -1279,89 +1290,103 @@ Type_info* typecheck(AST_node *node) {
 		myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &(node->debug_info));
 	}
 
-	if(!tinfo_down || !tinfo_next || tinfo_down == tinfo_next) {
+	/*
+	 * NOTE
+	 * Here's a good example use case for anonymous structs, we have 22 bools taking up
+	 * 1 byte each when really all we need are 22 bits. An anonymous struct would tell
+	 * the compiler to allocate the variables enclosed within sequentially and would allow
+	 * you to declare vars as bitfields.
+	 * Similarly, an anonymous union would be good for when you
+	 * know a set of variables are never accessed simultaeneously, and thus you only need
+	 * space for the largest one. The compiler can throw an error if you try to access
+	 * both in the same statement.
+	 */
+
+	bool down_is_int = (tinfo_down->tag == TY_INT);
+	bool next_is_int = (tinfo_next && tinfo_next->tag == TY_INT);
+	bool down_is_float = (tinfo_down->tag == TY_FLOAT);
+	bool next_is_float = (tinfo_next && tinfo_next->tag == TY_FLOAT);
+	bool down_is_pointer = (tinfo_down->tag == TY_POINTER);
+	bool next_is_pointer = (tinfo_next && tinfo_next->tag == TY_POINTER);
+	bool down_is_void_pointer = (tinfo_down->tag == TY_VOIDPOINTER);
+	bool next_is_void_pointer = (tinfo_next && tinfo_next->tag == TY_VOIDPOINTER);
+	bool down_is_func = (tinfo_down->tag == TY_FUNC);
+	bool next_is_func = (tinfo_next && tinfo_next->tag == TY_FUNC);
+	bool down_is_array = (tinfo_down->tag == TY_ARRAY);
+	bool next_is_array = (tinfo_next && tinfo_next->tag == TY_ARRAY);
+	bool next_is_not_num = (tinfo_next && tinfo_next->tag != TY_INT && tinfo_next->tag != TY_FLOAT);
+	bool down_and_next_same_tag = (tinfo_next && tinfo_down->tag == tinfo_next->tag);
+	bool down_and_next_same_sign =
+		(tinfo_next && tinfo_down->Int.sign == tinfo_next->Int.sign);
+	bool down_and_next_same_pointer =
+		(tinfo_next && tinfo_down->Pointer.pointer_to == tinfo_next->Pointer.pointer_to);
+	bool down_and_next_same_array =
+		(tinfo_next && tinfo_down->Array.array_of == tinfo_next->Array.array_of);
+	bool down_is_not_num_or_pointer = !(down_is_int || down_is_float || down_is_pointer);
+	bool next_is_not_num_or_pointer = !(next_is_int || next_is_float || next_is_pointer);
+	bool down_is_builtin = !down_is_pointer && !down_is_void_pointer && !down_is_array &&
+		(tinfo_down >= builtin_types && tinfo_down < builtin_types + ARRLEN(builtin_types));
+	bool next_is_builtin = !next_is_pointer && !next_is_void_pointer && !next_is_array &&
+		(tinfo_next >= builtin_types && tinfo_next < builtin_types + ARRLEN(builtin_types));
+
+	if(!tinfo_next || tinfo_down == tinfo_next) {
 		tinfo = tinfo_down;
-	} else if(tinfo_down->tag == TY_POINTER && tinfo_next->tag == TY_INT) {
+	} else if(down_is_pointer && next_is_int) {
 		tinfo = tinfo_down;
-	} else if(tinfo_next->tag == TY_POINTER && tinfo_down->tag == TY_INT) {
+	} else if(next_is_pointer && down_is_int) {
 		tinfo = tinfo_next;
-	} else if(!(tinfo_down->tag == tinfo_next->tag &&
-		tinfo_down >= builtin_types && tinfo_down < builtin_types + ARRLEN(builtin_types) &&
-		tinfo_next >= builtin_types && tinfo_next < builtin_types + ARRLEN(builtin_types)))
-	{
-		invalid = true;
+	} else if(!down_and_next_same_tag && (!down_is_builtin || !next_is_builtin)) {
+		myerror("invalid operands %s and %s to %s at%DBG", tstr_down, tstr_next, opstr, &(node->debug_info));
 	} else {
 		tinfo = (tinfo_down->bytes >= tinfo_next->bytes) ? tinfo_down : tinfo_next;
 	}
 
-	assert(node->val.op != OP_ASSIGN && node->val.op != OP_CAST);
-
-	if((tinfo_down && tinfo_down->tag == TY_FUNC) || (tinfo_next && tinfo_next->tag == TY_FUNC))
+	if(down_is_func || next_is_func)
 		myerror("attempt to use function as operand in %s at%DBG", opstr, &(node->debug_info));
 
-	if(tinfo_down->tag == TY_VOIDPOINTER)
-		myerror("attempt to use %s of type *void as operand in %s at%DBG",
-				tstr_down, opstr, &(node->debug_info));
-	if(tinfo_next && tinfo_next->tag == TY_VOIDPOINTER)
-		myerror("attempt to use %s of type *void as operand in %s at%DBG",
-				tstr_next, opstr, &(node->debug_info));
+	if(down_is_void_pointer)
+		myerror("attempt to use '%s' of type '*void' as operand in %s at%DBG",
+				node->down->val.str, opstr, &(node->debug_info));
+	if(next_is_void_pointer)
+		myerror("attempt to use '%s' of type '*void' as operand in %s at%DBG",
+				node->next->val.str, opstr, &(node->debug_info));
 
 	switch(node->val.op) {
 	case OP_INC: case OP_DEC:
 		unary = true;
-		invalid =
-			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY);
+		invalid = down_is_not_num_or_pointer;
 		break;
 	case OP_ASSIGNPLUS: case OP_ASSIGNSUB:
 	case OP_ASSIGNMUL: case OP_ASSIGNDIV:
-		invalid =
-			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_ARRAY)
-			||
-			(tinfo_next->tag != TY_INT && tinfo_down->tag != TY_FLOAT)
-			||
-			(tinfo_down->tag == TY_FLOAT && tinfo_next->tag != TY_INT && tinfo_next->tag != TY_FLOAT)
-			||
-			((tinfo_down->tag == TY_POINTER || tinfo_down->tag == TY_ARRAY) && tinfo_next->tag != TY_INT);
+		invalid = down_is_not_num_or_pointer || next_is_not_num || (down_is_int && !next_is_int);
 		break;
 	case OP_ASSIGNMOD: case OP_ASSIGNNOT:
 	case OP_ASSIGNAND: case OP_ASSIGNOR:
 	case OP_ASSIGNXOR:
 	case OP_ASSIGNLSHIFT: case OP_ASSIGNRSHIFT:
-		invalid =
-			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY)
-			||
-			(tinfo_next->tag != TY_INT);
+		invalid = down_is_not_num_or_pointer || !next_is_int;
 		break;
 	case OP_EQ:
 	case OP_NEQ:
-		invalid = 
-			!(tinfo_down->tag == TY_FLOAT && tinfo_next->tag == TY_FLOAT)
-			|| 
-			!(tinfo_down->tag == TY_INT && tinfo_next->tag == TY_INT && tinfo_down->Int.sign == tinfo_next->Int.sign)
-			||
-			!(tinfo_down->tag == TY_POINTER && tinfo_next->tag == TY_POINTER && tinfo_down->Pointer.pointer_to == tinfo_next->Pointer.pointer_to)
-			||
-			!(tinfo_down->tag == TY_ARRAY && tinfo_next->tag == TY_ARRAY && tinfo_down->Array.array_of == tinfo_next->Array.array_of)
-			||
-			(tinfo_down->tag != tinfo_next->tag)
-			;
+		invalid =
+			!(down_is_float && next_is_float) ||
+			!(down_is_int && next_is_int && down_and_next_same_sign) ||
+			!(down_is_pointer && next_is_pointer && down_and_next_same_pointer) ||
+			!(down_is_array && next_is_array && down_and_next_same_array) ||
+			!down_and_next_same_tag;
 		break;
 	case OP_LTEQ:
 	case OP_GTEQ:
 	case OP_LT:
 	case OP_GT:
 		invalid = 
-			!(tinfo_down->tag == TY_FLOAT && tinfo_next->tag == TY_FLOAT)
-			|| 
-			!(tinfo_down->tag == TY_INT && tinfo_next->tag == TY_INT && tinfo_down->Int.sign == tinfo_next->Int.sign)
-			||
-			!(tinfo_down->tag == TY_POINTER && tinfo_next->tag == TY_POINTER && tinfo_down->Pointer.pointer_to == tinfo_next->Pointer.pointer_to)
-			||
-			!(tinfo_down->tag == TY_ARRAY && tinfo_next->tag == TY_ARRAY && tinfo_down->Array.array_of == tinfo_next->Array.array_of)
-			||
-			(tinfo_down->tag != tinfo_next->tag)
-			||
-			tinfo_down->tag == TY_TYPE || (tinfo_down->tag >= TY_FUNC && tinfo_down->tag <= TY_UNION);
+			!(down_is_float && next_is_float) ||
+			!(down_is_int && next_is_int && down_and_next_same_sign) ||
+			!(down_is_pointer && next_is_pointer && down_and_next_same_pointer) ||
+			!(down_is_array && next_is_array && down_and_next_same_array) ||
+			!down_and_next_same_tag ||
+			(tinfo_down->tag == TY_TYPE) ||
+			(tinfo_down->tag >= TY_FUNC && tinfo_down->tag <= TY_UNION);
 		break;
 	case OP_LNOT:
 		unary = true;
@@ -1369,34 +1394,30 @@ Type_info* typecheck(AST_node *node) {
 		break;
 	case OP_NOT:
 		unary = true;
-		invalid =
-			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY);
+		invalid = !(down_is_int || down_is_pointer);
 		break;
 	case OP_LSHIFT: case OP_RSHIFT:
 	case OP_MOD:
 	case OP_AND: case OP_OR: case OP_XOR:
 		invalid =
-			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY)
-			||
-			(tinfo_next->tag != TY_INT && tinfo_next->tag != TY_POINTER && tinfo_next->tag != TY_ARRAY)
-			||
-			(tinfo_down->tag != tinfo_next->tag && tinfo_down->tag != TY_INT && tinfo_next->tag != TY_INT);
+			!(down_is_int || down_is_pointer) ||
+			!(next_is_int || next_is_pointer) ||
+			(down_is_pointer && next_is_pointer);
 		break;
 	case OP_NEG:
 		unary = true;
-		invalid =
-			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY);
+		invalid = down_is_not_num_or_pointer;
 		break;
 	case OP_ADD:
 	case OP_SUB:
 	case OP_MUL:
 	case OP_DIV:
 		invalid =
-			(tinfo_down->tag != TY_INT && tinfo_down->tag != TY_FLOAT && tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY)
-			||
-			(tinfo_next->tag != TY_INT && tinfo_next->tag != TY_FLOAT && tinfo_next->tag != TY_POINTER && tinfo_next->tag != TY_ARRAY)
-			||
-			(tinfo_down->tag != tinfo_next->tag && tinfo_down->tag != TY_INT && tinfo_next->tag != TY_INT);
+			down_is_not_num_or_pointer ||
+			next_is_not_num_or_pointer ||
+			(down_is_pointer && next_is_pointer) ||
+			(down_is_pointer && !next_is_int) ||
+			(next_is_pointer && !down_is_int);
 		break;
 	case OP_ADDR:
 		unary = true;
@@ -1419,6 +1440,8 @@ Type_info* typecheck(AST_node *node) {
 		myerror("invalid operand %s to %s at%DBG", tstr_down, opstr, &(node->debug_info));
 	else
 		myerror("invalid operands %s and %s to %s at%DBG", tstr_down, tstr_next, opstr, &(node->debug_info));
+
+	assert(0); // unreachable
 
 	return NULL;
 }
@@ -2244,7 +2267,9 @@ int lex(void) {
 	char *tp, *s;
 	int check;
 
+	tp = s = NULL;
 	lexer.text_s = lexer.text_e = NULL;
+	check = 0;
 
 	while(true) {
 		while(isspace(*lexer.ptr)) { /* whitespace */
@@ -2306,6 +2331,7 @@ int lex(void) {
 
 	/* symbol */
 	if(tp[1] == '=' && *tp != ':') {
+		check = 1;
 		switch(*tp) {
 		case '+':
 			lexer.token = T_ASSIGNPLUS;

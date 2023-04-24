@@ -56,5 +56,14 @@ main :: func {
 	f = *fp;
 	bo : bool = i < j and i;
 	tmp :: 1;
-	bo = cast(*Vec3)cast(*void)i;
+	bo = cast(bool)cast(*Vec3)cast(*void)i;
+	f += 1;
+	i++;
+	f++;
+	vp++;
+	//ptr++;
+	i = cast(int)(fp + j);
+	fp / 1;
+	fp % 1;
+	fp + 1;
 }
