@@ -61,9 +61,12 @@ main :: func {
 	i++;
 	f++;
 	vp++;
-	//ptr++;
 	i = cast(int)(fp + j);
 	fp / 1;
 	fp % 1;
 	fp + 1;
+	new_i := f + 1;
+	f = new_i;
+	test_arr: [12 * 2 << 3]int;
+	hello : string = ---;
 }

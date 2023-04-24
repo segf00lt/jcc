@@ -181,6 +181,7 @@ enum NODES {
 	N_WHILESTATEMENT,
 	N_RETURNSTATEMENT,
 	N_FORSTATEMENT,
+	N_ARG,
 	N_CALL,
 	N_POINTER,
 	N_ARRAY,
@@ -219,6 +220,7 @@ char *nodes_debug[] = {
 	"N_WHILESTATEMENT",
 	"N_RETURNSTATEMENT",
 	"N_FORSTATEMENT",
+	"N_ARG",
 	"N_CALL",
 	"N_POINTER",
 	"N_ARRAY",
@@ -755,9 +757,11 @@ AST_node* call(void);
 
 /* type system funcitons */
 void type_info_print(Type_info *tp, size_t depth);
-Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, Type_info *dest);
 void resolve_compound_type(Type_info *tinfo);
 Type_info* typecheck(AST_node *node);
+Type_info* build_type(Pool *type_pool, Pool *member_pool, AST_node *node);
+Type_info* infer_type(Pool *type_pool, Pool *member_pool, AST_node *node);
+void build_compound_type(Pool *type_pool, Pool *member_pool, AST_node *node, Type_info *dest);
 
 /* symbol table functions */
 void sym_tab_build(Sym_tab *tab, AST_node *node);
@@ -988,10 +992,10 @@ Type_info* typecheck(AST_node *node) {
 	tinfo_next = NULL;
 
 	if(node->kind != N_OP) {
+		bool down_is_compound;
+		bool next_is_compound;
 		switch(node->kind) {
 		case N_TYPE:
-			node = node->down;
-			assert(node->kind == N_FUNCSIGNATURE ||node->kind == N_ID || node->kind == N_POINTER || node->kind == N_ARRAY || node->kind == N_BUILTINTYPE);
 			if(node->kind == N_ID) {
 				for(int i = scope_depth; i >= 0; --i) {
 					symptr = sym_tab_look(tabstack+scope_depth, node->val.str);
@@ -1006,7 +1010,7 @@ Type_info* typecheck(AST_node *node) {
 					myerror("invalid type %s at %DBG", node->val.str, &(node->debug_info));
 				tinfo = symptr->val.tinfo;
 			} else {
-				tinfo = type_info_build(&type_pool, &member_pool, node, NULL);
+				tinfo = build_type(&type_pool, &member_pool, node);
 			}
 			break;
 		case N_INTLIT: // TODO differentiate between int literals
@@ -1053,7 +1057,7 @@ Type_info* typecheck(AST_node *node) {
 			save = node;
 			node = node->down;
 			for(; node && memberptr; node = node->next, memberptr = memberptr->next) {
-				tinfo_down = typecheck(node);
+				tinfo_down = typecheck(node->down);
 				tinfo_next = memberptr->type;
 
 				if(tinfo_down->tag == TY_FUNC || tinfo_next->tag == TY_FUNC)
@@ -1063,15 +1067,18 @@ Type_info* typecheck(AST_node *node) {
 				tstr_next = type_tag_debug[tinfo_next->tag];
 				if(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes)
 					continue;
-				if((tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION) || (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION)) {
-					if(tinfo_down == tinfo_next)
-						return tinfo_down;
-				}
-				myerror("invalid argument of type %s where %s was expected at%DBG", tstr_next, tstr_down, &(node->debug_info));
+
+				down_is_compound = (tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION);
+				next_is_compound = (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION);
+
+				if((down_is_compound || next_is_compound) && tinfo_down != tinfo_next)
+					myerror("invalid argument of type %s where %s was expected at%DBG", tstr_next, tstr_down, &(node->debug_info));
 			}
 			
-			if(node || memberptr)
+			if(node || memberptr) {
+				printf("here\n");
 				myerror("wrong number of arguments in call to %s at%DBG", funcstr, &(save->debug_info));
+			}
 			break;
 		case N_STRLIT:
 		case N_ARRAYLIT:
@@ -1331,9 +1338,9 @@ Type_info* typecheck(AST_node *node) {
 
 	if(!tinfo_next || tinfo_down == tinfo_next) {
 		tinfo = tinfo_down;
-	} else if(down_is_pointer && next_is_int) {
+	} else if((down_is_pointer || down_is_float) && next_is_int) {
 		tinfo = tinfo_down;
-	} else if(next_is_pointer && down_is_int) {
+	} else if((next_is_pointer || next_is_float) && down_is_int) {
 		tinfo = tinfo_next;
 	} else if(!down_and_next_same_tag && (!down_is_builtin || !next_is_builtin)) {
 		myerror("invalid operands %s and %s to %s at%DBG", tstr_down, tstr_next, opstr, &(node->debug_info));
@@ -1446,30 +1453,29 @@ Type_info* typecheck(AST_node *node) {
 	return NULL;
 }
 
-Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, Type_info *dest) {
+Type_info* infer_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 	AST_node *child, *sibling, *member_initial_val_expr;
 	AST_node *arguments;
 	Type_info *tinfo, *member_type;
 	Type_member *member;
 	Sym *symptr;
-	bool is_pending;
-	Sym symbol = {0};
 
-	if(node->kind == N_TYPE)
-		node = node->down;
-
-	assert(node->kind != N_OP);
-
-	tinfo = NULL;
-	symptr = NULL;
+	assert(node->kind == N_INITIALIZER);
+	node = node->down;
 
 	switch(node->kind) {
+	case N_UNINIT:
+		myerror("cant infer type from uninitialized value%DBG", &(node->debug_info));
+		break;
 	case N_STRUCTLIT:
 		myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
 		break;
 	case N_STRLIT:
 		tinfo = builtin_types + TY_STRING;
 		myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
+		break;
+	case N_OP: 
+		tinfo = typecheck(node);
 		break;
 	case N_BOOLLIT:
 		tinfo = builtin_types + TY_BOOL;
@@ -1486,87 +1492,9 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 	case N_BUILTINTYPE:
 		tinfo = builtin_types + node->val.typesig;
 		break;
-	case N_POINTER:
-		if(dest)
-			tinfo = dest;
-		else
-			tinfo = pool_alloc(type_pool);
-
-		if(node->next->kind == N_BUILTINTYPE && node->next->val.typesig == TY_VOID) {
-			tinfo = builtin_types + TY_VOIDPOINTER;
-			break;
-		}
-
-		tinfo->tag = TY_POINTER;
-		tinfo->bytes = 8u;
-		tinfo->Pointer.pointer_to = type_info_build(type_pool, member_pool, node->next,NULL); 
-		break;
-	case N_ARRAY:
-		if(dest)
-			tinfo = dest;
-		else
-			tinfo = pool_alloc(type_pool);
-
-		tinfo->tag = TY_ARRAY;
-		tinfo->bytes = 8u << 2;
-		//TODO resolve array max index
-		if(node->down) {
-			tinfo->Array.max_index_expr = node->down; /* resolve later */
-		}
-		tinfo->Array.array_of = type_info_build(type_pool, member_pool, node->next,NULL); 
-		break;
-	case N_FUNCSIGNATURE:
-		node = node->down;
-
-		if(dest)
-			tinfo = dest;
-		else
-			tinfo = pool_alloc(type_pool);
-
-		tinfo->tag = TY_FUNC;
-		tinfo->bytes = 8u;
-
-		if(node->kind == N_ARGUMENTS && node->down->kind != N_TYPE && node->down->down->val.typesig != TY_VOID) {
-			arguments = node->down;
-			child = arguments;
-			tinfo->Func.arg_types = member = pool_alloc(member_pool);
-			while(true) {
-				member->type = type_info_build(type_pool, member_pool, child,NULL);
-				child = child->next;
-				if(!child)
-					break;
-				member->next = pool_alloc(member_pool);
-				member = member->next;
-			}
-			node = node->next;
-		}
-
-		if(node->kind == N_BLOCK || node->kind == N_STORAGEQUALIFIER)
-			break;
-		else /* node is return type */
-			node = node->down;
-
-		if(node->down->kind == N_BUILTINTYPE && node->down->val.typesig == TY_VOID)
-			break;
-
-		tinfo->Func.return_types = member = pool_alloc(member_pool);
-		while(true) {
-			member->type = type_info_build(type_pool, member_pool, node, NULL);
-			node = node->next;
-			if(!(node && node->kind != N_BLOCK && node->kind != N_STORAGEQUALIFIER))
-				break;
-			member->next = pool_alloc(member_pool);
-			member = member->next;
-		}
-		break;
 	case N_FUNCTION:
 		node = node->down;
-
-		if(dest)
-			tinfo = dest;
-		else
-			tinfo = pool_alloc(type_pool);
-
+		tinfo = pool_alloc(type_pool);
 		tinfo->tag = TY_FUNC;
 		tinfo->bytes = 8u;
 		if(node->kind == N_ARGUMENTS && node->down->kind != N_TYPE && node->down->down->val.typesig != TY_VOID) {
@@ -1590,7 +1518,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 				} else if(sibling->next && sibling->next->kind == N_INITIALIZER)
 					member_initial_val_expr = sibling->next;
 
-				member_type = type_info_build(type_pool, member_pool, sibling,NULL);
+				member_type = build_type(type_pool, member_pool, sibling);
 				while(child->kind == N_ID) {
 					member->name = child->val.str;
 					member->type = member_type;
@@ -1619,7 +1547,7 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 
 		tinfo->Func.return_types = member = pool_alloc(member_pool);
 		while(true) {
-			member->type = type_info_build(type_pool, member_pool, node, NULL);
+			member->type = build_type(type_pool, member_pool, node);
 			node = node->next;
 			if(!(node && node->kind != N_BLOCK && node->kind != N_STORAGEQUALIFIER))
 				break;
@@ -1627,66 +1555,108 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 			member = member->next;
 		}
 		break;
-	case N_STRUCTURE: case N_UNIONATION:
-		assert(node->down->kind==N_DEC||node->down->kind==N_CONSTDEC||node->down->kind==N_STRUCTURE||node->down->kind==N_UNIONATION);
+	case N_ID:
+		for(int i = scope_depth; i >= 0; --i) {
+			symptr = sym_tab_look(tabstack+scope_depth, node->val.str);
+			if(symptr)
+				break;
+		}
+		if(!symptr)
+			symptr = sym_tab_look(&globaltab, node->val.str);
+		if(!symptr)
+			myerror("undefined identifier %s at%DBG", node->val.str, &(node->debug_info));
+		tinfo = symptr->type;
+		break;
+	default:
+		assert(0);
+		break;
+	}
 
-		if(dest)
-			tinfo = dest;
-		else
-			tinfo = pool_alloc(type_pool);
+	return tinfo;
+}
 
-		tinfo->bytes = 0;
+Type_info* build_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
+	AST_node *child;
+	AST_node *arguments;
+	Type_info *tinfo;
+	Type_member *member;
+	Sym *symptr;
+	bool is_pending;
+	Sym symbol = {0};
 
-		if(node->kind == N_STRUCTURE)
-			tinfo->tag = TY_STRUCT;
-		else
-			tinfo->tag = TY_UNION;
-		tinfo->Struct.members = member = pool_alloc(member_pool);
+	if(node->kind == N_TYPE)
+		node = node->down;
+	assert(node->kind == N_FUNCSIGNATURE ||node->kind == N_ID || node->kind == N_POINTER || node->kind == N_ARRAY || node->kind == N_BUILTINTYPE);
+
+	tinfo = NULL;
+	symptr = NULL;
+
+	switch(node->kind) {
+	case N_BUILTINTYPE:
+		tinfo = builtin_types + node->val.typesig;
+		break;
+	case N_POINTER:
+		if(node->next->kind == N_BUILTINTYPE && node->next->val.typesig == TY_VOID) {
+			tinfo = builtin_types + TY_VOIDPOINTER;
+			break;
+		}
+
+		tinfo = pool_alloc(type_pool);
+		tinfo->tag = TY_POINTER;
+		tinfo->bytes = 8u;
+		tinfo->Pointer.pointer_to = build_type(type_pool, member_pool, node->next); 
+		break;
+	case N_ARRAY:
+		tinfo = pool_alloc(type_pool);
+		tinfo->tag = TY_ARRAY;
+		tinfo->bytes = 8u << 2;
+		if(node->down) {
+			Type_info *expr_type = typecheck(node->down);
+			if(expr_type->tag != TY_INT)
+				myerror("array size must evaluate to 'int' at%DBG", &(node->debug_info));
+			tinfo->Array.max_index_expr = node->down; /* resolve later */
+		}
+		tinfo->Array.array_of = build_type(type_pool, member_pool, node->next); 
+		break;
+	case N_FUNCSIGNATURE:
 		node = node->down;
 
-		while(node) {
-			if(node->kind == N_DEC || node->kind == N_CONSTDEC) {
-				child = node->down;
-				sibling = child->next;
-				if(sibling->kind != N_TYPE)
-					myerror("struct or union member missing explicit type%DBG", &(sibling->debug_info));
-				if(child->kind == N_IDLIST)
-					child = child->down;
-				member->type = type_info_build(type_pool, member_pool, sibling,NULL);
-				sibling = sibling->next;
-				member->initial_val_expr = NULL;
-				if(sibling && sibling->kind == N_INITIALIZER)
-					member->initial_val_expr = sibling;
-				member->constant = (node->kind == N_CONSTDEC);
-				while(true) {
-					member->name = child->val.str;
-					child = child->next;
-					if(!(child && child->kind == N_ID))
-						break;
-					member->next = pool_alloc(member_pool);
-					member->next->type = member->type;
-					member->next->constant = member->constant;
-					member->next->initial_val_expr = member->initial_val_expr;
-					member = member->next;
-				}
-			} else if(node->kind == N_STRUCTURE || node->kind == N_UNIONATION) {
-				member->name = NULL;
-				member->type = type_info_build(type_pool, member_pool, node,NULL);
-			} else if(node->kind == N_ENUMERATION) {
-				myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__); // TODO what does this mean?
-			} else {
-				assert(0);
-			}
+		tinfo = pool_alloc(type_pool);
+		tinfo->tag = TY_FUNC;
+		tinfo->bytes = 8u;
 
-			node = node->next;
-			if(node) {
+		if(node->kind == N_ARGUMENTS && node->down->kind != N_TYPE && node->down->down->val.typesig != TY_VOID) {
+			arguments = node->down;
+			child = arguments;
+			tinfo->Func.arg_types = member = pool_alloc(member_pool);
+			while(true) {
+				member->type = build_type(type_pool, member_pool, child);
+				child = child->next;
+				if(!child)
+					break;
 				member->next = pool_alloc(member_pool);
 				member = member->next;
 			}
+			node = node->next;
 		}
-		break;
-	case N_ENUMERATION:
-		myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__); // TODO
+
+		if(node->kind == N_BLOCK || node->kind == N_STORAGEQUALIFIER)
+			break;
+		else /* node is return type */
+			node = node->down;
+
+		if(node->down->kind == N_BUILTINTYPE && node->down->val.typesig == TY_VOID)
+			break;
+
+		tinfo->Func.return_types = member = pool_alloc(member_pool);
+		while(true) {
+			member->type = build_type(type_pool, member_pool, node);
+			node = node->next;
+			if(!(node && node->kind != N_BLOCK && node->kind != N_STORAGEQUALIFIER))
+				break;
+			member->next = pool_alloc(member_pool);
+			member = member->next;
+		}
 		break;
 	case N_ID:
 		is_pending = false;
@@ -1722,6 +1692,66 @@ Type_info* type_info_build(Pool *type_pool, Pool *member_pool, AST_node *node, T
 	}
 
 	return tinfo;
+}
+
+void build_compound_type(Pool *type_pool, Pool *member_pool, AST_node *node, Type_info *dest) {
+	AST_node *child, *sibling;
+	Type_member *member;
+	assert(node->down->kind==N_DEC||node->down->kind==N_CONSTDEC||node->down->kind==N_STRUCTURE||node->down->kind==N_UNIONATION);
+
+	if(node->kind == N_STRUCTURE)
+		dest->tag = TY_STRUCT;
+	else if(node->kind == N_UNIONATION)
+		dest->tag = TY_UNION;
+	else if(node->kind == N_ENUMERATION)
+		myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
+	else
+		assert(0);
+
+	dest->Struct.members = member = pool_alloc(member_pool);
+	node = node->down;
+
+	while(node) {
+		if(node->kind == N_DEC || node->kind == N_CONSTDEC) {
+			child = node->down;
+			sibling = child->next;
+			if(sibling->kind != N_TYPE)
+				myerror("struct or union member missing explicit type%DBG", &(sibling->debug_info));
+			if(child->kind == N_IDLIST)
+				child = child->down;
+			member->type = build_type(type_pool, member_pool, sibling);
+			sibling = sibling->next;
+			member->initial_val_expr = NULL;
+			if(sibling && sibling->kind == N_INITIALIZER)
+				member->initial_val_expr = sibling;
+			member->constant = (node->kind == N_CONSTDEC);
+			while(true) {
+				member->name = child->val.str;
+				child = child->next;
+				if(!(child && child->kind == N_ID))
+					break;
+				member->next = pool_alloc(member_pool);
+				member->next->type = member->type;
+				member->next->constant = member->constant;
+				member->next->initial_val_expr = member->initial_val_expr;
+				member = member->next;
+			}
+		} else if(node->kind == N_STRUCTURE || node->kind == N_UNIONATION) {
+			member->name = NULL;
+			member->type = pool_alloc(type_pool);
+			build_compound_type(type_pool, member_pool, node, member->type);
+		} else if(node->kind == N_ENUMERATION) {
+			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
+		} else {
+			assert(0);
+		}
+
+		node = node->next;
+		if(node) {
+			member->next = pool_alloc(member_pool);
+			member = member->next;
+		}
+	}
 }
 
 void resolve_compound_type(Type_info *tinfo) {
@@ -1828,7 +1858,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			myerror("redefinition of '%s'%DBG", child->val.str, &(child->debug_info));
 		}
 
-		type_info_build(&type_pool, &member_pool, initializer_node, tinfo);
+		build_compound_type(&type_pool, &member_pool, initializer_node, tinfo);
 
 		if(tinfo->tag == TY_STRUCT) {
 			tinfo->Struct.name = sym.name;
@@ -1858,7 +1888,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 			myerror("'%s' was not defined, first referenced at%DBG", symptr->name, &(symptr->debug_info.line));
 	}
 
-	/* set sizes of structs and unions */
+	/* set sizes of struct and union */
 	for(size_t i = 0; i < type_pool.pagecount; ++i) {
 		Type_info *tinfo_array;
 		tinfo_array = type_pool.pages[i];
@@ -1880,6 +1910,10 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 
 		if(node->kind == N_ENUMERATION) {
 			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__); // TODO implement anonymous enum
+		} else if(node->kind == N_STRUCTURE) {
+			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__); // TODO implement anonymous enum
+		} else if(node->kind == N_UNIONATION) {
+			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
 		}
 
 		sym = (Sym){0};
@@ -1889,12 +1923,11 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		sibling = child->next;
 
 		if(sibling->kind == N_TYPE) {
-			tinfo = type_info_build(&type_pool, &member_pool, sibling, NULL);
+			tinfo = build_type(&type_pool, &member_pool, sibling);
 			sibling = sibling->next;
 		} else if(sibling->kind == N_INITIALIZER) {
-			initializer_node = sibling->down;
-			assert(sibling->down->kind != N_OP);
-			tinfo = type_info_build(&type_pool, &member_pool, sibling->down, NULL);
+			initializer_node = sibling;
+			tinfo = infer_type(&type_pool, &member_pool, initializer_node);
 		} else {
 			assert(0);
 		}
@@ -1902,11 +1935,11 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		sym.type = tinfo;
 		if(sibling) {
 			assert(sibling->kind == N_INITIALIZER);
-			initializer_node = sibling->down;
+			initializer_node = sibling;
 			if(tinfo->tag == TY_TYPE) {
-				if(sibling->down->down->kind != N_TYPE)
+				if(initializer_node->down->kind != N_TYPE)
 					myerror("attempted to initialize var of type 'Type' with wrong initializer%DBG", &(sibling->debug_info));
-				sym.val.tinfo = type_info_build(&type_pool, &member_pool, sibling->down->down, NULL);
+				sym.val.tinfo = infer_type(&type_pool, &member_pool, initializer_node);
 			} else
 				sym.val.ast = initializer_node;
 		}
@@ -1943,8 +1976,14 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		if(child->kind == N_IDLIST)
 			child = child->down;
 
+		bool is_initialized_and_not_statement =
+			(initializer_node &&
+			 initializer_node->down->kind >= N_FUNCTION &&
+			 initializer_node->down->kind <= N_ENUMERATION);
 		/* rewrite ast */
-		if(initializer_node && initializer_node->kind >= N_FUNCTION && initializer_node->kind <= N_ENUMERATION) {
+		if(is_initialized_and_not_statement) {
+			initializer_node = initializer_node->down;
+			printf("here\n");
 			assert(child->kind == N_ID);
 			initializer_node->val.str = child->val.str;
 			initializer_node->next = node->next;
@@ -2522,7 +2561,6 @@ AST_node* declaration(void) {
 	register int t;
 	AST_node *root, *child;
 	char *unget;
-	bool explicit_type = false;
 
 	t = lex();
 	unget = lexer.unget;
@@ -2569,7 +2607,6 @@ AST_node* declaration(void) {
 		parse_error("':'");
 
 	child->next = type();
-	explicit_type = (bool)child->next;
 
 	t = lex();
 
@@ -2595,10 +2632,7 @@ AST_node* declaration(void) {
 	if((child->down = unionation())) return root;
 	if((child->down = enumeration())) return root;
 
-	if(explicit_type)
-		child->down = expression();
-	else
-		child->down = literal();
+	child->down = expression();
 
 	if(child->down) {
 		t = lex();
@@ -2616,7 +2650,6 @@ AST_node* vardec(void) {
 	register int t;
 	AST_node *root, *child, *tmp;
 	char *unget1, *unget2;
-	bool explicit_type = false;
 
 	t = lex();
 	unget1 = lexer.unget;
@@ -2670,7 +2703,6 @@ AST_node* vardec(void) {
 		parse_error("':'");
 
 	child->next = type();
-	explicit_type = (bool)child->next;
 
 	t = lex();
 
@@ -2691,10 +2723,7 @@ AST_node* vardec(void) {
 	if(t != '=')
 		parse_error("'=' or ':'");
 
-	if(explicit_type)
-		child->down = expression();
-	else
-		child->down = literal();
+	child->down = expression();
 
 	if(child->down) {
 		t = lex();
@@ -3087,7 +3116,7 @@ AST_node* structure(void) {
 			lexer.ptr = lexer.unget;
 			child->next = unionation();
 			t = lex();
-			if(t != T_ID && t != T_STRUCT && t != T_UNION) {
+			if(t != '}' && t != T_ID && t != T_STRUCT && t != T_UNION) {
 				parse_error("next member");
 			} else {
 				lexer.debug_info.col -= lexer.ptr - lexer.unget;
@@ -3098,7 +3127,7 @@ AST_node* structure(void) {
 			lexer.ptr = lexer.unget;
 			child->next = structure();
 			t = lex();
-			if(t != T_ID && t != T_STRUCT && t != T_UNION) {
+			if(t != '}' && t != T_ID && t != T_STRUCT && t != T_UNION) {
 				parse_error("next member");
 			} else {
 				lexer.debug_info.col -= lexer.ptr - lexer.unget;
@@ -3153,7 +3182,7 @@ AST_node* unionation(void) {
 			lexer.ptr = lexer.unget;
 			child->next = unionation();
 			t = lex();
-			if(t != T_ID && t != T_STRUCT && t != T_UNION) {
+			if(t != '}' && t != T_ID && t != T_STRUCT && t != T_UNION) {
 				parse_error("next member");
 			} else {
 				lexer.debug_info.col -= lexer.ptr - lexer.unget;
@@ -3164,7 +3193,7 @@ AST_node* unionation(void) {
 			lexer.ptr = lexer.unget;
 			child->next = structure();
 			t = lex();
-			if(t != T_ID && t != T_STRUCT && t != T_UNION) {
+			if(t != '}' && t != T_ID && t != T_STRUCT && t != T_UNION) {
 				parse_error("next member");
 			} else {
 				lexer.debug_info.col -= lexer.ptr - lexer.unget;
@@ -4003,7 +4032,8 @@ AST_node* call(void) {
 	e = lexer.text_e;
 	unget = lexer.unget;
 
-	if(lex() != '(') {
+	t = lex();
+	if(t != '(') {
 		lexer.debug_info.col -= lexer.ptr - unget;
 		lexer.ptr = unget;
 		return NULL;
@@ -4012,10 +4042,20 @@ AST_node* call(void) {
 	root = ast_alloc_node(&ast, N_CALL, &lexer.debug_info);
 	root->val.str = pool_alloc_string(&string_pool, e - s, s);
 
-	root->down = child = expression();
-	while((t = lex()) == ',') {
-		child->next = expression();
-		child = child->next;
+	root->down = expression();
+	if(root->down) {
+		child = ast_alloc_node(&ast, N_ARG, &lexer.debug_info);
+		child->down = root->down;
+		root->down = child;
+		t = lex();
+		while(t == ',') {
+			child->next = ast_alloc_node(&ast, N_ARG, &lexer.debug_info);
+			child->next->down = expression();
+			child = child->next;
+			t = lex();
+		}
+	} else {
+		t = lex();
 	}
 
 	if(t != ')')
@@ -4149,14 +4189,14 @@ int main(int argc, char **argv) {
 	pool_init(&member_pool, sizeof(Type_member), 128, 1);
 
 	parse();
-	ast_print(ast.root, 0, false);
+	//ast_print(ast.root, 0, false);
 	//exit(0);
 
 	globaltab.name = argv[1];
 	fprintf(stderr,"################ TESTING COMPILE FUNCTIONS #####################\n");
 	compile(ast.root);
-	ast_print(ast.root, 0, false);
-	sym_tab_print(&globaltab);
+	//ast_print(ast.root, 0, false);
+	//sym_tab_print(&globaltab);
 	sym_tab_clear(&globaltab);
 	sym_tab_clear(&pendingtab);
 	return 0;

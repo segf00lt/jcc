@@ -15,7 +15,7 @@ test :: func() int, int, int {
 }
 
 main :: func() {
-	//a, b: int;
+	a, b,c: int;
 	//ptr: *int;
 	////a = b + 1;
 	//ptr = &a;
@@ -28,6 +28,6 @@ main :: func() {
 	i, j, k: int;
 	i = cast(int)1.0;
 	i,j = 0;
-	vec3_add(a, b, c);
+	vec3_add(cast(*Vec3)cast(*void)a, cast(*Vec3)cast(*void)b, cast(*Vec3)cast(*void)c);
 	i,j,k = test();
 }
