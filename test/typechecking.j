@@ -54,4 +54,7 @@ main :: func {
 	fp = &v.x;
 	fp = &f;
 	f = *fp;
+	bo : bool = i < j and i;
+	tmp :: 1;
+	bo = cast(*Vec3)cast(*void)i;
 }

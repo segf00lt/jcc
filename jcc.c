@@ -993,7 +993,22 @@ Type_info* typecheck(AST_node *node) {
 		case N_TYPE:
 			node = node->down;
 			assert(node->kind == N_FUNCSIGNATURE ||node->kind == N_ID || node->kind == N_POINTER || node->kind == N_ARRAY || node->kind == N_BUILTINTYPE);
-			tinfo = type_info_build(&type_pool, &member_pool, node, NULL);
+			if(node->kind == N_ID) {
+				for(int i = scope_depth; i >= 0; --i) {
+					symptr = sym_tab_look(tabstack+scope_depth, node->val.str);
+					if(symptr)
+						break;
+				}
+				if(!symptr)
+					symptr = sym_tab_look(&globaltab, node->val.str);
+				if(!symptr)
+					myerror("undefined identifier %s at %DBG", node->val.str, &(node->debug_info));
+				if(symptr->type->tag != TY_TYPE)
+					myerror("invalid type %s at %DBG", node->val.str, &(node->debug_info));
+				tinfo = symptr->val.tinfo;
+			} else {
+				tinfo = type_info_build(&type_pool, &member_pool, node, NULL);
+			}
 			break;
 		case N_INTLIT: // TODO differentiate between int literals
 			tinfo = builtin_types + TY_INT;
@@ -3994,6 +4009,7 @@ void compile_function(AST_node *node) {
 	node = node->down;
 	//TODO add arguments to symbol table
 	sym_tab_build(tabstack+scope_depth, node);
+	sym_tab_print(tabstack+scope_depth);
 	for(; node; node = node->next) {
 		if(node->kind != N_STATEMENT)
 			continue;
