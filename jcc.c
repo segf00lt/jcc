@@ -2527,6 +2527,18 @@ AST_node* declaration(void) {
 	t = lex();
 	unget = lexer.unget;
 
+	if(t == T_STRUCT) {
+		lexer.debug_info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		return structure();
+	}
+
+	if(t == T_UNION) {
+		lexer.debug_info.col -= lexer.ptr - lexer.unget;
+		lexer.ptr = lexer.unget;
+		return unionation();
+	}
+
 	if(t == T_ENUM) {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
@@ -3075,7 +3087,7 @@ AST_node* structure(void) {
 			lexer.ptr = lexer.unget;
 			child->next = unionation();
 			t = lex();
-			if(t == '=') {
+			if(t != T_ID && t != T_STRUCT && t != T_UNION) {
 				parse_error("next member");
 			} else {
 				lexer.debug_info.col -= lexer.ptr - lexer.unget;
@@ -3086,7 +3098,7 @@ AST_node* structure(void) {
 			lexer.ptr = lexer.unget;
 			child->next = structure();
 			t = lex();
-			if(t == '=') {
+			if(t != T_ID && t != T_STRUCT && t != T_UNION) {
 				parse_error("next member");
 			} else {
 				lexer.debug_info.col -= lexer.ptr - lexer.unget;
@@ -3141,7 +3153,7 @@ AST_node* unionation(void) {
 			lexer.ptr = lexer.unget;
 			child->next = unionation();
 			t = lex();
-			if(t == '=') {
+			if(t != T_ID && t != T_STRUCT && t != T_UNION) {
 				parse_error("next member");
 			} else {
 				lexer.debug_info.col -= lexer.ptr - lexer.unget;
@@ -3152,7 +3164,7 @@ AST_node* unionation(void) {
 			lexer.ptr = lexer.unget;
 			child->next = structure();
 			t = lex();
-			if(t == '=') {
+			if(t != T_ID && t != T_STRUCT && t != T_UNION) {
 				parse_error("next member");
 			} else {
 				lexer.debug_info.col -= lexer.ptr - lexer.unget;
