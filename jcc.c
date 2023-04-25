@@ -23,6 +23,7 @@
 
 #define ARRLEN(x) (sizeof(x) / sizeof(*x))
 #define STRLEN(x) (sizeof(x) / sizeof(*x)) - 1 /* compile-time strlen */
+#define xstr(x) #x
 
 #define SYM_TAB_INIT(tab, s) {\
 	tab.cap = 128;\
@@ -140,7 +141,7 @@ char *tokens_debug[] = {
 	"T_ILLEGAL",
 };
 
-enum SEGMENTS {
+enum Seg_tag {
 	SEG_DATA = 0,
 	SEG_BSS,
 	SEG_TEXT,
@@ -160,7 +161,7 @@ char *segments_debug[] = {
 	"SEG_COMPILER",
 };
 
-enum NODES {
+enum AST_kind_tag {
 	N_DEC,
 	N_CONSTDEC,
 	N_IDLIST,
@@ -284,7 +285,7 @@ size_t keyword_length[] = {
 	STRLEN("true"), STRLEN("false"),
 };
 
-enum OPERATORS {
+enum AST_op_tag {
 	OP_ASSIGNPLUS = 0,
 	OP_ASSIGNSUB,
 	OP_ASSIGNMUL,
@@ -370,7 +371,7 @@ char *operators_debug[] = {
 	"OP_SUBSCRIPT",
 };
 
-enum TYPE_TAG {
+enum Type_tag {
 	TY_INT = 0, TY_BOOL,
 	TY_FLOAT,
 	TY_STRING, TY_TYPE, TY_VOID,
@@ -397,7 +398,7 @@ char *type_tag_debug[] = {
 	"TY_FUNC", "TY_STRUCT", "TY_ENUM", "TY_UNION",
 };
 
-enum OPCODE {
+enum Opcode_tag {
 	BCOP_SET,
 	BCOP_ADD,
 	BCOP_SUB,
@@ -455,7 +456,7 @@ char *opcode_debug[] = {
 	"BCOP_HALT",
 };
 
-enum SCOPE {
+enum Scope_tag {
 	SCOPE_GLOBAL,
 	SCOPE_ARGUMENT,
 	SCOPE_LOCAL,
@@ -468,6 +469,12 @@ char *scope_debug[] = {
 };
 
 /* typedefs */
+typedef enum AST_kind_tag AST_kind_tag;
+typedef enum AST_op_tag AST_op_tag;
+typedef enum Type_tag Type_tag;
+typedef enum Seg_tag Seg_tag;
+typedef enum Opcode_tag Opcode_tag;
+typedef enum Scope_tag Scope_tag;
 typedef struct Debug_info Debug_info;
 typedef struct Lexer Lexer;
 typedef struct AST_node AST_node;
@@ -510,11 +517,11 @@ struct Lexer {
 
 struct AST_node {
 	unsigned int id; /* debug */
-	int kind;
+	AST_kind_tag kind;
 	bool visited;
 	union {
 		char *str;
-		int op;
+		AST_op_tag op;
 		int typesig;
 		int boolean;
 	} val;
@@ -581,7 +588,7 @@ struct Type_member {
 };
 
 struct Type_info {
-	int tag;
+	Type_tag tag;
 	size_t bytes;
 	union {
 		Type_info_Int Int;
@@ -598,7 +605,7 @@ struct Type_info {
 struct Sym {
 	char *name;
 	unsigned int constant : 1;
-	uint64_t seg : 3; /* memory segment */
+	Seg_tag seg : 3; /* memory segment */
 	uint64_t addr : 61; /* address in memory segment */
 	Type_info *type;
 	union {
@@ -611,7 +618,7 @@ struct Sym {
 
 struct Sym_tab {
 	Sym *data;
-	int scope;
+	Scope_tag scope;
 	char *name;
 	size_t cap;
 	size_t sym_count;
@@ -629,7 +636,7 @@ struct Sym_tab {
 };
 
 struct BCinst {
-	uint64_t opcode : 10;
+	Opcode_tag opcode : 10;
 	uint64_t size : 7;
 	uint64_t sign : 1;
 	uint64_t floating : 1;
@@ -4135,6 +4142,9 @@ void compile_block(AST_node *node) {
 		case N_FORSTATEMENT:
 			break;
 		case N_RETURNSTATEMENT:
+			break;
+		default:
+			assert(0);
 			break;
 		}
 	}
