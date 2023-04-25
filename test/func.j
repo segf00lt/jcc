@@ -2,7 +2,7 @@ multiple_return_vals :: func(a, b, c: int) int, int, int {
 	return a + 1, b - a, c << 2;
 }
 
-test::func int {
+test::func(a: int, b: int) int {
 	b += 1;
 	a = b;
 }
@@ -26,8 +26,7 @@ number :: func(x: int = 0, b: int, c: int) int {
 	return cast(u8)(x / b) >> (x)&11;
 }
 
-printer :: func(s: [SIZE << 3]char) inline {
-	print("hello %s\n");
+printer :: func(s: [3]char) inline {
 }
 
 add_abc :: func(a, b, c: int) int {
@@ -66,14 +65,27 @@ add_abc :: func(a, b, c: int) int {
 	}
 }
 
+more_bobby :: struct {
+	p: int;
+}
+
+BOBBY :: struct {
+	x: [][]more_bobby;
+}
+
 main :: func {
 	a, b, c: u64 = ---;
 	a <<= 4;
+	array: []int;
 
 	ptr: **u64 = &a;
-	array[cast(int)10 % 2 << 5] = 1333;
-	bob.x[9].ptr = 2;
-	**a[0] = 64;
+	1 << 2;
+	//array[(cast(int)10 % 2) << 5] = 1333;
+	bob: BOBBY;
+	bob.x[9][2].p = 2;
+	testptr: ****int;
+	cast(****int)testptr;
+	**(cast(***int)cast(*void)a)[0] = 64;
 }
 
 one :: func(i: int) int inline {
