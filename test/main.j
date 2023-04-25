@@ -13,24 +13,28 @@ test :: func() int, int, int {
 	return 1, 2, 3;
 }
 
+mystruct :: struct {
+	v: Vec3;
+}
+
 main :: func() {
 	a, b,c: int;
-	//ptr: *int;
-	////a = b + 1;
-	//ptr = &a;
-	//**ptr = b;
-	////i: Vec3;
-	//bob.x[9].ptr = 2;
-	//f: float = 10.45;
-	//ptr, b = vec3_add(a, b);
-	//a = -b;
-	//i, j, k: int;
-	//i = cast(int)1.0;
-	//i,j = 0;
-	//vec3_add(cast(*Vec3)cast(*void)a, cast(*Vec3)cast(*void)b, cast(*Vec3)cast(*void)c);
-	//i,j,k = test();
+	ptr: *int;
+	a = b + 1;
+	ptr = &a;
+	**cast(**int)ptr = b;
+	//i: Vec3;
+	f: float = 10.45;
+	v: Vec3;
+	bad_struct: mystruct;
+	//bad_struct.v.bad_member;
+	//vec3_add(a, b, c);
+	a = -b;
+	i, j, k: int;
+	i = cast(int)1.0;
+	i,j = 0;
+	vec3_add(cast(*Vec3)cast(*void)a, cast(*Vec3)cast(*void)b, cast(*Vec3)cast(*void)c);
+	i,j,k = test();
 	array: []int;
-	//array[1 << 2] = 0;
-	a: int;
-	**(cast(***int)cast(*void)a)[0] = 64;
+	array[1 << 2] = 0;
 }

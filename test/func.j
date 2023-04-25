@@ -80,7 +80,7 @@ main :: func {
 
 	ptr: **u64 = &a;
 	1 << 2;
-	//array[(cast(int)10 % 2) << 5] = 1333;
+	array[(cast(int)10 % 2) << 5] = 1333;
 	bob: BOBBY;
 	bob.x[9][2].p = 2;
 	testptr: ****int;
