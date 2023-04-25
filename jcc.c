@@ -2053,6 +2053,7 @@ int sym_tab_def(Sym_tab *tab, Sym *symbol) {
 			return 0;
 		i = (i + 1) % tab->cap;
 	}
+	tab->data[i] = (Sym){0};
 	tab->data[i] = *symbol;
 	++tab->sym_count;
 	return 1;
@@ -3912,16 +3913,15 @@ AST_node* unary(void) {
 		case T_CAST:
 			t = lex();
 
-			root = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
-			root->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
-			root->down->val.op = OP_CAST;
-			root->down->next = typename();
+			root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			root->val.op = OP_CAST;
+			root->next = typename();
 			if(!root)
 				parse_error("type");
 			t = lex();
 			if(t != ')')
 				parse_error("')'");
-			root->down->down = unary();
+			root->down = unary();
 			break;
 		default:
 			lexer.debug_info.col -= lexer.ptr - lexer.unget;
@@ -4037,7 +4037,8 @@ AST_node* term(void) {
 	}
 
 	if(t == '(') {
-		node = expression();
+		node = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
+		node->down = expression();
 		t = lex();
 		if(t != ')')
 			parse_error("')'");
@@ -4119,11 +4120,11 @@ void compile(AST_node *root) {
 }
 
 void compile_function(AST_node *node) {
-	Sym_tab *tab;
-	Sym *symptr;
-	Sym symbol;
-	Type_member *mp, *args, *rets;
-	Type_info *functype;
+	Sym_tab *tab = NULL;
+	Sym *symptr = NULL;
+	Sym symbol = {0};
+	Type_member *mp = NULL, *args = NULL, *rets = NULL;
+	Type_info *functype = NULL;
 	char *funcname = node->val.str;
 
 	tab = tabstack+scope_depth;
