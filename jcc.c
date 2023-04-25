@@ -23,7 +23,6 @@
 
 #define ARRLEN(x) (sizeof(x) / sizeof(*x))
 #define STRLEN(x) (sizeof(x) / sizeof(*x)) - 1 /* compile-time strlen */
-#define xstr(x) #x
 
 #define SYM_TAB_INIT(tab, s) {\
 	tab.cap = 128;\
@@ -32,7 +31,6 @@
 	tab.scope = s;\
 	tab.seg_count.data = 0;\
 	tab.seg_count.bss = 0;\
-	tab.seg_count.arg = 0;\
 	tab.seg_count.stack = 0;\
 }
 
@@ -146,7 +144,6 @@ enum Seg_tag {
 	SEG_BSS,
 	SEG_TEXT,
 	SEG_HEAP,
-	SEG_ARG,
 	SEG_STACK,
 	SEG_COMPILER, // internal use only
 };
@@ -156,7 +153,6 @@ char *segments_debug[] = {
 	"SEG_BSS",
 	"SEG_TEXT",
 	"SEG_HEAP",
-	"SEG_ARG",
 	"SEG_STACK",
 	"SEG_COMPILER",
 };
@@ -458,13 +454,11 @@ char *opcode_debug[] = {
 
 enum Scope_tag {
 	SCOPE_GLOBAL,
-	SCOPE_ARGUMENT,
 	SCOPE_LOCAL,
 };
 
 char *scope_debug[] = {
 	"SCOPE_GLOBAL",
-	"SCOPE_ARGUMENT",
 	"SCOPE_LOCAL",
 };
 
@@ -585,6 +579,7 @@ struct Type_member {
 	AST_node *initial_val_expr;
 	Type_info *type;
 	Type_member *next;
+	Debug_info debug_info;
 };
 
 struct Type_info {
@@ -628,10 +623,7 @@ struct Sym_tab {
 			size_t data;
 			size_t bss;
 		};
-		struct {
-			size_t arg;
-			size_t stack;
-		};
+		size_t stack;
 	} seg_count;
 };
 
@@ -1527,6 +1519,7 @@ Type_info* infer_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 
 				member_type = build_type(type_pool, member_pool, sibling);
 				while(child->kind == N_ID) {
+					member->debug_info = child->debug_info;
 					member->name = child->val.str;
 					member->type = member_type;
 					member->initial_val_expr = member_initial_val_expr;
@@ -1918,7 +1911,7 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 		if(node->kind == N_ENUMERATION) {
 			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__); // TODO implement anonymous enum
 		} else if(node->kind == N_STRUCTURE) {
-			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__); // TODO implement anonymous enum
+			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
 		} else if(node->kind == N_UNIONATION) {
 			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
 		}
@@ -1962,10 +1955,6 @@ void sym_tab_build(Sym_tab *tab, AST_node *root) {
 				sym.seg = SEG_DATA;
 				seg_count = &(tab->seg_count.data);
 			}
-			break;
-		case SCOPE_ARGUMENT:
-			sym.seg = SEG_ARG;
-			seg_count = &(tab->seg_count.arg);
 			break;
 		case SCOPE_LOCAL:
 			sym.seg = SEG_STACK;
@@ -2068,10 +2057,10 @@ Sym* sym_tab_look(Sym_tab *tab, char *name) {
 
 void sym_tab_clear(Sym_tab *tab) {
 	/* NOTE make sure you still have a pointer to the string pool when you call this */
+	tab->name = 0;
 	tab->sym_count = 0;
 	tab->seg_count.data = 0;
 	tab->seg_count.bss = 0;
-	tab->seg_count.arg = 0;
 	tab->seg_count.stack = 0;
 	for(size_t i = 0; i < tab->cap; ++i)
 		tab->data[i].name = NULL;
@@ -4087,12 +4076,59 @@ void compile(AST_node *root) {
 }
 
 void compile_function(AST_node *node) {
-	//ast_print(node,0,true);
+	Sym_tab *tab;
+	Sym *symptr;
+	Sym symbol;
+	Type_member *mp, *args, *rets;
+	Type_info *functype;
+	char *funcname = node->val.str;
+
+	tab = tabstack+scope_depth;
+	for(int i = scope_depth; i >= 0; --i) {
+		symptr = sym_tab_look(tab, node->val.str);
+		if(symptr)
+			break;
+	}
+	if(!symptr)
+		symptr = sym_tab_look(&globaltab, node->val.str);
+	assert(symptr);
+
+	functype = symptr->type;
+	args = functype->Func.arg_types;
+	rets = functype->Func.return_types;
+	tab->name = funcname;
+
+	// declare arguments
+	for(mp = args; mp; mp = mp->next) {
+		symbol.name = mp->name;
+		symbol.type = mp->type;
+		symbol.seg = SEG_STACK;
+		symbol.val.ast = mp->initial_val_expr;
+		symbol.addr = tab->seg_count.stack;
+		symbol.debug_info = mp->debug_info;
+		tab->seg_count.stack += mp->type->bytes;
+		sym_tab_def(tab, &symbol);
+	}
+
+	// declare named return values
+	for(mp = rets; mp; mp = mp->next) {
+		if(!mp->name)
+			continue;
+		symbol.name = mp->name;
+		symbol.type = mp->type;
+		symbol.seg = SEG_STACK;
+		symbol.val.ast = mp->initial_val_expr;
+		symbol.addr = tab->seg_count.stack;
+		symbol.debug_info = mp->debug_info;
+		tab->seg_count.stack += mp->type->bytes;
+		sym_tab_def(tab, &symbol);
+	}
+
 	node = node->down;
 	while(node && node->kind != N_BLOCK)
 		node = node->next;
 	node = node->down;
-	//TODO add arguments to symbol table
+
 	sym_tab_build(tabstack+scope_depth, node);
 	sym_tab_print(tabstack+scope_depth);
 	for(; node; node = node->next) {

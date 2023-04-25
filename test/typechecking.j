@@ -12,7 +12,6 @@ Norm :: struct {
 }
 
 vec3_add :: func(dest, a, b: *Vec3) void {
-	dest, a, b: *Vec3;
 	tmp: *Vec3;
 	dest.x = a.x + b.x;
 	dest.y = a.y + b.y;
