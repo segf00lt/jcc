@@ -1,4 +1,5 @@
 /*
+*/
 Vec2 :: struct {
 	x, y: f32;
 }
@@ -12,7 +13,6 @@ pointer: *[3]*[0&1]int;
 
 other_thing :: struct {
 	x, y: f32;
-	CONSTANT : u64 : 400000;
 }
 
 f :: func(i: int, c: char, f_prime: func(int)(char)) bool, bool {
@@ -24,7 +24,6 @@ v: Vec2;
 thingy: struct { x, y: f32; } = void;
 
 //arr: [2][2]char;
-*/
 fn: func(int)(int,int);
 other_ptr: ***[]****void;
 bleh: *[2][2]*void;

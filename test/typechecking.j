@@ -7,7 +7,7 @@ bigU :: union {
 	recurse: *bigU;
 }
 
-Norm :: struct {
+Norm : Type : struct {
 	w, l: float;
 }
 
@@ -22,7 +22,12 @@ test :: func(void) int, int, int {
 	return 1, 2, 3;
 }
 
+BUFSIZE : u64 : 0xff;
+
 main :: func {
+	test_int : int = 12;
+	test_float : float = 1.2;
+	typevar: Type = struct { x,y,z: float; }
 	ptr: *void;
 	v: Vec3;
 	vp: *Vec3;
@@ -34,12 +39,12 @@ main :: func {
 	f = v.n.l;
 	v = *vp;
 	*vp = v;
-	fp: *float;
+	fp: *float = cast(*float)cast(*int)&f;
 	fn: func(int)(int);
 	fp + 1;
 	cast(*void)a;
 	s: []char;
-	arr_str : []int = cast([]char)s;
+	arr_str : []char = cast([]char)s;
 	cast(*char)s;
 	cast(string)s;
 	va, vb, vc: *Vec3;

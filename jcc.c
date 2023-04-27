@@ -170,7 +170,6 @@ enum AST_kind_tag {
 	N_UNIONATION,
 	N_ENUMERATION,
 	N_BLOCK,
-	N_FUNCSIGNATURE,
 	N_LABEL,
 	N_STATEMENT,
 	N_DEFERSTATEMENT,
@@ -209,7 +208,6 @@ char *nodes_debug[] = {
 	"N_UNIONATION",
 	"N_ENUMERATION",
 	"N_BLOCK",
-	"N_FUNCSIGNATURE",
 	"N_LABEL",
 	"N_STATEMENT",
 	"N_DEFERSTATEMENT",
@@ -757,6 +755,7 @@ AST_node* call(void);
 /* type system funcitons */
 void type_info_print(Type_info *tp, size_t depth);
 void resolve_compound_type(Type_info *tinfo);
+int compare_types(Type_info *ta, Type_info *tb);
 Type_info* typecheck(AST_node *node);
 Type_info* build_type(Pool *type_pool, Pool *member_pool, AST_node *node);
 Type_info* infer_type(Pool *type_pool, Pool *member_pool, AST_node *node);
@@ -978,6 +977,31 @@ void type_info_print(Type_info *tp, size_t depth) {
 	}
 }
 
+int compare_types(Type_info *ta, Type_info *tb) {
+	/*
+	 * find whether ta and tb are
+	 * the same or are implicitly castable
+	 * if they are neither that is an error
+	 */
+	bool ta_is_int = (ta->tag == TY_INT);
+	bool tb_is_int = (tb && tb->tag == TY_INT);
+	bool ta_is_float = (ta->tag == TY_FLOAT);
+	bool tb_is_float = (tb && tb->tag == TY_FLOAT);
+	bool ta_is_pointer = (ta->tag == TY_POINTER);
+	bool tb_is_pointer = (tb && tb->tag == TY_POINTER);
+
+	if(ta == tb) {
+		return 0;
+	} else if((ta_is_pointer || ta_is_float) && tb_is_int) {
+		return 0;
+	} else if((tb_is_pointer || tb_is_float) && ta_is_int) {
+		return 0;
+	} else {
+	}
+
+	return 0;
+}
+
 Type_info* typecheck(AST_node *node) {
 	AST_node *save = NULL;
 	Type_info *tinfo = NULL, *tinfo_down = NULL, *tinfo_next = NULL;
@@ -992,8 +1016,14 @@ Type_info* typecheck(AST_node *node) {
 
 	if(node->kind != N_OP) {
 		switch(node->kind) {
+		case N_UNINIT:
+			tinfo = builtin_types + TY_VOID;
+			break;
+		case N_STRUCTURE: case N_UNIONATION: case N_ENUMERATION:
+			tinfo = builtin_types + TY_TYPE;
+			break;
 		case N_TYPE:
-			if(node->kind == N_ID) {
+			if(node->down->kind == N_ID) {
 				for(int i = scope_depth; i >= 0; --i) {
 					symptr = sym_tab_look(tabstack+scope_depth, node->str);
 					if(symptr)
@@ -1005,10 +1035,8 @@ Type_info* typecheck(AST_node *node) {
 					myerror("undefined identifier %s at %DBG", node->str, &(node->debug_info));
 				if(symptr->type->tag != TY_TYPE)
 					myerror("invalid type %s at %DBG", node->str, &(node->debug_info));
-				tinfo = symptr->val.tinfo;
-			} else {
-				tinfo = build_type(&type_pool, &member_pool, node);
 			}
+			tinfo = builtin_types + TY_TYPE;
 			break;
 		case N_INTLIT: // TODO differentiate between int literals
 			tinfo = builtin_types + TY_INT;
@@ -1207,12 +1235,10 @@ Type_info* typecheck(AST_node *node) {
 				down_is_compound = (tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION);
 				next_is_compound = (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION);
 
-				invalid = (tinfo_down->tag != tinfo_next->tag || tinfo_down->bytes < tinfo_next->bytes);
-
 				if(down_is_compound && next_is_compound && tinfo_down == tinfo_next)
 					return tinfo_down;
 
-				if(invalid)
+				if(!(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes))
 					myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &(node->debug_info));
 
 				if(memberptr) {
@@ -1235,13 +1261,13 @@ Type_info* typecheck(AST_node *node) {
 			if(tinfo_down->tag == TY_FUNC || tinfo_next->tag == TY_FUNC)
 				myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
 
-			if(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes)
-				return tinfo_down;
-
 			down_is_compound = (tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION);
 			next_is_compound = (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION);
 
 			if(down_is_compound && next_is_compound && tinfo_down == tinfo_next)
+				return tinfo_down;
+
+			if(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes)
 				return tinfo_down;
 
 			myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &(node->debug_info));
@@ -1252,14 +1278,10 @@ Type_info* typecheck(AST_node *node) {
 
 	if(node->down)
 		tinfo_down = typecheck(node->down);
-	if(node->next)
-		tinfo_next = typecheck(node->next);
 
 	opstr = operators_debug[node->op];
 	if(tinfo_down)
 		tstr_down = type_tag_debug[tinfo_down->tag];
-	if(tinfo_next)
-		tstr_next = type_tag_debug[tinfo_next->tag];
 
 	assert(tinfo_down);
 
@@ -1275,20 +1297,47 @@ Type_info* typecheck(AST_node *node) {
 			{TY_VOIDPOINTER, TY_INT, TY_POINTER, TY_BOOL,-1},
 		};
 
+		assert(node->next->kind == N_TYPE);
+
+		AST_node *cast_type_node = node->next->down;
+
+		if(cast_type_node->kind == N_ID) {
+			for(int i = scope_depth; i >= 0; --i) {
+				symptr = sym_tab_look(tabstack+scope_depth, node->str);
+				if(symptr)
+					break;
+			}
+			if(!symptr)
+				symptr = sym_tab_look(&globaltab, node->str);
+			if(!symptr)
+				myerror("undefined identifier %s at %DBG", node->str, &(node->debug_info));
+			if(symptr->type->tag != TY_TYPE)
+				myerror("invalid type %s at %DBG", node->str, &(node->debug_info));
+			tinfo_next = symptr->val.tinfo;
+		} else if(cast_type_node->kind == N_FUNCTION) {
+			myerror("attempted to cast %s to function type at%DBG", tstr_down, &(node->debug_info));
+		} else if(cast_type_node->kind >= N_STRUCTURE && cast_type_node->kind <= N_ENUMERATION) {
+			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__,__func__);
+		} else {
+			tinfo_next = build_type(&type_pool, &member_pool, cast_type_node);
+		}
+
+		tstr_next = type_tag_debug[tinfo_next->tag];
+
 		if(tinfo_down->tag == TY_FUNC || tinfo_down->tag == TY_VOID || tinfo_down->tag == TY_TYPE)
 			myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &(node->debug_info));
 
-		if(tinfo_down->tag >= TY_STRUCT) {
+		if(tinfo_down->tag >= TY_STRUCT)
 			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__,__func__);
-		}
 
 		assert(tinfo_down->tag >= TY_INT && tinfo_down->tag <= TY_VOIDPOINTER);
 
-		for(int i = 0; i < ARRLEN(cast_table[tinfo_down->tag]); ++i)
+		for(int i = 0; i < ARRLEN(cast_table[tinfo_down->tag]); ++i) {
 			if(tinfo_next->tag == cast_table[tinfo_down->tag][i]) {
 				tinfo = tinfo_next;
 				break;
 			}
+		}
 
 		if(!tinfo)
 			myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &(node->debug_info));
@@ -1298,16 +1347,20 @@ Type_info* typecheck(AST_node *node) {
 		bool next_is_not_array_or_pointer;
 		bool next_is_string;
 		bool down_is_array_of_char;
+		bool down_is_array;
+		bool next_is_array;
+
+		down_is_array = (tinfo_down->tag == TY_ARRAY);
+		next_is_array = (tinfo->tag == TY_ARRAY);
 
 		next_is_array_of_char =
-			(tinfo->tag == TY_ARRAY && tinfo->Array.array_of == builtin_types+TY_CHAR);
+			(next_is_array && tinfo->Array.array_of == builtin_types+TY_CHAR);
 		next_is_pointer_to_char =
 			(tinfo->tag == TY_POINTER && tinfo->Pointer.pointer_to == builtin_types+TY_CHAR);
 		next_is_not_array_or_pointer =
-			(tinfo->tag != TY_ARRAY && tinfo->tag != TY_POINTER);
+			(!next_is_array && tinfo->tag != TY_POINTER);
 		next_is_string = (tinfo->tag == TY_STRING);
-		down_is_array_of_char = (tinfo_down->Array.array_of == builtin_types+TY_CHAR);
-
+		down_is_array_of_char = (down_is_array && tinfo_down->Array.array_of == builtin_types+TY_CHAR);
 
 		switch(tinfo_down->tag) {
 		case TY_STRING:
@@ -1317,13 +1370,21 @@ Type_info* typecheck(AST_node *node) {
 		case TY_ARRAY:
 			if((next_is_string || next_is_pointer_to_char) && down_is_array_of_char)
 				return tinfo;
+			if(down_is_array && next_is_array)
+				return tinfo;
 			break;
 		default:
 			return tinfo;
 			break;
 		}
 		myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &(node->debug_info));
+		assert(0);
 	}
+
+	if(node->next)
+		tinfo_next = typecheck(node->next);
+	if(tinfo_next)
+		tstr_next = type_tag_debug[tinfo_next->tag];
 
 	/*
 	 * NOTE
@@ -1398,28 +1459,31 @@ Type_info* typecheck(AST_node *node) {
 	case OP_EQ:
 	case OP_NEQ:
 		invalid =
-			!(down_is_float && next_is_float) ||
-			!(down_is_int && next_is_int && down_and_next_same_sign) ||
-			!(down_is_pointer && next_is_pointer && down_and_next_same_pointer) ||
-			!(down_is_array && next_is_array && down_and_next_same_array) ||
+			!(down_is_float && next_is_float) &&
+			!(down_is_int && next_is_int && down_and_next_same_sign) &&
+			!(down_is_pointer && next_is_pointer && down_and_next_same_pointer) &&
+			!(down_is_array && next_is_array && down_and_next_same_array) &&
 			!down_and_next_same_tag;
+		tinfo = builtin_types + TY_BOOL;
 		break;
 	case OP_LTEQ:
 	case OP_GTEQ:
 	case OP_LT:
 	case OP_GT:
 		invalid = 
-			!(down_is_float && next_is_float) ||
-			!(down_is_int && next_is_int && down_and_next_same_sign) ||
-			!(down_is_pointer && next_is_pointer && down_and_next_same_pointer) ||
-			!(down_is_array && next_is_array && down_and_next_same_array) ||
-			!down_and_next_same_tag ||
-			(tinfo_down->tag == TY_TYPE) ||
+			!(down_is_float && next_is_float) &&
+			!(down_is_int && next_is_int && down_and_next_same_sign) &&
+			!(down_is_pointer && next_is_pointer && down_and_next_same_pointer) &&
+			!(down_is_array && next_is_array && down_and_next_same_array) &&
+			!down_and_next_same_tag &&
+			(tinfo_down->tag == TY_TYPE) &&
 			(tinfo_down->tag >= TY_FUNC && tinfo_down->tag <= TY_UNION);
+		tinfo = builtin_types + TY_BOOL;
 		break;
 	case OP_LNOT:
 		unary = true;
 	case OP_LAND: case OP_LOR:
+		tinfo = builtin_types + TY_BOOL;
 		break;
 	case OP_NOT:
 		unary = true;
@@ -1486,6 +1550,9 @@ Type_info* infer_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 	node = node->down;
 
 	switch(node->kind) {
+	case N_TYPE:
+		tinfo = builtin_types + TY_TYPE;
+		break;
 	case N_UNINIT:
 		myerror("cant infer type from uninitialized value%DBG", &(node->debug_info));
 		break;
@@ -1616,12 +1683,20 @@ Type_info* build_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 
 	if(node->kind == N_TYPE)
 		node = node->down;
-	assert(node->kind == N_FUNCSIGNATURE ||node->kind == N_ID || node->kind == N_POINTER || node->kind == N_ARRAY || node->kind == N_BUILTINTYPE);
+	assert((node->kind >= N_FUNCTION && node->kind <= N_ENUMERATION) ||
+			node->kind == N_ID ||
+			node->kind == N_POINTER ||
+			node->kind == N_ARRAY ||
+			node->kind == N_BUILTINTYPE);
 
 	tinfo = NULL;
 	symptr = NULL;
 
 	switch(node->kind) {
+	case N_STRUCTURE: case N_UNIONATION: case N_ENUMERATION:
+		tinfo = pool_alloc(type_pool);
+		build_compound_type(type_pool, member_pool, node, tinfo);
+		break;
 	case N_BUILTINTYPE:
 		tinfo = builtin_types + node->typesig;
 		break;
@@ -1648,14 +1723,15 @@ Type_info* build_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		}
 		tinfo->Array.array_of = build_type(type_pool, member_pool, node->down); 
 		break;
-	case N_FUNCSIGNATURE:
+	case N_FUNCTION:
 		node = node->down;
 
 		tinfo = pool_alloc(type_pool);
 		tinfo->tag = TY_FUNC;
 		tinfo->bytes = 8u;
 
-		if(node->kind == N_ARGLIST && node->down->kind != N_TYPE && node->down->down->typesig != TY_VOID) {
+		if(node->kind == N_ARGLIST &&
+				!(node->down->kind == N_TYPE && node->down->down->typesig == TY_VOID)) {
 			arguments = node->down;
 			child = arguments;
 			tinfo->Func.arg_types = member = pool_alloc(member_pool);
@@ -1829,13 +1905,13 @@ void resolve_compound_type(Type_info *tinfo) {
 }
 
 void declare_var(Sym_tab *tab, AST_node *node) {
-	AST_node *child, *sibling, *id_node, *type_node, *initializer_node;
-	Type_info *tinfo;
+	AST_node *child, *sibling, *id_node, *initializer_node;
+	Type_info *tinfo, *tinfo_init;
 	Sym sym;
 	size_t *seg_count;
 
 	assert(node->kind == N_DEC || (node->kind >= N_STRUCTURE && node->kind <= N_ENUMERATION));
-	type_node = initializer_node = NULL;
+	initializer_node = NULL;
 
 	if(node->kind == N_ENUMERATION) {
 		myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
@@ -1855,35 +1931,50 @@ void declare_var(Sym_tab *tab, AST_node *node) {
 		id_node = child;
 	sibling = child->next;
 
+	bool has_explicit_type = false;
+
 	if(sibling->kind == N_TYPE) {
+		has_explicit_type = true;
 		tinfo = build_type(&type_pool, &member_pool, sibling);
-		type_node = sibling;
 		sibling = sibling->next;
 	} else if(sibling->kind == N_INITIALIZER) {
-		initializer_node = sibling;
-		tinfo = infer_type(&type_pool, &member_pool, initializer_node);
+		initializer_node = sibling->down;
+		tinfo = infer_type(&type_pool, &member_pool, sibling);
 	} else {
 		assert(0);
 	}
 
-	if(type_node);
-		//myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
-
 	sym.type = tinfo;
 	if(sibling) {
+		char *tstr, *tstr_init;
+		tstr = tstr_init = NULL;
 		assert(sibling->kind == N_INITIALIZER);
-		initializer_node = sibling;
-		if(tinfo->tag == TY_TYPE) {
-			if(initializer_node->down->kind != N_TYPE)
-				myerror("attempted to initialize var of type 'Type' with wrong initializer%DBG", &(sibling->debug_info));
-			sym.val.tinfo = infer_type(&type_pool, &member_pool, initializer_node);
-		} else
+		initializer_node = sibling->down;
+		tinfo_init = typecheck(initializer_node);
+		if(has_explicit_type && tinfo_init->tag != TY_VOID) {
+			tstr_init = type_tag_debug[tinfo_init->tag];
+			tstr = type_tag_debug[tinfo->tag];
+
+			if(tinfo_init->tag == TY_FUNC || tinfo->tag == TY_FUNC)
+				myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
+
+			bool init_is_compound = (tinfo_init->tag >= TY_STRUCT && tinfo_init->tag <= TY_UNION);
+			bool var_is_compound = (tinfo->tag >= TY_STRUCT && tinfo->tag <= TY_UNION);
+
+			if(!(init_is_compound && var_is_compound && tinfo_init == tinfo) &&
+			   !(tinfo_init->tag == tinfo->tag && tinfo->bytes >= tinfo_init->bytes))
+				myerror("invalid initialization of %s to %s at%DBG", tstr, tstr_init, &(node->debug_info));
+		}
+
+		if(tinfo->tag == TY_TYPE)
+			sym.val.tinfo = build_type(&type_pool, &member_pool, initializer_node);
+		else
 			sym.val.ast = initializer_node;
 	}
 
 	switch(tab->scope) {
 	case SCOPE_GLOBAL:
-		if(initializer_node->down->kind == N_UNINIT) {
+		if(initializer_node && initializer_node->kind == N_UNINIT) {
 			sym.seg = SEG_BSS;
 			seg_count = &(tab->seg_count.bss);
 		} else {
@@ -1912,7 +2003,7 @@ void declare_var(Sym_tab *tab, AST_node *node) {
 
 void declare_constants(Sym_tab *tab, AST_node *root) {
 	AST_node *node, *child, *sibling, *id_node, *type_node, *initializer_node;
-	Type_info *tinfo;
+	Type_info *tinfo, *tinfo_init;
 	Sym sym;
 	Sym *symptr;
 	Debug_info debug_info;
@@ -1922,7 +2013,7 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 		if(node->kind != N_CONSTDEC)
 			continue;
 
-		tinfo = NULL;
+		tinfo = tinfo_init = NULL;
 		child = node->down;
 		type_node = initializer_node = NULL;
 
@@ -1935,20 +2026,39 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 
 		if(sibling->kind != N_INITIALIZER) {
 			type_node = sibling;
+			assert(type_node->kind == N_TYPE);
 			sibling = sibling->next;
 		}
 
-		if(type_node)
-			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
-
 		assert(sibling && sibling->kind == N_INITIALIZER);
+		initializer_node = sibling->down;
 
-		initializer_node = sibling;
-		sibling = sibling->down;
+		if(type_node) {
+			char *tstr, *tstr_init;
+			tstr = tstr_init = NULL;
+			tinfo = build_type(&type_pool, &member_pool, type_node);
+			tinfo_init = typecheck(initializer_node);
+			if(tinfo_init->tag == TY_VOID)
+				myerror("invalid uninitialized constant at%DBG", &(node->debug_info));
+
+			tstr_init = type_tag_debug[tinfo_init->tag];
+			tstr = type_tag_debug[tinfo->tag];
+
+			if(tinfo_init->tag == TY_FUNC || tinfo->tag == TY_FUNC)
+				myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
+
+			bool init_is_compound = (tinfo_init->tag >= TY_STRUCT && tinfo_init->tag <= TY_UNION);
+			bool var_is_compound = (tinfo->tag >= TY_STRUCT && tinfo->tag <= TY_UNION);
+
+			if(!(init_is_compound && var_is_compound && tinfo_init == tinfo) &&
+			   !(tinfo_init->tag == tinfo->tag && tinfo->bytes >= tinfo_init->bytes))
+				myerror("invalid initialization of %s to %s at%DBG", tstr, tstr_init, &(node->debug_info));
+		}
+
 		sym = (Sym){0};
 		sym.constant = true;
 
-		if(sibling->kind >= N_STRUCTURE && sibling->kind <= N_ENUMERATION) {
+		if(initializer_node->kind >= N_STRUCTURE && initializer_node->kind <= N_ENUMERATION) {
 			if(id_node->next)
 				myerror("compound type cannot be declared with id list%DBG", &(child->debug_info));
 			sym.type = builtin_types + TY_TYPE;
@@ -1974,7 +2084,7 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 			sym.debug_info = debug_info;
 			tab->seg_count.data += tinfo->bytes;
 
-			build_compound_type(&type_pool, &member_pool, initializer_node->down, tinfo);
+			build_compound_type(&type_pool, &member_pool, initializer_node, tinfo);
 
 			if(tinfo->tag == TY_STRUCT) {
 				tinfo->Struct.name = name;
@@ -1993,9 +2103,9 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 			if(!sym_tab_def(tab, &sym))
 				myerror("redefinition of '%s'%DBG", name, &(child->debug_info));
 		} else {
-			tinfo = infer_type(&type_pool, &member_pool, initializer_node);
+			tinfo = infer_type(&type_pool, &member_pool, sibling);
 			sym.type = tinfo;
-			sym.val.ast = initializer_node->down;
+			sym.val.ast = initializer_node;
 			sym.debug_info = child->debug_info;
 			if(sibling->kind == N_FUNCTION) {
 				if(id_node->next)
@@ -2016,11 +2126,11 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 		}
 
 		/* rewrite ast */
-		if(sibling->kind >= N_FUNCTION && sibling->kind <= N_ENUMERATION) {
+		if(initializer_node->kind >= N_FUNCTION && initializer_node->kind <= N_ENUMERATION) {
 			assert(child->kind == N_ID);
-			sibling->str = child->str;
-			sibling->next = node->next;
-			*node = *sibling;
+			initializer_node->str = child->str;
+			initializer_node->next = node->next;
+			*node = *initializer_node;
 		}
 
 		node->visited = true;
@@ -2950,7 +3060,7 @@ AST_node* typename(void) {
 		child->str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		break;
 	case T_FUNC:
-		child->kind = N_FUNCSIGNATURE;
+		child->kind = N_FUNCTION;
 		t = lex();
 		if(t != '(')
 			parse_error("'('");
@@ -3534,7 +3644,7 @@ AST_node* whilestatement(void) {
 }
 
 /*
- * returnstatement: 'return' expression ';'
+ * returnstatement: 'return' expression (',' expression)* ';'
  */
 AST_node* returnstatement(void) {
 	register int t;
@@ -4151,6 +4261,8 @@ void compile(AST_node *root) {
 	declare_constants(&globaltab, root);
 
 	for(node = root; node; node = node->next) {
+		if(node->kind == N_DEC)
+			declare_var(&globaltab, node);
 		if(node->kind != N_FUNCTION)
 			continue;
 		++scope_depth;
@@ -4214,7 +4326,6 @@ void compile_function(AST_node *node) {
 	node = node->down;
 
 	declare_constants(tabstack+scope_depth, node);
-	sym_tab_print(tabstack+scope_depth);
 	for(; node; node = node->next) {
 		if(node->kind == N_DEC)
 			declare_var(tabstack+scope_depth, node);
@@ -4222,6 +4333,7 @@ void compile_function(AST_node *node) {
 			continue;
 		typecheck(node->down);
 	}
+	sym_tab_print(tabstack+scope_depth);
 	sym_tab_clear(tabstack+scope_depth);
 }
 
@@ -4319,14 +4431,14 @@ int main(int argc, char **argv) {
 	pool_init(&member_pool, sizeof(Type_member), 128, 1);
 
 	parse();
-	ast_print(ast.root, 0, false);
+	//ast_print(ast.root, 0, false);
 	//exit(0);
 
 	globaltab.name = argv[1];
 	fprintf(stderr,"################ TESTING COMPILE FUNCTIONS #####################\n");
 	compile(ast.root);
 	//ast_print(ast.root, 0, false);
-	//sym_tab_print(&globaltab);
+	sym_tab_print(&globaltab);
 	sym_tab_clear(&globaltab);
 	sym_tab_clear(&pendingtab);
 	return 0;
