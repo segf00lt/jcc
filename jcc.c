@@ -1782,14 +1782,15 @@ Type_info* build_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 			if(!symptr->constant && !is_pending)
 				myerror("use of non constant symbol '%s' as type%DBG", symptr->name, &(node->debug_info));
 			tinfo = symptr->val.tinfo;
-			break;
 		} else {
 			symbol.name = node->str;
-			symbol.val.tinfo = pool_alloc(type_pool);
-			symbol.val.tinfo->bytes = 0;
+			tinfo = pool_alloc(type_pool);
+			tinfo->tag = TY_STRUCT;
+			tinfo->Struct.name = node->str;
+			tinfo->bytes = 0;
 			symbol.debug_info = node->debug_info;
+			symbol.val.tinfo = tinfo;
 			sym_tab_def(&pendingtab, &symbol);
-			tinfo = symbol.val.tinfo;
 		}
 		break;
 	default:
@@ -1864,7 +1865,8 @@ void resolve_compound_type(Type_info *tinfo) {
 	Type_member *member;
 	size_t offset;
 	size_t largest;
-	char *type_tag_str,*name;
+	char *type_tag_str, *name , *member_type_name;
+	Sym *symptr;
 
 	if(tinfo->bytes != 0 || tinfo->tag == TY_VOID)
 		return;
@@ -1889,10 +1891,25 @@ void resolve_compound_type(Type_info *tinfo) {
 			myerror("%s %s was recursively defined at%DBG",
 				type_tag_str, name, &(tinfo->Struct.debug_info));
 
-		if(member->type->bytes == 0)
-			resolve_compound_type(member->type);
-		assert(member->type->bytes != 0);
 		member->byte_offset = offset;
+
+		if(member->type->bytes == 0) {
+			if(member->type->tag == TY_STRUCT) {
+				member_type_name = member->type->Struct.name;
+			} else if(member->type->tag == TY_UNION) {
+				member_type_name = member->type->Union.name;
+			} else if(member->type->tag == TY_ENUM) {
+				member_type_name = member->type->Enum.name;
+			} else {
+				assert(member->type->tag == TY_VOID);
+				member = member->next;
+				continue;
+			}
+			symptr = sym_tab_look(&pendingtab, member_type_name);
+			if(symptr)
+				myerror("type %s was not defined, first referenced at%DBG", member_type_name, &(symptr->debug_info));
+			resolve_compound_type(member->type);
+		}
 		offset += member->type->bytes;
 		if(member->type->bytes > largest)
 			largest = member->type->bytes;
@@ -2136,15 +2153,6 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 		node->visited = true;
 	}
 
-	// TODO maybe make pending list to avoid walking throught the whole table
-	for(size_t i = 0; pendingtab.sym_count && pendingtab.text_count && i < pendingtab.cap; ++i) {
-		symptr = pendingtab.data + i;
-		if(symptr->name != NULL)
-			myerror("'%s' was not defined, first referenced at%DBG", symptr->name, &(symptr->debug_info.line));
-	}
-
-	sym_tab_clear(&pendingtab);
-
 	/* set sizes of struct and union */
 	for(size_t i = 0; i < type_pool.pagecount; ++i) {
 		Type_info *tinfo_array;
@@ -2158,6 +2166,8 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 			resolve_compound_type(tinfo);
 		}
 	}
+
+	sym_tab_clear(&pendingtab);
 }
 
 void sym_tab_grow(Sym_tab *tab) {
