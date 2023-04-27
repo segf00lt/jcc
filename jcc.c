@@ -681,9 +681,8 @@ Pool member_pool;
 Lexer lexer;
 AST ast = {0};
 Sym_tab pendingtab; /* unresolved symbols get defined here */
-Sym_tab globaltab;
-Sym_tab tabstack[9]; /* hard limit on amount of nesting that can be done */
-int scope_depth = -1;
+Sym_tab tabstack[10]; /* hard limit on amount of nesting that can be done */
+int scope_depth = 0;
 BCmem bcmem = {0};
 Type_info builtin_types[] = {
 	{ .tag = TY_INT, .bytes = 8u, .Int = { .bits = 64u, .sign = 1 } },
@@ -765,10 +764,12 @@ void build_compound_type(Pool *type_pool, Pool *member_pool, AST_node *node, Typ
 void declare_constants(Sym_tab *tab, AST_node *node);
 void declare_var(Sym_tab *tab, AST_node *node);
 void sym_tab_grow(Sym_tab *tab);
-int sym_tab_def(Sym_tab *tab, Sym *symbol);
+int define_symbol(Sym_tab *tab, Sym *symbol);
 int sym_tab_undef(Sym_tab *tab, char *name);
 void sym_tab_copy(Sym_tab *dest, Sym_tab *src);
 size_t sym_tab_hash(Sym_tab *tab, char *name);
+Sym* lookup_symbol(char *name);
+Sym* pending_symbol(char *name);
 Sym* sym_tab_look(Sym_tab *tab, char *name);
 void sym_tab_clear(Sym_tab *tab);
 void sym_tab_print(Sym_tab *tab);
@@ -1024,13 +1025,7 @@ Type_info* typecheck(AST_node *node) {
 			break;
 		case N_TYPE:
 			if(node->down->kind == N_ID) {
-				for(int i = scope_depth; i >= 0; --i) {
-					symptr = sym_tab_look(tabstack+scope_depth, node->str);
-					if(symptr)
-						break;
-				}
-				if(!symptr)
-					symptr = sym_tab_look(&globaltab, node->str);
+				symptr = lookup_symbol(node->str);
 				if(!symptr)
 					myerror("undefined identifier %s at %DBG", node->str, &(node->debug_info));
 				if(symptr->type->tag != TY_TYPE)
@@ -1052,26 +1047,14 @@ Type_info* typecheck(AST_node *node) {
 			tinfo = builtin_types + TY_BOOL;
 			break;
 		case N_ID:
-			for(int i = scope_depth; i >= 0; --i) {
-				symptr = sym_tab_look(tabstack+scope_depth, node->str);
-				if(symptr)
-					break;
-			}
-			if(!symptr)
-				symptr = sym_tab_look(&globaltab, node->str);
+			symptr = lookup_symbol(node->str);
 			if(!symptr)
 				myerror("undefined identifier %s at %DBG", node->str, &(node->debug_info));
 			tinfo = symptr->type;
 			break;
 		case N_CALL:
 			funcstr = node->str;
-			for(int i = scope_depth; i >= 0; --i) {
-				symptr = sym_tab_look(tabstack+scope_depth, node->str);
-				if(symptr)
-					break;
-			}
-			if(!symptr)
-				symptr = sym_tab_look(&globaltab, node->str);
+			symptr = lookup_symbol(funcstr);
 			if(!symptr)
 				myerror("undefined function %s at %DBG", node->str, &(node->debug_info));
 			if(!symptr->type->Func.return_types)
@@ -1116,12 +1099,16 @@ Type_info* typecheck(AST_node *node) {
 	if(node->op == OP_DOT) {
 		bool is_pointer_to_compound;
 		AST_node *node_next;
+		Type_member *member_stack[12];
+		int member_stack_top = 0;
+		Type_info *member_type = NULL;
 		char *compound_type_str = NULL;
 		char *memberstr = NULL;
 		Type_info *subscript_expr_type = NULL;
 		tinfo = typecheck(node->down);
 
 		for(; node && node->kind == N_OP; node = node->next) {
+
 			node_next = node->next;
 			if(node->down->kind == N_OP && node->down->op == OP_SUBSCRIPT) {
 				AST_node *operand = node->down;
@@ -1178,15 +1165,39 @@ Type_info* typecheck(AST_node *node) {
 				break;
 			}
 
-			for(; memberptr; memberptr = memberptr->next) {
-				if(!strcmp(memberstr, memberptr->name)) {
-					tinfo = memberptr->type;
-					break;
-				}
-			}
+			/* look through members, push member list on stack whenever
+			 * we encounter an anonymous struct or union */
+			member_stack[member_stack_top] = memberptr;
+			while(member_stack_top >= 0) {
+				memberptr = member_stack[member_stack_top];
 
-			if(!memberptr)
+				for(; memberptr; memberptr = memberptr->next) {
+					if(!memberptr->name) {
+						assert(memberptr->type->tag == TY_STRUCT || memberptr->type->tag == TY_UNION);
+						member_stack[member_stack_top] = memberptr->next;
+						++member_stack_top;
+						if(memberptr->type->tag == TY_STRUCT)
+							memberptr = memberptr->type->Struct.members;
+						else if(memberptr->type->tag == TY_UNION)
+							memberptr = memberptr->type->Union.members;
+						member_stack[member_stack_top] = memberptr;
+					}
+
+					if(!strcmp(memberstr, memberptr->name)) {
+						member_type = memberptr->type;
+						member_stack_top = -1;
+						break;
+					}
+				}
+
+				--member_stack_top;
+			}
+			member_stack_top = 0;
+
+			if(!member_type)
 				myerror("%s has no member %s%DBG", compound_type_str, memberstr, &(node->debug_info));
+
+			tinfo = member_type;
 		}
 
 		return tinfo;
@@ -1200,13 +1211,7 @@ Type_info* typecheck(AST_node *node) {
 		memberptr = NULL;
 
 		if(node->next->kind == N_CALL) {
-			for(int i = scope_depth; i >= 0; --i) {
-				symptr = sym_tab_look(tabstack+scope_depth, node->next->str);
-				if(symptr)
-					break;
-			}
-			if(!symptr)
-				symptr = sym_tab_look(&globaltab, node->next->str);
+			symptr = lookup_symbol(node->next->str);
 			if(!symptr)
 				myerror("undefined function %s at %DBG", node->str, &(node->debug_info));
 			if(!symptr->type->Func.return_types)
@@ -1302,13 +1307,7 @@ Type_info* typecheck(AST_node *node) {
 		AST_node *cast_type_node = node->next->down;
 
 		if(cast_type_node->kind == N_ID) {
-			for(int i = scope_depth; i >= 0; --i) {
-				symptr = sym_tab_look(tabstack+scope_depth, node->str);
-				if(symptr)
-					break;
-			}
-			if(!symptr)
-				symptr = sym_tab_look(&globaltab, node->str);
+			symptr = lookup_symbol(node->str);
 			if(!symptr)
 				myerror("undefined identifier %s at %DBG", node->str, &(node->debug_info));
 			if(symptr->type->tag != TY_TYPE)
@@ -1550,7 +1549,7 @@ Type_info* infer_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 	node = node->down;
 
 	switch(node->kind) {
-	case N_TYPE:
+	case N_TYPE: case N_STRUCTURE: case N_UNIONATION: case N_ENUMERATION:
 		tinfo = builtin_types + TY_TYPE;
 		break;
 	case N_UNINIT:
@@ -1653,13 +1652,7 @@ Type_info* infer_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		}
 		break;
 	case N_ID:
-		for(int i = scope_depth; i >= 0; --i) {
-			symptr = sym_tab_look(tabstack+scope_depth, node->str);
-			if(symptr)
-				break;
-		}
-		if(!symptr)
-			symptr = sym_tab_look(&globaltab, node->str);
+		symptr = lookup_symbol(node->str);
 		if(!symptr)
 			myerror("undefined identifier %s at%DBG", node->str, &(node->debug_info));
 		tinfo = symptr->type;
@@ -1766,17 +1759,11 @@ Type_info* build_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		break;
 	case N_ID:
 		is_pending = false;
-		for(int i = scope_depth; i >= 0; --i) {
-			symptr = sym_tab_look(tabstack+scope_depth, node->str);
-			if(symptr)
-				break;
-		}
-		if(!symptr)
-			symptr = sym_tab_look(&globaltab, node->str);
-		if(!symptr) {
-			symptr = sym_tab_look(&pendingtab, node->str);
+		symptr = pending_symbol(node->str);
+		if(symptr)
 			is_pending = true;
-		}
+		else
+			symptr = lookup_symbol(node->str);
 
 		if(symptr) {
 			if(!symptr->constant && !is_pending)
@@ -1790,7 +1777,7 @@ Type_info* build_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 			tinfo->bytes = 0;
 			symbol.debug_info = node->debug_info;
 			symbol.val.tinfo = tinfo;
-			sym_tab_def(&pendingtab, &symbol);
+			define_symbol(&pendingtab, &symbol);
 		}
 		break;
 	default:
@@ -1804,18 +1791,21 @@ Type_info* build_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 void build_compound_type(Pool *type_pool, Pool *member_pool, AST_node *node, Type_info *dest) {
 	AST_node *child, *sibling;
 	Type_member *member;
-	assert(node->down->kind==N_DEC||node->down->kind==N_CONSTDEC||node->down->kind==N_STRUCTURE||node->down->kind==N_UNIONATION);
 
-	if(node->kind == N_STRUCTURE)
+	assert(node->kind==N_STRUCTURE||node->kind == N_ENUMERATION||node->kind==N_UNIONATION);
+
+	if(node->kind == N_STRUCTURE) {
 		dest->tag = TY_STRUCT;
-	else if(node->kind == N_UNIONATION)
+		dest->Struct.members = member = pool_alloc(member_pool);
+	} else if(node->kind == N_UNIONATION) {
 		dest->tag = TY_UNION;
-	else if(node->kind == N_ENUMERATION)
+		dest->Union.members = member = pool_alloc(member_pool);
+	} else if(node->kind == N_ENUMERATION) {
 		myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
-	else
+	} else {
 		assert(0);
+	}
 
-	dest->Struct.members = member = pool_alloc(member_pool);
 	node = node->down;
 
 	while(node) {
@@ -1859,6 +1849,7 @@ void build_compound_type(Pool *type_pool, Pool *member_pool, AST_node *node, Typ
 			member = member->next;
 		}
 	}
+
 }
 
 void resolve_compound_type(Type_info *tinfo) {
@@ -1891,7 +1882,8 @@ void resolve_compound_type(Type_info *tinfo) {
 			myerror("%s %s was recursively defined at%DBG",
 				type_tag_str, name, &(tinfo->Struct.debug_info));
 
-		member->byte_offset = offset;
+		if(tinfo->tag == TY_STRUCT)
+			member->byte_offset = offset;
 
 		if(member->type->bytes == 0) {
 			if(member->type->tag == TY_STRUCT) {
@@ -1905,9 +1897,11 @@ void resolve_compound_type(Type_info *tinfo) {
 				member = member->next;
 				continue;
 			}
-			symptr = sym_tab_look(&pendingtab, member_type_name);
-			if(symptr)
-				myerror("type %s was not defined, first referenced at%DBG", member_type_name, &(symptr->debug_info));
+			if(member_type_name) {
+				symptr = pending_symbol(member_type_name);
+				if(symptr)
+					myerror("type %s was not defined, first referenced at%DBG", member_type_name, &(symptr->debug_info));
+			}
 			resolve_compound_type(member->type);
 		}
 		offset += member->type->bytes;
@@ -2012,7 +2006,7 @@ void declare_var(Sym_tab *tab, AST_node *node) {
 		sym.debug_info = id_node->debug_info;
 		sym.addr = *seg_count;
 		*seg_count += sym.type->bytes;
-		if(!sym_tab_def(tab, &sym)) {
+		if(!define_symbol(tab, &sym)) {
 			myerror("redefinition of '%s' at%DBG", child->str, &(child->debug_info));
 		}
 	}
@@ -2079,7 +2073,7 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 			if(id_node->next)
 				myerror("compound type cannot be declared with id list%DBG", &(child->debug_info));
 			sym.type = builtin_types + TY_TYPE;
-			symptr = sym_tab_look(&pendingtab, id_node->str);
+			symptr = pending_symbol(id_node->str);
 
 			if(!symptr) {
 				tinfo = pool_alloc(&type_pool);
@@ -2117,7 +2111,7 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 				assert(0);
 			}
 
-			if(!sym_tab_def(tab, &sym))
+			if(!define_symbol(tab, &sym))
 				myerror("redefinition of '%s'%DBG", name, &(child->debug_info));
 		} else {
 			tinfo = infer_type(&type_pool, &member_pool, sibling);
@@ -2136,7 +2130,7 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 
 			for(; id_node; id_node = id_node->next) {
 				sym.name = id_node->str;
-				if(!sym_tab_def(tab, &sym)) {
+				if(!define_symbol(tab, &sym)) {
 					myerror("redefinition of %s%DBG", child->str, &(child->debug_info));
 				}
 			}
@@ -2177,7 +2171,7 @@ void sym_tab_grow(Sym_tab *tab) {
 	for(size_t i = 0; i < old_cap; ++i) {
 		if(!old_data[i].name)
 			continue;
-		sym_tab_def(tab, old_data + i);
+		define_symbol(tab, old_data + i);
 	}
 	free(old_data);
 }
@@ -2188,7 +2182,7 @@ size_t sym_tab_hash(Sym_tab *tab, char *name) {
 	return hash % tab->cap;
 }
 
-int sym_tab_def(Sym_tab *tab, Sym *symbol) {
+int define_symbol(Sym_tab *tab, Sym *symbol) {
 	if(tab->sym_count >= tab->cap)
 		sym_tab_grow(tab);
 	size_t i = sym_tab_hash(tab, symbol->name);
@@ -2214,6 +2208,40 @@ int sym_tab_undef(Sym_tab *tab, char *name) {
 		i = (i + 1) % tab->cap;
 	} while(i != origin);
 	return 0;
+}
+
+Sym *pending_symbol(char *name) {
+	size_t i, origin;
+	origin = i = sym_tab_hash(&pendingtab, name);
+	do {
+		if(pendingtab.data[i].name && !strcmp(pendingtab.data[i].name, name))
+			return pendingtab.data + i;
+		i = (i + 1) % pendingtab.cap;
+	} while(i != origin);
+
+	return NULL;
+}
+
+Sym* lookup_symbol(char *name) {
+	Sym_tab *tab = NULL;
+	size_t j = 0, origin = 0;
+	Sym *sp = NULL;
+	for(int i = scope_depth; i >= 0; --i) {
+		tab = tabstack + i;
+		origin = j = sym_tab_hash(tab, name);
+		do {
+			if(tab->data[j].name && !strcmp(tab->data[j].name, name)) {
+				sp = tab->data + j;
+				break;
+			}
+			j = (j + 1) % tab->cap;
+		} while(j != origin);
+
+		if(sp)
+			break;
+	}
+
+	return sp;
 }
 
 Sym* sym_tab_look(Sym_tab *tab, char *name) {
@@ -4268,11 +4296,11 @@ void compile(AST_node *root) {
 	AST_node *node;
 	//TODO process directives (import, load, etc)
 
-	declare_constants(&globaltab, root);
+	declare_constants(&tabstack[0], root);
 
 	for(node = root; node; node = node->next) {
 		if(node->kind == N_DEC)
-			declare_var(&globaltab, node);
+			declare_var(&tabstack[0], node);
 		if(node->kind != N_FUNCTION)
 			continue;
 		++scope_depth;
@@ -4289,14 +4317,8 @@ void compile_function(AST_node *node) {
 	Type_info *functype = NULL;
 	char *funcname = node->str;
 
-	tab = tabstack+scope_depth;
-	for(int i = scope_depth; i >= 0; --i) {
-		symptr = sym_tab_look(tab, node->str);
-		if(symptr)
-			break;
-	}
-	if(!symptr)
-		symptr = sym_tab_look(&globaltab, node->str);
+	tab = tabstack + scope_depth;
+	symptr = lookup_symbol(node->str);
 	assert(symptr);
 
 	functype = symptr->type;
@@ -4313,7 +4335,7 @@ void compile_function(AST_node *node) {
 		symbol.addr = tab->seg_count.stack;
 		symbol.debug_info = mp->debug_info;
 		tab->seg_count.stack += mp->type->bytes;
-		sym_tab_def(tab, &symbol);
+		define_symbol(tab, &symbol);
 	}
 
 	// declare named return values
@@ -4327,7 +4349,7 @@ void compile_function(AST_node *node) {
 		symbol.addr = tab->seg_count.stack;
 		symbol.debug_info = mp->debug_info;
 		tab->seg_count.stack += mp->type->bytes;
-		sym_tab_def(tab, &symbol);
+		define_symbol(tab, &symbol);
 	}
 
 	node = node->down;
@@ -4410,7 +4432,6 @@ void cleanup(void) {
 		if(tabstack[i].data)
 			free(tabstack[i].data);
 	free(pendingtab.data);
-	free(globaltab.data);
 	fmapclose(&fm);
 }
 
@@ -4429,7 +4450,6 @@ int main(int argc, char **argv) {
 	atexit(cleanup);
 
 	SYM_TAB_INIT(pendingtab,SCOPE_GLOBAL);
-	SYM_TAB_INIT(globaltab,SCOPE_GLOBAL);
 	for(int i = 0; i < ARRLEN(tabstack); ++i) {
 		SYM_TAB_INIT(tabstack[i],SCOPE_LOCAL);
 	}
@@ -4441,15 +4461,15 @@ int main(int argc, char **argv) {
 	pool_init(&member_pool, sizeof(Type_member), 128, 1);
 
 	parse();
-	//ast_print(ast.root, 0, false);
+	ast_print(ast.root, 0, false);
 	//exit(0);
 
-	globaltab.name = argv[1];
+	tabstack[0].name = argv[1];
 	fprintf(stderr,"################ TESTING COMPILE FUNCTIONS #####################\n");
 	compile(ast.root);
 	//ast_print(ast.root, 0, false);
-	sym_tab_print(&globaltab);
-	sym_tab_clear(&globaltab);
+	sym_tab_print(&tabstack[0]);
+	sym_tab_clear(&tabstack[0]);
 	sym_tab_clear(&pendingtab);
 	return 0;
 }

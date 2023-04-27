@@ -1,6 +1,8 @@
 Vec3 :: struct {
-	x,y,z: float;
-	n: Norm;
+	struct {
+		x,y,z: float;
+		n: Norm;
+	}
 }
 
 bigU :: union {
