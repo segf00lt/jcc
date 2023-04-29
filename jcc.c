@@ -2728,14 +2728,21 @@ int bc_interpreter(BCinst *prog, BCmem *mem) {
 			mem->stack_ptr += sizeof(BCdouble);
 			break;
 		case BCOP_POP_DOUBLE:
-			mem->stack_ptr += sizeof(BCdouble);
+			mem->stack_ptr -= sizeof(BCdouble);
 			dptr = (BCdouble*)mem->stack_ptr;
 			r1->d = *dptr;
 			break;
 
 		case BCOP_CALL:
+			assert(seg == SEG_TEXT);
+			wptr = (BCword*)mem->stack_ptr;
+			*wptr = ((curinst - prog) << 0x3 | (SEG_TEXT & 0x7));
+			mem->stack_ptr += sizeof(BCword);
 			break;
 		case BCOP_RET:
+			mem->stack_ptr -= sizeof(BCword);
+			wptr = (BCword*)mem->stack_ptr;
+			curinst = prog + (*wptr >> 0x3);
 			break;
 
 		case BCOP_INTERRUPT:
