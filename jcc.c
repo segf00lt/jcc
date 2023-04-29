@@ -392,8 +392,9 @@ char *type_tag_debug[] = {
 	"TY_FUNC", "TY_STRUCT", "TY_ENUM", "TY_UNION",
 };
 
-enum Opcode_tag {
+enum BCop_tag {
 	BCOP_SET,
+	BCOP_SET_IMM,
 	BCOP_ADD,
 	BCOP_SUB,
 	BCOP_MUL,
@@ -405,25 +406,101 @@ enum Opcode_tag {
 	BCOP_XOR,
 	BCOP_LSHIFT,
 	BCOP_RSHIFT,
+
+	BCOP_SET_FLOAT,
+	BCOP_SET_FLOAT_IMM,
+	BCOP_ADD_FLOAT,
+	BCOP_SUB_FLOAT,
+	BCOP_MUL_FLOAT,
+	BCOP_DIV_FLOAT,
+
+	BCOP_SET_DOUBLE,
+	BCOP_SET_DOUBLE_IMM,
+	BCOP_ADD_DOUBLE,
+	BCOP_SUB_DOUBLE,
+	BCOP_MUL_DOUBLE,
+	BCOP_DIV_DOUBLE,
+
 	BCOP_JMP,
 	BCOP_BLT,
 	BCOP_BGE,
+	BCOP_BLTU,
+	BCOP_BGEU,
 	BCOP_BNE,
 	BCOP_BEQ,
-	BCOP_LOAD,
-	BCOP_STORE,
-	BCOP_PUSH,
-	BCOP_POP,
+	BCOP_BLT_FLOAT,
+	BCOP_BGE_FLOAT,
+	BCOP_BLT_DOUBLE,
+	BCOP_BGE_DOUBLE,
+
+	BCOP_JMP_IMM_ADDR,
+	BCOP_BLT_IMM_ADDR,
+	BCOP_BGE_IMM_ADDR,
+	BCOP_BLTU_IMM_ADDR,
+	BCOP_BGEU_IMM_ADDR,
+	BCOP_BNE_IMM_ADDR,
+	BCOP_BEQ_IMM_ADDR,
+	BCOP_BLT_FLOAT_IMM_ADDR,
+	BCOP_BGE_FLOAT_IMM_ADDR,
+	BCOP_BLT_DOUBLE_IMM_ADDR,
+	BCOP_BGE_DOUBLE_IMM_ADDR,
+
+	BCOP_LOAD_WORD,
+	BCOP_STORE_WORD,
+	BCOP_PUSH_WORD,
+	BCOP_POP_WORD,
+
+	BCOP_LOAD_BYTE,
+	BCOP_LOAD_UBYTE,
+	BCOP_STORE_BYTE,
+	BCOP_PUSH_BYTE,
+	BCOP_POP_BYTE,
+	BCOP_POP_UBYTE,
+
+	BCOP_LOAD_HALF,
+	BCOP_LOAD_UHALF,
+	BCOP_STORE_HALF,
+	BCOP_PUSH_HALF,
+	BCOP_POP_HALF,
+	BCOP_POP_UHALF,
+
+	BCOP_LOAD_FLOAT,
+	BCOP_STORE_FLOAT,
+	BCOP_PUSH_FLOAT,
+	BCOP_POP_FLOAT,
+
+	BCOP_LOAD_DOUBLE,
+	BCOP_STORE_DOUBLE,
+	BCOP_PUSH_DOUBLE,
+	BCOP_POP_DOUBLE,
+
+	BCOP_LOAD_WORD_IMM_ADDR,
+	BCOP_STORE_WORD_IMM_ADDR,
+
+	BCOP_LOAD_BYTE_IMM_ADDR,
+	BCOP_LOAD_UBYTE_IMM_ADDR,
+	BCOP_STORE_BYTE_IMM_ADDR,
+
+	BCOP_LOAD_HALF_IMM_ADDR,
+	BCOP_LOAD_UHALF_IMM_ADDR,
+	BCOP_STORE_HALF_IMM_ADDR,
+
+	BCOP_LOAD_FLOAT_IMM_ADDR,
+	BCOP_STORE_FLOAT_IMM_ADDR,
+
+	BCOP_LOAD_DOUBLE_IMM_ADDR,
+	BCOP_STORE_DOUBLE_IMM_ADDR,
+
 	BCOP_CALL,
 	BCOP_RET,
 
-	/* special opcodes */
-	BCOP_INT,
+	BCOP_INTERRUPT,
 	BCOP_HALT,
 };
 
 char *opcode_debug[] = {
 	"BCOP_SET",
+	"BCOP_SET_IMM",
 	"BCOP_ADD",
 	"BCOP_SUB",
 	"BCOP_MUL",
@@ -435,18 +512,95 @@ char *opcode_debug[] = {
 	"BCOP_XOR",
 	"BCOP_LSHIFT",
 	"BCOP_RSHIFT",
+
+	"BCOP_SET_FLOAT",
+	"BCOP_SET_FLOAT_IMM",
+	"BCOP_ADD_FLOAT",
+	"BCOP_SUB_FLOAT",
+	"BCOP_MUL_FLOAT",
+	"BCOP_DIV_FLOAT",
+
+	"BCOP_SET_DOUBLE",
+	"BCOP_SET_DOUBLE_IMM",
+	"BCOP_ADD_DOUBLE",
+	"BCOP_SUB_DOUBLE",
+	"BCOP_MUL_DOUBLE",
+	"BCOP_DIV_DOUBLE",
+
 	"BCOP_JMP",
 	"BCOP_BLT",
 	"BCOP_BGE",
+	"BCOP_BLTU",
+	"BCOP_BGEU",
 	"BCOP_BNE",
 	"BCOP_BEQ",
-	"BCOP_LOAD",
-	"BCOP_STORE",
-	"BCOP_PUSH",
-	"BCOP_POP",
+	"BCOP_BLT_FLOAT",
+	"BCOP_BGE_FLOAT",
+	"BCOP_BLT_DOUBLE",
+	"BCOP_BGE_DOUBLE",
+
+	"BCOP_JMP_IMM_ADDR",
+	"BCOP_BLT_IMM_ADDR",
+	"BCOP_BGE_IMM_ADDR",
+	"BCOP_BLTU_IMM_ADDR",
+	"BCOP_BGEU_IMM_ADDR",
+	"BCOP_BNE_IMM_ADDR",
+	"BCOP_BEQ_IMM_ADDR",
+	"BCOP_BLT_FLOAT_IMM_ADDR",
+	"BCOP_BGE_FLOAT_IMM_ADDR",
+	"BCOP_BLT_DOUBLE_IMM_ADDR",
+	"BCOP_BGE_DOUBLE_IMM_ADDR",
+
+	"BCOP_LOAD_WORD",
+	"BCOP_STORE_WORD",
+	"BCOP_PUSH_WORD",
+	"BCOP_POP_WORD",
+
+	"BCOP_LOAD_BYTE",
+	"BCOP_LOAD_UBYTE",
+	"BCOP_STORE_BYTE",
+	"BCOP_PUSH_BYTE",
+	"BCOP_POP_BYTE",
+	"BCOP_POP_UBYTE",
+
+	"BCOP_LOAD_HALF",
+	"BCOP_LOAD_UHALF",
+	"BCOP_STORE_HALF",
+	"BCOP_PUSH_HALF",
+	"BCOP_POP_HALF",
+	"BCOP_POP_UHALF",
+
+	"BCOP_LOAD_FLOAT",
+	"BCOP_STORE_FLOAT",
+	"BCOP_PUSH_FLOAT",
+	"BCOP_POP_FLOAT",
+
+	"BCOP_LOAD_DOUBLE",
+	"BCOP_STORE_DOUBLE",
+	"BCOP_PUSH_DOUBLE",
+	"BCOP_POP_DOUBLE",
+
+	"BCOP_LOAD_WORD_IMM_ADDR",
+	"BCOP_STORE_WORD_IMM_ADDR",
+
+	"BCOP_LOAD_BYTE_IMM_ADDR",
+	"BCOP_LOAD_UBYTE_IMM_ADDR",
+	"BCOP_STORE_BYTE_IMM_ADDR",
+
+	"BCOP_LOAD_HALF_IMM_ADDR",
+	"BCOP_LOAD_UHALF_IMM_ADDR",
+	"BCOP_STORE_HALF_IMM_ADDR",
+
+	"BCOP_LOAD_FLOAT_IMM_ADDR",
+	"BCOP_STORE_FLOAT_IMM_ADDR",
+
+	"BCOP_LOAD_DOUBLE_IMM_ADDR",
+	"BCOP_STORE_DOUBLE_IMM_ADDR",
+
 	"BCOP_CALL",
 	"BCOP_RET",
-	"BCOP_INT",
+
+	"BCOP_INTERRUPT",
 	"BCOP_HALT",
 };
 
@@ -465,7 +619,7 @@ typedef enum AST_kind_tag AST_kind_tag;
 typedef enum AST_op_tag AST_op_tag;
 typedef enum Type_tag Type_tag;
 typedef enum Seg_tag Seg_tag;
-typedef enum Opcode_tag Opcode_tag;
+typedef enum BCop_tag BCop_tag;
 typedef enum Scope_tag Scope_tag;
 typedef struct Debug_info Debug_info;
 typedef struct Lexer Lexer;
@@ -484,8 +638,12 @@ typedef struct Type_member Type_member; /* function arguments and return values,
 typedef struct Type_info_pending Type_info_pending;
 typedef struct Sym Sym;
 typedef struct Sym_tab Sym_tab;
-typedef uint64_t BCreg;
+typedef uint64_t BCword;
+typedef uint32_t BChalf;
 typedef uint8_t BCbyte;
+typedef float BCfloat;
+typedef union BCreg BCreg;
+typedef double BCdouble;
 typedef struct BCmem BCmem;
 typedef struct BCinst BCinst;
 
@@ -625,15 +783,17 @@ struct Sym_tab {
 	} seg_count;
 };
 
+union BCreg {
+	BCword w;
+	BCfloat f;
+	BCdouble d;
+};
+
 struct BCinst {
-	Opcode_tag opcode : 10;
-	uint64_t size : 7;
-	uint64_t sign : 1;
-	uint64_t floating : 1;
-	uint64_t immediate : 1;
+	BCop_tag opcode : 8;
 	union {
-		uint64_t reg; /* data register */
-		uint64_t ptr; /* pointer register */
+		uint64_t dest_reg; /* destination register */
+		uint64_t ptr_reg; /* pointer register */
 		uint64_t addr; /* immediate address */
 	};
 	union {
@@ -641,12 +801,13 @@ struct BCinst {
 			uint64_t r1;
 			uint64_t r2;
 		};
-		uint64_t imm;
+		uint64_t imm_i;
+		float imm_f;
+		double imm_d;
 	};
 };
 
 struct BCmem {
-	BCreg *regs;
 	/* the memory 6 segments are:
 	 * data
 	 * bss
@@ -655,22 +816,18 @@ struct BCmem {
 	 * arg
 	 * stack
 	 * 
-	 * we use the first 3 bits of an addr to
+	 * we use the first 3 bits of an address to
 	 * index the segment, the rest of the bits
 	 * are used for indexing within that segment
 	 */
-	union {
-		struct {
-			size_t text_count;
-			size_t text_size;
-		};
-		struct {
-			size_t heap_count;
-			size_t heap_size;
-		};
-	};
-	BCbyte *seg[6];
+	BCreg *regs;
+	size_t data_size;
+	size_t bss_size;
+	size_t text_size;
+	size_t heap_size;
+	size_t stack_size;
 	BCbyte *stack_ptr;
+	BCbyte *seg[6];
 };
 
 /* globals */
@@ -2270,174 +2427,325 @@ void sym_tab_print(Sym_tab *tab) {
 	}
 }
 
-BCinst* bc_allocinst(BCmem *mem) {
-	BCinst *inst;
-
-	if(mem->text_count >= mem->text_size) {
-		mem->text_size <<= 1;
-		mem->seg[SEG_TEXT] = realloc(mem->seg[SEG_TEXT], sizeof(BCinst) * mem->text_size);
-	}
-
-	inst = (BCinst*)(mem->seg[SEG_TEXT]) + mem->text_count;
-	mem->text_count++;
-	return inst;
-}
-
-BCbyte* bc_growheap(BCmem *mem) {
-	BCbyte *heap;
-
-	if(mem->heap_count >= mem->heap_size) {
-		mem->heap_size <<= 1;
-		mem->seg[SEG_HEAP] = realloc(mem->seg[SEG_HEAP], sizeof(BCbyte) * mem->heap_size);
-	}
-
-	heap = mem->seg[SEG_HEAP] + mem->heap_count;
-	mem->heap_count++;
-	return heap;
-}
-
 int bc_interpreter(BCinst *prog, BCmem *mem) {
 	BCinst *curinst;
-	BCreg *data, *r1, *r2;
-	uint64_t r1_data, r2_data, imm, addr, seg, pc, size, sign;
-	uint64_t mask;
-	uint64_t *memptr;
+	BCword *ptr_reg;
+	BCreg *dest, *r1, *r2;
+	BCword *wptr;
+	BChalf *hptr;
+	BCbyte *bptr;
+	BCfloat *fptr;
+	BCdouble *dptr;
+	uint64_t imm_i, addr, seg, sign;
+	float imm_f;
+	double imm_d;
 
-	pc = 0;
 	for(curinst = prog; ; ++curinst) {
-		size = curinst->size;
-		sign = curinst->sign;
-		mask = -1l << size;
-		data = mem->regs + curinst->reg;
+		ptr_reg = &mem->regs[curinst->ptr_reg].w;
+		dest = mem->regs + curinst->dest_reg;
 		r1 = mem->regs + curinst->r1;
 		r2 = mem->regs + curinst->r2;
-		r1_data = *r1;
-		r2_data = *r2;
-		imm = curinst->imm;
-		if(curinst->immediate) {
-			addr = mem->regs[curinst->addr] >> 3;
-			seg = mem->regs[curinst->addr] & 0x7;
-		} else {
-			addr = mem->regs[curinst->ptr] >> 3;
-			seg = mem->regs[curinst->ptr] & 0x7;
-		}
-		memptr = (uint64_t*)(mem->seg[seg]+addr);
-		if(curinst->opcode >= BCOP_PUSH && curinst->opcode == BCOP_RET)
-			memptr = (uint64_t*)(mem->stack_ptr);
+		imm_i = curinst->imm_i;
+		imm_f = curinst->imm_f;
+		imm_d = curinst->imm_d;
+
+		if(curinst->opcode >= BCOP_LOAD_WORD_IMM_ADDR && curinst->opcode <= BCOP_STORE_DOUBLE_IMM_ADDR)
+			addr = curinst->addr;
+		else if(curinst->opcode >= BCOP_JMP_IMM_ADDR && curinst->opcode <= BCOP_BGE_DOUBLE_IMM_ADDR)
+			addr = curinst->addr;
+		else
+			addr = *ptr_reg;
+
+		seg = addr & 0x7;
+		addr >>= 0x3;
 
 		switch(curinst->opcode) {
 		case BCOP_SET:
-			if(curinst->immediate)
-				*data = imm;
-			else
-				*data = *r1;
+			dest->w = r1->w;
+			break;
+		case BCOP_SET_IMM:
+			dest->w = imm_i;
 			break;
 		case BCOP_ADD:
-			*data = r1_data + r2_data;
+			dest->w = r1->w + r2->w;
 			break;
 		case BCOP_SUB:
-			*data = r1_data - r2_data;
+			dest->w = r1->w - r2->w;
 			break;
 		case BCOP_MUL:
-			*data = r1_data * r2_data;
+			dest->w = r1->w * r2->w;
 			break;
 		case BCOP_DIV:
-			*data = r1_data / r2_data;
+			dest->w = r1->w / r2->w;
 			break;
 		case BCOP_MOD:
-			*data = r1_data % r2_data;
+			dest->w = r1->w % r2->w;
 			break;
 		case BCOP_AND:
-			*data = r1_data & r2_data;
+			dest->w = r1->w & r2->w;
 			break;
 		case BCOP_OR:
-			*data = r1_data | r2_data;
+			dest->w = r1->w | r2->w;
 			break;
 		case BCOP_XOR:
-			*data = r1_data ^ r2_data;
+			dest->w = r1->w ^ r2->w;
 			break;
 		case BCOP_NOT:
-			*data = ~r1_data;
+			dest->w = ~r1->w;
 			break;
 		case BCOP_LSHIFT:
-			*data = r1_data << r2_data;
+			dest->w = r1->w << r2->w;
 			break;
 		case BCOP_RSHIFT:
-			*data = r1_data >> r2_data;
+			dest->w = r1->w >> r2->w;
 			break;
+
+		case BCOP_SET_FLOAT:
+			dest->f = r1->f;
+			break;
+		case BCOP_SET_FLOAT_IMM:
+			dest->f = imm_f;
+			break;
+		case BCOP_ADD_FLOAT:
+			dest->f = r1->f + r2->f;
+			break;
+		case BCOP_SUB_FLOAT:
+			dest->f = r1->f - r2->f;
+			break;
+		case BCOP_MUL_FLOAT:
+			dest->f = r1->f * r2->f;
+			break;
+		case BCOP_DIV_FLOAT:
+			dest->f = r1->f / r2->f;
+			break;
+
+		case BCOP_SET_DOUBLE:
+			dest->d = r1->d;
+			break;
+		case BCOP_SET_DOUBLE_IMM:
+			dest->d = imm_d;
+			break;
+		case BCOP_ADD_DOUBLE:
+			dest->d = r1->d + r2->d;
+			break;
+		case BCOP_SUB_DOUBLE:
+			dest->d = r1->d - r2->d;
+			break;
+		case BCOP_MUL_DOUBLE:
+			dest->d = r1->d * r2->d;
+			break;
+		case BCOP_DIV_DOUBLE:
+			dest->d = r1->d / r2->d;
+			break;
+
 		case BCOP_JMP:
+		case BCOP_JMP_IMM_ADDR:
 			assert(seg == SEG_TEXT);
-			curinst = prog + addr;
+			curinst = prog + *ptr_reg;
 			break;
 		case BCOP_BLT:
+		case BCOP_BLT_IMM_ADDR:
 			assert(seg == SEG_TEXT);
-			if(sign) {
-				if((int64_t)r1_data < (int64_t)r2_data)
-					curinst = prog + addr;
-			} else {
-				if(r1_data < r2_data)
-					curinst = prog + addr;
-			}
+			if((int64_t)r1->w < (int64_t)r2->w)
+				curinst = prog + *ptr_reg;
 			break;
 		case BCOP_BGE:
+		case BCOP_BGE_IMM_ADDR:
 			assert(seg == SEG_TEXT);
-			if(sign) {
-				if((int64_t)r1_data >= (int64_t)r2_data)
-					curinst = prog + addr;
-			} else {
-				if(r1_data >= r2_data)
-					curinst = prog + addr;
-			}
+			if((int64_t)r1->w >= (int64_t)r2->w)
+				curinst = prog + *ptr_reg;
+			break;
+		case BCOP_BLTU:
+		case BCOP_BLTU_IMM_ADDR:
+			assert(seg == SEG_TEXT);
+			if(r1->w < r2->w)
+				curinst = prog + *ptr_reg;
+			break;
+		case BCOP_BGEU:
+		case BCOP_BGEU_IMM_ADDR:
+			assert(seg == SEG_TEXT);
+			if(r1->w >= r2->w)
+				curinst = prog + *ptr_reg;
+			break;
+		case BCOP_BLT_FLOAT:
+		case BCOP_BLT_FLOAT_IMM_ADDR:
+			assert(seg == SEG_TEXT);
+			if(r1->f < r2->f)
+				curinst = prog + *ptr_reg;
+			break;
+		case BCOP_BGE_FLOAT:
+		case BCOP_BGE_FLOAT_IMM_ADDR:
+			assert(seg == SEG_TEXT);
+			if(r1->f >= r2->f)
+				curinst = prog + *ptr_reg;
+			break;
+		case BCOP_BLT_DOUBLE:
+		case BCOP_BLT_DOUBLE_IMM_ADDR:
+			assert(seg == SEG_TEXT);
+			if(r1->d < r2->d)
+				curinst = prog + *ptr_reg;
+			break;
+		case BCOP_BGE_DOUBLE:
+		case BCOP_BGE_DOUBLE_IMM_ADDR:
+			assert(seg == SEG_TEXT);
+			if(r1->d >= r2->d)
+				curinst = prog + *ptr_reg;
 			break;
 		case BCOP_BNE:
+		case BCOP_BNE_IMM_ADDR:
 			assert(seg == SEG_TEXT);
-			if(r1_data != r2_data)
-				curinst = prog + addr;
+			if(r1->w != r2->w)
+				curinst = prog + *ptr_reg;
 			break;
 		case BCOP_BEQ:
+		case BCOP_BEQ_IMM_ADDR:
 			assert(seg == SEG_TEXT);
-			if(r1_data == r2_data)
-				curinst = prog + addr;
+			if(r1->w == r2->w)
+				curinst = prog + *ptr_reg;
 			break;
-		case BCOP_LOAD:
-			*r1 = *memptr ^ mask;
+
+		case BCOP_LOAD_WORD:
+		case BCOP_LOAD_WORD_IMM_ADDR:
+			wptr = (BCword*)(mem->seg[seg] + addr);
+			r1->w = *wptr;
 			break;
-		case BCOP_STORE:
-			*memptr &= mask;
-			*memptr |= *r1 ^ mask;
+		case BCOP_STORE_WORD:
+		case BCOP_STORE_WORD_IMM_ADDR:
+			wptr = (BCword*)(mem->seg[seg] + addr);
+			*wptr = r1->w;
 			break;
-		case BCOP_PUSH:
-			*memptr &= mask;
-			*memptr |= *r1 ^ mask;
-			mem->stack_ptr += sizeof(size >> 3);
+		case BCOP_PUSH_WORD:
+			wptr = (BCword*)mem->stack_ptr;
+			*wptr = r1->w;
+			mem->stack_ptr += sizeof(BCword);
 			break;
-		case BCOP_POP:
-			mem->stack_ptr -= sizeof(size >> 3);
-			*r1 = *memptr ^ mask;
+		case BCOP_POP_WORD:
+			mem->stack_ptr -= sizeof(BCword);
+			wptr = (BCword*)mem->stack_ptr;
+			r1->w = *wptr;
 			break;
+
+		case BCOP_LOAD_BYTE:
+		case BCOP_LOAD_BYTE_IMM_ADDR:
+			bptr = mem->seg[seg] + addr;
+			sign = *bptr >> (sizeof(BCbyte)-1);
+			r1->w = -((sign << sizeof(BCbyte)) - *(BCword*)bptr);
+			break;
+		case BCOP_LOAD_UBYTE:
+		case BCOP_LOAD_UBYTE_IMM_ADDR:
+			bptr = mem->seg[seg] + addr;
+			r1->w = *(BCword*)bptr;
+			break;
+		case BCOP_STORE_BYTE:
+		case BCOP_STORE_BYTE_IMM_ADDR:
+			bptr = mem->seg[seg] + addr;
+			*bptr = (BCbyte)r1->w;
+			break;
+		case BCOP_PUSH_BYTE:
+			bptr = mem->stack_ptr;
+			*bptr = (BCbyte)r1->w;
+			mem->stack_ptr += sizeof(BCbyte);
+			break;
+		case BCOP_POP_BYTE:
+			mem->stack_ptr -= sizeof(BCbyte);
+			bptr = mem->stack_ptr;
+			sign = *bptr >> (sizeof(BCbyte)-1);
+			r1->w = -((sign << sizeof(BCbyte)) - *(BCword*)bptr);
+			break;
+		case BCOP_POP_UBYTE:
+			mem->stack_ptr -= sizeof(BCbyte);
+			bptr = mem->stack_ptr;
+			r1->w = *(BCword*)bptr;
+			break;
+
+		case BCOP_LOAD_HALF:
+		case BCOP_LOAD_HALF_IMM_ADDR:
+			hptr = (BChalf*)(mem->seg[seg] + addr);
+			sign = *hptr >> (sizeof(BChalf)-1);
+			r1->w = -((sign << sizeof(BChalf)) - *(BCword*)hptr);
+			break;
+		case BCOP_LOAD_UHALF:
+		case BCOP_LOAD_UHALF_IMM_ADDR:
+			hptr = (BChalf*)(mem->seg[seg] + addr);
+			r1->w = *(BCword*)hptr;
+			break;
+		case BCOP_STORE_HALF:
+		case BCOP_STORE_HALF_IMM_ADDR:
+			hptr = (BChalf*)(mem->seg[seg] + addr);
+			*hptr = (BChalf)r1->w;
+			break;
+		case BCOP_PUSH_HALF:
+			hptr = (BChalf*)mem->stack_ptr;
+			*hptr = (BChalf)r1->w;
+			mem->stack_ptr += sizeof(BChalf);
+			break;
+		case BCOP_POP_HALF:
+			mem->stack_ptr -= sizeof(BChalf);
+			hptr = (BChalf*)mem->stack_ptr;
+			sign = *hptr >> (sizeof(BChalf)-1);
+			r1->w = -((sign << sizeof(BChalf)) - *(BCword*)hptr);
+			break;
+		case BCOP_POP_UHALF:
+			mem->stack_ptr -= sizeof(BChalf);
+			hptr = (BChalf*)mem->stack_ptr;
+			r1->w = *(BCword*)hptr;
+			break;
+
+		case BCOP_LOAD_FLOAT:
+		case BCOP_LOAD_FLOAT_IMM_ADDR:
+			fptr = (BCfloat*)(mem->seg[seg] + addr);
+			r1->f = *fptr;
+			break;
+		case BCOP_STORE_FLOAT:
+		case BCOP_STORE_FLOAT_IMM_ADDR:
+			fptr = (BCfloat*)(mem->seg[seg] + addr);
+			*fptr = r1->f;
+			break;
+		case BCOP_PUSH_FLOAT:
+			fptr = (BCfloat*)mem->stack_ptr;
+			*fptr = r1->f;
+			mem->stack_ptr += sizeof(BCfloat);
+			break;
+		case BCOP_POP_FLOAT:
+			mem->stack_ptr -= sizeof(BCfloat);
+			fptr = (BCfloat*)mem->stack_ptr;
+			r1->f = *fptr;
+			break;
+
+		case BCOP_LOAD_DOUBLE:
+		case BCOP_LOAD_DOUBLE_IMM_ADDR:
+			dptr = (BCdouble*)(mem->seg[seg] + addr);
+			r1->d = *dptr;
+			break;
+		case BCOP_STORE_DOUBLE:
+		case BCOP_STORE_DOUBLE_IMM_ADDR:
+			dptr = (BCdouble*)(mem->seg[seg] + addr);
+			*dptr = r1->d;
+			break;
+		case BCOP_PUSH_DOUBLE:
+			dptr = (BCdouble*)mem->stack_ptr;
+			*dptr = r1->d;
+			mem->stack_ptr += sizeof(BCdouble);
+			break;
+		case BCOP_POP_DOUBLE:
+			mem->stack_ptr += sizeof(BCdouble);
+			dptr = (BCdouble*)mem->stack_ptr;
+			r1->d = *dptr;
+			break;
+
 		case BCOP_CALL:
-			assert(seg == SEG_TEXT);
-			pc = ((curinst - prog) << 3) | (SEG_TEXT & 0x7);
-			*memptr = pc;
-			mem->stack_ptr += sizeof(pc);
 			break;
 		case BCOP_RET:
-			mem->stack_ptr -= sizeof(pc);
-			pc = *memptr >> 3;
-			curinst = prog + pc;
 			break;
-		case BCOP_INT:
+
+		case BCOP_INTERRUPT:
 			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__,__func__);
 			break;
 		case BCOP_HALT:
 			return 0;
 		}
 
-		// check for overflows
-		*data ^= mask;
-
-		// sign extend LOAD and POP
-		*r1 = -((sign << size) - *r1);
+		assert(mem->stack_ptr >= mem->seg[SEG_STACK] && mem->stack_ptr < (mem->seg[SEG_STACK] + mem->stack_size));
 	}
 }
 
