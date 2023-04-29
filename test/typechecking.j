@@ -27,7 +27,7 @@ test :: func(void) int, int, int {
 BUFSIZE : u64 : 0xff;
 
 main :: func {
-	test_int : int = 12;
+	test_int : s32 = -12;
 	test_float : float = 1.2;
 	typevar: Type = struct { x,y,z: float; }
 	ptr: *void;

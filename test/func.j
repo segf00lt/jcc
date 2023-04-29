@@ -86,6 +86,7 @@ main :: func {
 	testptr: ****int;
 	cast(****int)testptr;
 	**(cast(***int)cast(*void)a)[0] = 64;
+	i := add_abc(1, 2, 3);
 }
 
 one :: func(i: int) int inline {

@@ -178,7 +178,6 @@ enum AST_kind_tag {
 	N_RETURNSTATEMENT,
 	N_FORSTATEMENT,
 	N_EXPRESSION,
-	N_CALL,
 	N_POINTER,
 	N_ARRAY,
 	N_OP,
@@ -216,7 +215,6 @@ char *nodes_debug[] = {
 	"N_RETURNSTATEMENT",
 	"N_FORSTATEMENT",
 	"N_EXPRESSION",
-	"N_CALL",
 	"N_POINTER",
 	"N_ARRAY",
 	"N_OP",
@@ -320,6 +318,7 @@ enum AST_op_tag {
 	OP_ADDR,
 	OP_DEREF,
 	OP_SUBSCRIPT,
+	OP_CALL,
 };
 
 char *operators_debug[] = {
@@ -363,6 +362,7 @@ char *operators_debug[] = {
 	"OP_ADDR",
 	"OP_DEREF",
 	"OP_SUBSCRIPT",
+	"OP_CALL",
 };
 
 enum Type_tag {
@@ -549,7 +549,7 @@ struct Type_info_Array {
 
 struct Type_info_Func {
 	Type_member *arg_types;
-	Type_member *return_types;
+	Type_member *ret_types;
 };
 
 struct Type_info_Struct {
@@ -713,7 +713,7 @@ void myerror(char *fmt, ...);
 void parse_error(char *expect);
 
 /* AST functions */
-AST_node* ast_alloc_node(AST *ast, int kind, Debug_info *debug_info);
+AST_node* ast_alloc(AST *ast, int kind, Debug_info *debug_info);
 void ast_print(AST_node *node, size_t depth, bool skip_next);
 
 /* lexer functions */
@@ -746,15 +746,14 @@ AST_node* bitwise(void);
 AST_node* arith(void);
 AST_node* factor(void);
 AST_node* unary(void);
-AST_node* member(void);
-AST_node* subscript(void);
+AST_node* postfix(void);
 AST_node* term(void);
-AST_node* call(void);
 
 /* type system funcitons */
 void type_info_print(Type_info *tp, size_t depth);
 void resolve_compound_type(Type_info *tinfo);
-int compare_types(Type_info *ta, Type_info *tb);
+Type_info* recursive_type_merge(Type_info *ta, Type_info *tb);
+Type_info* simple_type_merge(Type_info *ta, Type_info *tb);
 Type_info* typecheck(AST_node *node);
 Type_info* build_type(Pool *type_pool, Pool *member_pool, AST_node *node);
 Type_info* infer_type(Pool *type_pool, Pool *member_pool, AST_node *node);
@@ -815,7 +814,7 @@ void ast_print(AST_node *node, size_t depth, bool skip_next) {
 	}
 }
 
-AST_node* ast_alloc_node(AST *ast, int kind, Debug_info *debug_info) {
+AST_node* ast_alloc(AST *ast, int kind, Debug_info *debug_info) {
 	register AST_node *node;
 	node = pool_alloc(&(ast->pool));
 	*node = (AST_node){
@@ -902,7 +901,7 @@ void type_info_print(Type_info *tp, size_t depth) {
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		fprintf(stderr, "return values:\n");
 		++depth;
-		for(member = tp->Func.return_types; member; member = member->next) {
+		for(member = tp->Func.ret_types; member; member = member->next) {
 			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 			fprintf(stderr, "RETURN\n");
 			for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
@@ -978,39 +977,135 @@ void type_info_print(Type_info *tp, size_t depth) {
 	}
 }
 
-int compare_types(Type_info *ta, Type_info *tb) {
-	/*
-	 * find whether ta and tb are
-	 * the same or are implicitly castable
-	 * if they are neither that is an error
-	 */
-	bool ta_is_int = (ta->tag == TY_INT);
-	bool tb_is_int = (tb && tb->tag == TY_INT);
-	bool ta_is_float = (ta->tag == TY_FLOAT);
-	bool tb_is_float = (tb && tb->tag == TY_FLOAT);
-	bool ta_is_pointer = (ta->tag == TY_POINTER);
-	bool tb_is_pointer = (tb && tb->tag == TY_POINTER);
+#define TYPE_TAG_IS_RECURSIVE(tag) ((tag >= TY_FUNC && tag <= TY_UNION) || tag == TY_ARRAY || tag == TY_POINTER)
 
-	if(ta == tb) {
-		return 0;
-	} else if((ta_is_pointer || ta_is_float) && tb_is_int) {
-		return 0;
-	} else if((tb_is_pointer || tb_is_float) && ta_is_int) {
-		return 0;
-	} else {
+#define TYPE_TAG_IS_SIMPLE(tag) (tag >= TY_INT && tag <= TY_VOID)
+
+#define TYPES_CAN_MERGE_RECURSIVE(tag_a, tag_b) (TYPE_TAG_IS_RECURSIVE(tag_a) && TYPE_TAG_IS_RECURSIVE(tag_b))
+
+#define TYPES_CAN_MERGE_SIMPLE(tag_a, tag_b) \
+	((tag_a != TY_POINTER || TYPE_TAG_IS_SIMPLE(tag_b)) || (tag_b != TY_POINTER || TYPE_TAG_IS_SIMPLE(tag_a)))
+
+Type_info* recursive_type_merge(Type_info *ta, Type_info *tb) {
+	assert(ta && tb);
+	assert(TYPES_CAN_MERGE_RECURSIVE(ta->tag, tb->tag));
+
+	Type_info *tinfo = NULL, *subtype_a = NULL, *subtype_b = NULL;
+	Type_member *member_a = NULL, *member_b = NULL;
+
+	if(ta->tag != tb->tag)
+		return NULL;
+
+	switch(ta->tag) {
+	case TY_FUNC:
+		member_a = ta->Func.arg_types;
+		member_b = tb->Func.arg_types;
+		break;
+	case TY_STRUCT:
+		if(ta->Struct.name && tb->Struct.name) {
+			if(strcmp(ta->Struct.name, tb->Struct.name))
+				return NULL;
+			else
+				return ta;
+		} else if(ta->Struct.name || tb->Struct.name) {
+			return NULL;
+		}
+		member_a = ta->Struct.members;
+		member_b = tb->Struct.members;
+		break;
+	case TY_UNION:
+		if(ta->Union.name && tb->Union.name) {
+			if(strcmp(ta->Struct.name, tb->Struct.name))
+				return NULL;
+			else
+				return ta;
+		} else if(ta->Union.name || tb->Union.name) {
+			return NULL;
+		}
+		member_a = ta->Union.members;
+		member_b = tb->Union.members;
+		break;
+	case TY_ENUM:
+		myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__,__func__);
+		break;
+	case TY_ARRAY:
+		subtype_a = ta->Array.array_of;
+		subtype_b = tb->Array.array_of;
+		break;
+	case TY_POINTER:
+		subtype_a = ta->Pointer.pointer_to;
+		subtype_b = tb->Pointer.pointer_to;
+		break;
+	default:
+		assert(0);
 	}
 
-	return 0;
+	if(subtype_a && subtype_b) {
+		if(TYPES_CAN_MERGE_RECURSIVE(subtype_a->tag, subtype_b->tag))
+			return recursive_type_merge(subtype_a, subtype_b);
+		else if(TYPES_CAN_MERGE_SIMPLE(subtype_a->tag, subtype_b->tag))
+			return simple_type_merge(subtype_a, subtype_b);
+		else
+			return NULL;
+	}
+
+	while(member_a && member_b) {
+		if(TYPES_CAN_MERGE_RECURSIVE(member_a->type->tag, member_b->type->tag))
+			tinfo = recursive_type_merge(member_a->type, member_b->type);
+		else if(TYPES_CAN_MERGE_SIMPLE(member_a->type->tag, member_b->type->tag))
+			tinfo = simple_type_merge(member_a->type, member_b->type);
+		else
+			tinfo = NULL;
+
+		if(!tinfo)
+			return NULL;
+
+		member_a = member_a->next;
+		member_b = member_b->next;
+
+		if(member_a && member_b) {
+			continue;
+		} else if(ta->tag == TY_FUNC && !member_a && !member_b) {
+			member_a = ta->Func.ret_types;
+			member_b = tb->Func.ret_types;
+		} else {
+			return NULL;
+		}
+	}
+
+	return ta;
+}
+
+Type_info* simple_type_merge(Type_info *ta, Type_info *tb) {
+	assert(ta && tb);
+	assert(TYPES_CAN_MERGE_SIMPLE(ta->tag, tb->tag));
+
+	if(ta->tag > tb->tag) {
+		Type_info *tmp = ta;
+		ta = tb;
+		tb = tmp;
+	}
+
+	if(ta->tag == tb->tag)
+		return ta;
+
+	if(ta->tag != TY_INT)
+		return NULL;
+
+	if(tb->tag == TY_FLOAT || tb->tag == TY_POINTER)
+		return tb;
+
+	return NULL;
 }
 
 Type_info* typecheck(AST_node *node) {
 	AST_node *save = NULL;
 	Type_info *tinfo = NULL, *tinfo_down = NULL, *tinfo_next = NULL;
+	Type_info *merged_type = NULL;
 	Type_member *memberptr = NULL;
 	Sym *symptr = NULL;
 	char *tstr_down = NULL, *tstr_next = NULL, *opstr = NULL;
-	char *funcstr = node->str;
-	bool unary = false, invalid = false;
+	bool invalid = false;
 
 	if(node->kind == N_EXPRESSION)
 		node = node->down;
@@ -1027,9 +1122,9 @@ Type_info* typecheck(AST_node *node) {
 			if(node->down->kind == N_ID) {
 				symptr = lookup_symbol(node->str);
 				if(!symptr)
-					myerror("undefined identifier %s at %DBG", node->str, &(node->debug_info));
+					myerror("undefined identifier %s at %DBG", node->str, &node->debug_info);
 				if(symptr->type->tag != TY_TYPE)
-					myerror("invalid type %s at %DBG", node->str, &(node->debug_info));
+					myerror("invalid type %s at %DBG", node->str, &node->debug_info);
 			}
 			tinfo = builtin_types + TY_TYPE;
 			break;
@@ -1049,40 +1144,8 @@ Type_info* typecheck(AST_node *node) {
 		case N_ID:
 			symptr = lookup_symbol(node->str);
 			if(!symptr)
-				myerror("undefined identifier %s at %DBG", node->str, &(node->debug_info));
+				myerror("undefined identifier %s at %DBG", node->str, &node->debug_info);
 			tinfo = symptr->type;
-			break;
-		case N_CALL:
-			funcstr = node->str;
-			symptr = lookup_symbol(funcstr);
-			if(!symptr)
-				myerror("undefined function %s at %DBG", node->str, &(node->debug_info));
-			if(!symptr->type->Func.return_types)
-				tinfo = builtin_types + TY_VOID;
-			else
-				tinfo = symptr->type->Func.return_types->type;
-			memberptr = symptr->type->Func.arg_types;
-			save = node;
-			node = node->down;
-			for(; node && memberptr; node = node->next, memberptr = memberptr->next) {
-				tinfo_down = typecheck(node->down);
-				tinfo_next = memberptr->type;
-
-				if(tinfo_down->tag == TY_FUNC || tinfo_next->tag == TY_FUNC)
-					myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
-
-				tstr_down = type_tag_debug[tinfo_down->tag];
-				tstr_next = type_tag_debug[tinfo_next->tag];
-				if(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes)
-					continue;
-
-				if(tinfo_down != tinfo_next)
-					myerror("invalid argument of type %s where %s was expected at%DBG", tstr_down, tstr_next, &(node->debug_info));
-			}
-			
-			if(node || memberptr) {
-				myerror("wrong number of arguments in call to %s at%DBG", funcstr, &(save->debug_info));
-			}
 			break;
 		case N_STRLIT:
 		case N_ARRAYLIT:
@@ -1096,131 +1159,131 @@ Type_info* typecheck(AST_node *node) {
 		return tinfo;
 	}
 
-	if(node->op == OP_DOT) {
-		bool is_pointer_to_compound;
-		AST_node *node_next;
-		Type_member *member_stack[12];
-		int member_stack_top = 0;
-		Type_info *member_type = NULL;
-		char *compound_type_str = NULL;
-		char *memberstr = NULL;
-		Type_info *subscript_expr_type = NULL;
+	if(node->op >= OP_LAND && node->op <= OP_LNOT) {
+		typecheck(node->down);
+		if(node->next)
+			typecheck(node->next);
+		return builtin_types + TY_BOOL;
+	}
+
+	if(node->op == OP_CALL) {
 		tinfo = typecheck(node->down);
+		if(tinfo->tag != TY_FUNC)
+			myerror("call expression does not evaluate to function at%DBG", &node->debug_info);
+		memberptr = tinfo->Func.arg_types;
+		if(!tinfo->Func.ret_types)
+			tinfo = builtin_types + TY_VOID;
+		else
+			tinfo = tinfo->Func.ret_types->type;
+		save = node;
+		node = node->next;
+		for(; node && memberptr; node = node->next, memberptr = memberptr->next) {
+			tinfo_down = typecheck(node->down);
+			tinfo_next = memberptr->type;
 
-		for(; node && node->kind == N_OP; node = node->next) {
+			if(TYPES_CAN_MERGE_RECURSIVE(tinfo_down->tag, tinfo_next->tag))
+				merged_type = recursive_type_merge(tinfo_down, tinfo_next);
 
-			node_next = node->next;
-			if(node->down->kind == N_OP && node->down->op == OP_SUBSCRIPT) {
-				AST_node *operand = node->down;
-				while(operand->op == OP_SUBSCRIPT) {
-					subscript_expr_type = typecheck(operand->next);
-					if(subscript_expr_type->tag != TY_INT)
-						myerror("subscript expression not of type 'int' at%DBG", &(node->debug_info));
-					operand = operand->down;
-					tinfo = tinfo->Array.array_of;
-				}
-			}
+			tstr_down = type_tag_debug[tinfo_down->tag];
+			tstr_next = type_tag_debug[tinfo_next->tag];
 
-			if(node_next->kind == N_ID)
-				memberstr = node->next->str;
-			else {
-				assert(node->next->kind == N_OP && node->next->op == OP_DOT);
-				AST_node *operand = node_next->down;
-				while(operand->op == OP_SUBSCRIPT) {
-					subscript_expr_type = typecheck(operand->next);
-					if(subscript_expr_type->tag != TY_INT)
-						myerror("subscript expression not of type 'int' at%DBG", &(node->debug_info));
-					operand = operand->down;
-				}
-				assert(operand->kind == N_ID);
-				memberstr = operand->str;
-			}
+			if(!merged_type && tinfo_down->tag != tinfo_next->tag)
+				myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &node->debug_info);
+		}
 
-			is_pointer_to_compound =
-				(tinfo->tag == TY_POINTER &&
-				 tinfo->Pointer.pointer_to->tag >= TY_STRUCT &&
-				 tinfo->Pointer.pointer_to->tag <= TY_UNION);
-			if(is_pointer_to_compound)
-				tinfo = tinfo->Pointer.pointer_to;
-
-			switch(tinfo->tag) {
-			case TY_ENUM:
-				myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
-				compound_type_str = tinfo->Enum.name;
-				memberptr = tinfo->Enum.members;
-				break;
-			case TY_STRUCT:
-				compound_type_str = tinfo->Struct.name;
-				memberptr = tinfo->Struct.members;
-				break;
-			case TY_UNION:
-				compound_type_str = tinfo->Union.name;
-				memberptr = tinfo->Union.members;
-				break;
-			case TY_ARRAY:
-				myerror("use of '.' on array at%DBG", &(node->debug_info));
-				break;
-			default:
-				myerror("use of '.' on scalar type at%DBG", &(node->debug_info));
-				break;
-			}
-
-			/* look through members, push member list on stack whenever
-			 * we encounter an anonymous struct or union */
-			member_stack[member_stack_top] = memberptr;
-			while(member_stack_top >= 0) {
-				memberptr = member_stack[member_stack_top];
-
-				for(; memberptr; memberptr = memberptr->next) {
-					if(!memberptr->name) {
-						assert(memberptr->type->tag == TY_STRUCT || memberptr->type->tag == TY_UNION);
-						member_stack[member_stack_top] = memberptr->next;
-						++member_stack_top;
-						if(memberptr->type->tag == TY_STRUCT)
-							memberptr = memberptr->type->Struct.members;
-						else if(memberptr->type->tag == TY_UNION)
-							memberptr = memberptr->type->Union.members;
-						member_stack[member_stack_top] = memberptr;
-					}
-
-					if(!strcmp(memberstr, memberptr->name)) {
-						member_type = memberptr->type;
-						member_stack_top = -1;
-						break;
-					}
-				}
-
-				--member_stack_top;
-			}
-			member_stack_top = 0;
-
-			if(!member_type)
-				myerror("%s has no member %s%DBG", compound_type_str, memberstr, &(node->debug_info));
-
-			tinfo = member_type;
+		if(node || memberptr) {
+			myerror("wrong number of arguments in call at%DBG", &save->debug_info);
 		}
 
 		return tinfo;
 	}
 
-	if(node->op == OP_ASSIGN) {
-		bool down_is_compound;
-		bool next_is_compound;
+	if(node->op == OP_DOT) {
+		bool is_pointer_to_compound;
+		Type_member *member_stack[12];
+		int member_stack_top = 0;
+		Type_info *member_type = NULL;
+		char *compound_type_str = NULL;
+		char *memberstr = NULL;
+		tinfo = typecheck(node->down);
 
+		assert(node->next->kind == N_ID);
+		memberstr = node->next->str;
+
+		is_pointer_to_compound =
+			(tinfo->tag == TY_POINTER &&
+			 tinfo->Pointer.pointer_to->tag >= TY_STRUCT &&
+			 tinfo->Pointer.pointer_to->tag <= TY_UNION);
+		if(is_pointer_to_compound)
+			tinfo = tinfo->Pointer.pointer_to;
+
+		switch(tinfo->tag) {
+		case TY_ENUM:
+			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
+			compound_type_str = tinfo->Enum.name;
+			memberptr = tinfo->Enum.members;
+			break;
+		case TY_STRUCT:
+			compound_type_str = tinfo->Struct.name;
+			memberptr = tinfo->Struct.members;
+			break;
+		case TY_UNION:
+			compound_type_str = tinfo->Union.name;
+			memberptr = tinfo->Union.members;
+			break;
+		case TY_ARRAY:
+			myerror("use of '.' on array at%DBG", &node->debug_info);
+			break;
+		default:
+			myerror("use of '.' on non compound type at%DBG", &node->debug_info);
+			break;
+		}
+
+		/* look through members, push member list on stack whenever
+		 * we encounter an anonymous struct or union */
+		member_stack[member_stack_top] = memberptr;
+		while(member_stack_top >= 0) {
+			assert(member_stack_top < ARRLEN(member_stack));
+			memberptr = member_stack[member_stack_top];
+
+			for(; memberptr; memberptr = memberptr->next) {
+				if(!memberptr->name) {
+					assert(memberptr->type->tag == TY_STRUCT || memberptr->type->tag == TY_UNION);
+					member_stack[member_stack_top] = memberptr->next;
+					++member_stack_top;
+					if(memberptr->type->tag == TY_STRUCT)
+						memberptr = memberptr->type->Struct.members;
+					else if(memberptr->type->tag == TY_UNION)
+						memberptr = memberptr->type->Union.members;
+					member_stack[member_stack_top] = memberptr;
+				}
+
+				if(!strcmp(memberstr, memberptr->name)) {
+					member_type = memberptr->type;
+					member_stack_top = -1;
+					break;
+				}
+			}
+
+			--member_stack_top;
+		}
+		member_stack_top = 0;
+
+		if(!member_type)
+			myerror("%s has no member %s%DBG", compound_type_str, memberstr, &node->debug_info);
+
+		tinfo = member_type;
+
+		return tinfo;
+	}
+
+	if(node->op == OP_ASSIGN) {
 		assert(node->down && node->next);
 		memberptr = NULL;
 
-		if(node->next->kind == N_CALL) {
-			symptr = lookup_symbol(node->next->str);
-			if(!symptr)
-				myerror("undefined function %s at %DBG", node->str, &(node->debug_info));
-			if(!symptr->type->Func.return_types)
-				myerror("attempt to assign from void function call at%DBG", &(node->debug_info));
-			tinfo_next = symptr->type->Func.return_types->type;
-			memberptr = symptr->type->Func.return_types;
-		} else {
-			tinfo_next = typecheck(node->next);
-		}
+		tinfo_next = typecheck(node->next);
+		if(node->next->kind == N_OP && node->next->op == OP_CALL)
+			memberptr = tinfo_next->Func.ret_types;
 
 		if(node->down->kind == N_IDLIST) {
 			save = node->down;
@@ -1231,20 +1294,14 @@ Type_info* typecheck(AST_node *node) {
 				else
 					tinfo_down = typecheck(node);
 
-				if(tinfo_down->tag == TY_FUNC || tinfo_next->tag == TY_FUNC)
-					myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
+				if(TYPES_CAN_MERGE_RECURSIVE(tinfo_down->tag, tinfo_next->tag))
+					merged_type = recursive_type_merge(tinfo_down, tinfo_next);
 
 				tstr_down = type_tag_debug[tinfo_down->tag];
 				tstr_next = type_tag_debug[tinfo_next->tag];
 
-				down_is_compound = (tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION);
-				next_is_compound = (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION);
-
-				if(down_is_compound && next_is_compound && tinfo_down == tinfo_next)
-					return tinfo_down;
-
-				if(!(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes))
-					myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &(node->debug_info));
+				if(!merged_type && tinfo_down->tag != tinfo_next->tag)
+					myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &node->debug_info);
 
 				if(memberptr) {
 					memberptr = memberptr->next;
@@ -1257,25 +1314,17 @@ Type_info* typecheck(AST_node *node) {
 			}
 
 			if(node || memberptr)
-				myerror("mismatched number of operands in assignment at%DBG", &(save->debug_info));
+				myerror("mismatched number of operands in assignment at%DBG", &save->debug_info);
 		} else {
 			tinfo_down = typecheck(node->down);
 			tstr_down = type_tag_debug[tinfo_down->tag];
 			tstr_next = type_tag_debug[tinfo_next->tag];
 
-			if(tinfo_down->tag == TY_FUNC || tinfo_next->tag == TY_FUNC)
-				myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
+			if(TYPES_CAN_MERGE_RECURSIVE(tinfo_down->tag, tinfo_next->tag))
+				merged_type = recursive_type_merge(tinfo_down, tinfo_next);
 
-			down_is_compound = (tinfo_down->tag >= TY_STRUCT && tinfo_down->tag <= TY_UNION);
-			next_is_compound = (tinfo_next->tag >= TY_STRUCT && tinfo_next->tag <= TY_UNION);
-
-			if(down_is_compound && next_is_compound && tinfo_down == tinfo_next)
-				return tinfo_down;
-
-			if(tinfo_down->tag == tinfo_next->tag && tinfo_down->bytes >= tinfo_next->bytes)
-				return tinfo_down;
-
-			myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &(node->debug_info));
+			if(!merged_type && tinfo_down->tag != tinfo_next->tag)
+				myerror("invalid assignment of %s to %s at%DBG", tstr_next, tstr_down, &node->debug_info);
 		}
 
 		return tinfo_down;
@@ -1291,6 +1340,9 @@ Type_info* typecheck(AST_node *node) {
 	assert(tinfo_down);
 
 	if(node->op == OP_CAST) {
+		Type_info *tinfo_to, *tinfo_from;
+		char *tstr_to, *tstr_from;
+
 		unsigned char cast_table[9][5] = {
 			{TY_INT, TY_FLOAT, TY_VOIDPOINTER, TY_BOOL,-1},
 			{TY_BOOL, TY_INT,-1,-1,-1},
@@ -1309,12 +1361,12 @@ Type_info* typecheck(AST_node *node) {
 		if(cast_type_node->kind == N_ID) {
 			symptr = lookup_symbol(node->str);
 			if(!symptr)
-				myerror("undefined identifier %s at %DBG", node->str, &(node->debug_info));
+				myerror("undefined identifier %s at %DBG", node->str, &node->debug_info);
 			if(symptr->type->tag != TY_TYPE)
-				myerror("invalid type %s at %DBG", node->str, &(node->debug_info));
+				myerror("invalid type %s at %DBG", node->str, &node->debug_info);
 			tinfo_next = symptr->val.tinfo;
 		} else if(cast_type_node->kind == N_FUNCTION) {
-			myerror("attempted to cast %s to function type at%DBG", tstr_down, &(node->debug_info));
+			myerror("attempted to cast %s to function type at%DBG", tstr_down, &node->debug_info);
 		} else if(cast_type_node->kind >= N_STRUCTURE && cast_type_node->kind <= N_ENUMERATION) {
 			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__,__func__);
 		} else {
@@ -1324,218 +1376,154 @@ Type_info* typecheck(AST_node *node) {
 		tstr_next = type_tag_debug[tinfo_next->tag];
 
 		if(tinfo_down->tag == TY_FUNC || tinfo_down->tag == TY_VOID || tinfo_down->tag == TY_TYPE)
-			myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &(node->debug_info));
+			myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &node->debug_info);
 
 		if(tinfo_down->tag >= TY_STRUCT)
 			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__,__func__);
 
 		assert(tinfo_down->tag >= TY_INT && tinfo_down->tag <= TY_VOIDPOINTER);
 
-		for(int i = 0; i < ARRLEN(cast_table[tinfo_down->tag]); ++i) {
-			if(tinfo_next->tag == cast_table[tinfo_down->tag][i]) {
-				tinfo = tinfo_next;
+		tinfo_to = tinfo_next;
+		tinfo_from = tinfo_down;
+		tstr_to = tstr_next;
+		tstr_from = tstr_down;
+
+		for(int i = 0; i < ARRLEN(cast_table[tinfo_from->tag]); ++i) {
+			if(tinfo_to->tag == cast_table[tinfo_to->tag][i]) {
+				tinfo = tinfo_to;
 				break;
 			}
 		}
 
 		if(!tinfo)
-			myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &(node->debug_info));
+			myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &node->debug_info);
 
-		bool next_is_array_of_char;
-		bool next_is_pointer_to_char;
-		bool next_is_not_array_or_pointer;
-		bool next_is_string;
-		bool down_is_array_of_char;
-		bool down_is_array;
-		bool next_is_array;
+		bool from_is_array = (tinfo_from->tag == TY_ARRAY);
+		bool to_is_array = (tinfo->tag == TY_ARRAY);
+		bool to_is_array_of_char = (to_is_array && tinfo->Array.array_of == builtin_types+TY_CHAR);
+		bool to_is_pointer_to_char = (tinfo->tag == TY_POINTER && tinfo->Pointer.pointer_to == builtin_types+TY_CHAR);
+		bool to_is_not_array_or_pointer = (!to_is_array && tinfo->tag != TY_POINTER);
+		bool to_is_string = (tinfo->tag == TY_STRING);
+		bool from_is_array_of_char = (from_is_array && tinfo_from->Array.array_of == builtin_types+TY_CHAR);
 
-		down_is_array = (tinfo_down->tag == TY_ARRAY);
-		next_is_array = (tinfo->tag == TY_ARRAY);
-
-		next_is_array_of_char =
-			(next_is_array && tinfo->Array.array_of == builtin_types+TY_CHAR);
-		next_is_pointer_to_char =
-			(tinfo->tag == TY_POINTER && tinfo->Pointer.pointer_to == builtin_types+TY_CHAR);
-		next_is_not_array_or_pointer =
-			(!next_is_array && tinfo->tag != TY_POINTER);
-		next_is_string = (tinfo->tag == TY_STRING);
-		down_is_array_of_char = (down_is_array && tinfo_down->Array.array_of == builtin_types+TY_CHAR);
-
-		switch(tinfo_down->tag) {
+		switch(tinfo_from->tag) {
 		case TY_STRING:
-			if(next_is_array_of_char || next_is_pointer_to_char || next_is_not_array_or_pointer)
+			if(to_is_array_of_char || to_is_pointer_to_char || to_is_not_array_or_pointer)
 				return tinfo;
 			break;
 		case TY_ARRAY:
-			if((next_is_string || next_is_pointer_to_char) && down_is_array_of_char)
+			if((to_is_string || to_is_pointer_to_char) && from_is_array_of_char)
 				return tinfo;
-			if(down_is_array && next_is_array)
+			if(from_is_array && to_is_array)
 				return tinfo;
 			break;
 		default:
 			return tinfo;
 			break;
 		}
-		myerror("attempted to cast %s to %s at%DBG", tstr_down, tstr_next, &(node->debug_info));
+		myerror("attempted to cast %s to %s at%DBG", tstr_from, tstr_to, &node->debug_info);
 		assert(0);
 	}
 
 	if(node->next)
 		tinfo_next = typecheck(node->next);
-	if(tinfo_next)
-		tstr_next = type_tag_debug[tinfo_next->tag];
-
-	/*
-	 * NOTE
-	 * Here's a good example use case for anonymous structs, we have 22 bools taking up
-	 * 1 byte each when really all we need are 22 bits. An anonymous struct would tell
-	 * the compiler to allocate the variables enclosed within sequentially and would allow
-	 * you to declare vars as bitfields.
-	 * Similarly, an anonymous union would be good for when you
-	 * know a set of variables are never accessed simultaeneously, and thus you only need
-	 * space for the largest one. The compiler can throw an error if you try to access
-	 * both in the same statement.
-	 */
 
 	bool down_is_int = (tinfo_down->tag == TY_INT);
 	bool next_is_int = (tinfo_next && tinfo_next->tag == TY_INT);
 	bool down_is_float = (tinfo_down->tag == TY_FLOAT);
 	bool next_is_float = (tinfo_next && tinfo_next->tag == TY_FLOAT);
 	bool down_is_pointer = (tinfo_down->tag == TY_POINTER);
-	bool next_is_pointer = (tinfo_next && tinfo_next->tag == TY_POINTER);
-	bool down_is_void_pointer = (tinfo_down->tag == TY_VOIDPOINTER);
-	bool next_is_void_pointer = (tinfo_next && tinfo_next->tag == TY_VOIDPOINTER);
-	bool down_is_func = (tinfo_down->tag == TY_FUNC);
-	bool next_is_func = (tinfo_next && tinfo_next->tag == TY_FUNC);
 	bool down_is_array = (tinfo_down->tag == TY_ARRAY);
-	bool next_is_array = (tinfo_next && tinfo_next->tag == TY_ARRAY);
-	bool next_is_not_num = (tinfo_next && tinfo_next->tag != TY_INT && tinfo_next->tag != TY_FLOAT);
-	bool down_and_next_same_tag = (tinfo_next && tinfo_down->tag == tinfo_next->tag);
-	bool down_and_next_same_sign =
-		(tinfo_next && tinfo_down->Int.sign == tinfo_next->Int.sign);
-	bool down_and_next_same_pointer =
-		(tinfo_next && tinfo_down->Pointer.pointer_to == tinfo_next->Pointer.pointer_to);
-	bool down_and_next_same_array =
-		(tinfo_next && tinfo_down->Array.array_of == tinfo_next->Array.array_of);
-	bool down_is_not_num_or_pointer = !(down_is_int || down_is_float || down_is_pointer);
-	bool next_is_not_num_or_pointer = !(next_is_int || next_is_float || next_is_pointer);
+	bool down_is_string = (tinfo_down->tag == TY_STRING);
+	bool next_is_string = (tinfo_next && tinfo_next->tag == TY_STRING);
 
-	if(!tinfo_next || tinfo_down == tinfo_next) {
-		tinfo = tinfo_down;
-	} else if((down_is_pointer || down_is_float) && next_is_int) {
-		tinfo = tinfo_down;
-	} else if((next_is_pointer || next_is_float) && down_is_int) {
-		tinfo = tinfo_next;
-	} else {
-		tinfo = (tinfo_down->bytes >= tinfo_next->bytes) ? tinfo_down : tinfo_next;
-	}
+	if(tinfo_next) {
+		tstr_next = type_tag_debug[tinfo_next->tag];
+	} else { // unary ops
+		switch(node->op) {
+		case OP_INC: case OP_DEC:
+			invalid = !(down_is_int || down_is_pointer || down_is_float);
+			tinfo = tinfo_down;
+			break;
+		case OP_NOT:
+			invalid = !(down_is_int || down_is_pointer);
+			tinfo = tinfo_down;
+			break;
+		case OP_NEG:
+			invalid = !(down_is_int || down_is_pointer || down_is_float);
+			tinfo = tinfo_down;
+			break;
+		case OP_ADDR:
+			tinfo = builtin_types + TY_POINTER;
+			tinfo->Pointer.pointer_to = tinfo_down;
+			break;
+		case OP_DEREF:
+			invalid = (tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY);
+			tinfo = tinfo_down->Pointer.pointer_to;
+			break;
+		default:
+			assert(0);
+		}
 
-	if(down_is_func || next_is_func)
-		myerror("attempt to use function as operand in %s at%DBG", opstr, &(node->debug_info));
+		if(invalid)
+			myerror("invalid operand %s to %s at%DBG", tstr_down, opstr, &node->debug_info);
 
-	if(down_is_void_pointer)
-		myerror("attempt to use '%s' of type '*void' as operand in %s at%DBG",
-				node->down->str, opstr, &(node->debug_info));
-	if(next_is_void_pointer)
-		myerror("attempt to use '%s' of type '*void' as operand in %s at%DBG",
-				node->next->str, opstr, &(node->debug_info));
-
-	switch(node->op) {
-	case OP_INC: case OP_DEC:
-		unary = true;
-		invalid = down_is_not_num_or_pointer;
-		break;
-	case OP_ASSIGNPLUS: case OP_ASSIGNSUB:
-	case OP_ASSIGNMUL: case OP_ASSIGNDIV:
-		invalid = down_is_not_num_or_pointer || next_is_not_num || (down_is_int && !next_is_int);
-		break;
-	case OP_ASSIGNMOD: case OP_ASSIGNNOT:
-	case OP_ASSIGNAND: case OP_ASSIGNOR:
-	case OP_ASSIGNXOR:
-	case OP_ASSIGNLSHIFT: case OP_ASSIGNRSHIFT:
-		invalid = down_is_not_num_or_pointer || !next_is_int;
-		break;
-	case OP_EQ:
-	case OP_NEQ:
-		invalid =
-			!(down_is_float && next_is_float) &&
-			!(down_is_int && next_is_int && down_and_next_same_sign) &&
-			!(down_is_pointer && next_is_pointer && down_and_next_same_pointer) &&
-			!(down_is_array && next_is_array && down_and_next_same_array) &&
-			!down_and_next_same_tag;
-		tinfo = builtin_types + TY_BOOL;
-		break;
-	case OP_LTEQ:
-	case OP_GTEQ:
-	case OP_LT:
-	case OP_GT:
-		invalid = 
-			!(down_is_float && next_is_float) &&
-			!(down_is_int && next_is_int && down_and_next_same_sign) &&
-			!(down_is_pointer && next_is_pointer && down_and_next_same_pointer) &&
-			!(down_is_array && next_is_array && down_and_next_same_array) &&
-			!down_and_next_same_tag &&
-			(tinfo_down->tag == TY_TYPE) &&
-			(tinfo_down->tag >= TY_FUNC && tinfo_down->tag <= TY_UNION);
-		tinfo = builtin_types + TY_BOOL;
-		break;
-	case OP_LNOT:
-		unary = true;
-	case OP_LAND: case OP_LOR:
-		tinfo = builtin_types + TY_BOOL;
-		break;
-	case OP_NOT:
-		unary = true;
-		invalid = !(down_is_int || down_is_pointer);
-		break;
-	case OP_LSHIFT: case OP_RSHIFT:
-	case OP_MOD:
-	case OP_AND: case OP_OR: case OP_XOR:
-		invalid =
-			!(down_is_int || down_is_pointer) ||
-			!(next_is_int || next_is_pointer) ||
-			(down_is_pointer && next_is_pointer);
-		break;
-	case OP_NEG:
-		unary = true;
-		invalid = down_is_not_num_or_pointer;
-		break;
-	case OP_ADD:
-	case OP_SUB:
-	case OP_MUL:
-	case OP_DIV:
-		invalid =
-			down_is_not_num_or_pointer ||
-			next_is_not_num_or_pointer ||
-			(down_is_pointer && next_is_pointer) ||
-			(down_is_pointer && !next_is_int) ||
-			(next_is_pointer && !down_is_int);
-		break;
-	case OP_ADDR:
-		unary = true;
-		tinfo = builtin_types + TY_POINTER;
-		tinfo->Pointer.pointer_to = tinfo_down;
-		break;
-	case OP_DEREF: case OP_SUBSCRIPT:
-		unary = true;
-		invalid = (tinfo_down->tag != TY_POINTER && tinfo_down->tag != TY_ARRAY);
-		tinfo = (node->op == OP_DEREF) ? tinfo_down->Pointer.pointer_to : tinfo_down->Array.array_of;
-		break;
-	default:
-		assert(0);
-	}
-
-	if(!invalid)
 		return tinfo;
+	}
 
-	if(unary)
-		myerror("invalid operand %s to %s at%DBG", tstr_down, opstr, &(node->debug_info));
-	else
-		myerror("invalid operands %s and %s to %s at%DBG", tstr_down, tstr_next, opstr, &(node->debug_info));
+	if(node->op == OP_SUBSCRIPT) {
+		if(!( (down_is_pointer || down_is_array || down_is_string) && next_is_int ))
+			myerror("invalid operands %s and %s to %s at%DBG", tstr_down, tstr_next, opstr, &node->debug_info);
+		return tinfo_down->Array.array_of;
+	}
 
-	assert(0); // unreachable
+	bool types_are_recursive = false;
 
-	return NULL;
+	if(TYPES_CAN_MERGE_RECURSIVE(tinfo_down->tag, tinfo_next->tag)) {
+		merged_type = recursive_type_merge(tinfo_down, tinfo_next);
+		if(!merged_type)
+			myerror("invalid operands %s and %s to %s at%DBG", tstr_down, tstr_next, opstr, &node->debug_info);
+		types_are_recursive = true;
+		tinfo = merged_type;
+	} else if(TYPES_CAN_MERGE_SIMPLE(tinfo_down->tag, tinfo_next->tag)) {
+		merged_type = simple_type_merge(tinfo_down, tinfo_next);
+		if(!merged_type)
+			myerror("invalid operands %s and %s to %s at%DBG", tstr_down, tstr_next, opstr, &node->debug_info);
+		tinfo = merged_type;
+	}
+	
+	if(node->op >= OP_ASSIGNPLUS && node->op <= OP_ASSIGNDIV) {
+		invalid =
+			!(down_is_float && (next_is_float || next_is_int)) &&
+			!(down_is_int && next_is_int) &&
+			!(down_is_pointer && next_is_int);
+		tinfo = tinfo_down;
+	}
+
+	if((node->op >= OP_ASSIGNMOD && node->op <= OP_ASSIGNRSHIFT) || node->op == OP_LSHIFT || node->op == OP_RSHIFT) {
+		invalid = !((down_is_int || down_is_pointer) && next_is_int);
+		tinfo = tinfo_down;
+	}
+
+	if(node->op == OP_EQ || node->op == OP_NEQ || (node->op >= OP_LTEQ && node->op <= OP_GT)) {
+		invalid =
+			!(down_is_string && next_is_string) &&
+			!(down_is_float && next_is_float) &&
+			!(down_is_int && next_is_int) &&
+			!(types_are_recursive && merged_type);
+		tinfo = builtin_types + TY_BOOL;
+	}
+
+	if(node->op >= OP_MOD && node->op <= OP_XOR)
+		invalid = (merged_type->tag != TY_INT && merged_type->tag != TY_POINTER);
+
+	if(node->op >= OP_ADD && node->op <= OP_DIV)
+		invalid = (merged_type->tag != TY_INT && merged_type->tag != TY_POINTER && merged_type->tag != TY_FLOAT);
+
+	if(invalid)
+		myerror("invalid operands %s and %s to %s at%DBG", tstr_down, tstr_next, opstr, &node->debug_info);
+
+	return tinfo;
 }
 
 Type_info* infer_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
@@ -1553,7 +1541,7 @@ Type_info* infer_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		tinfo = builtin_types + TY_TYPE;
 		break;
 	case N_UNINIT:
-		myerror("cant infer type from uninitialized value%DBG", &(node->debug_info));
+		myerror("cant infer type from uninitialized value%DBG", &node->debug_info);
 		break;
 	case N_STRUCTLIT:
 		myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
@@ -1562,7 +1550,7 @@ Type_info* infer_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		tinfo = builtin_types + TY_STRING;
 		myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
 		break;
-	case N_OP: 
+	case N_OP:
 		tinfo = typecheck(node);
 		break;
 	case N_BOOLLIT:
@@ -1641,7 +1629,7 @@ Type_info* infer_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		if(node->down->kind == N_BUILTINTYPE && node->down->typesig == TY_VOID)
 			break;
 
-		tinfo->Func.return_types = member = pool_alloc(member_pool);
+		tinfo->Func.ret_types = member = pool_alloc(member_pool);
 		while(true) {
 			member->type = build_type(type_pool, member_pool, node);
 			node = node->next;
@@ -1654,7 +1642,7 @@ Type_info* infer_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 	case N_ID:
 		symptr = lookup_symbol(node->str);
 		if(!symptr)
-			myerror("undefined identifier %s at%DBG", node->str, &(node->debug_info));
+			myerror("undefined identifier %s at%DBG", node->str, &node->debug_info);
 		tinfo = symptr->type;
 		break;
 	default:
@@ -1711,7 +1699,7 @@ Type_info* build_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		if(node->next) {
 			Type_info *expr_type = typecheck(node->next);
 			if(expr_type->tag != TY_INT)
-				myerror("array size must evaluate to 'int' at%DBG", &(node->debug_info));
+				myerror("array size must evaluate to 'int' at%DBG", &node->debug_info);
 			tinfo->Array.max_index_expr = node->next; /* resolve later */
 		}
 		tinfo->Array.array_of = build_type(type_pool, member_pool, node->down); 
@@ -1747,7 +1735,7 @@ Type_info* build_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 		if(node->down->kind == N_BUILTINTYPE && node->down->typesig == TY_VOID)
 			break;
 
-		tinfo->Func.return_types = member = pool_alloc(member_pool);
+		tinfo->Func.ret_types = member = pool_alloc(member_pool);
 		while(true) {
 			member->type = build_type(type_pool, member_pool, node);
 			node = node->next;
@@ -1767,7 +1755,7 @@ Type_info* build_type(Pool *type_pool, Pool *member_pool, AST_node *node) {
 
 		if(symptr) {
 			if(!symptr->constant && !is_pending)
-				myerror("use of non constant symbol '%s' as type%DBG", symptr->name, &(node->debug_info));
+				myerror("use of non constant symbol '%s' as type%DBG", symptr->name, &node->debug_info);
 			tinfo = symptr->val.tinfo;
 		} else {
 			symbol.name = node->str;
@@ -1813,7 +1801,7 @@ void build_compound_type(Pool *type_pool, Pool *member_pool, AST_node *node, Typ
 			child = node->down;
 			sibling = child->next;
 			if(sibling->kind != N_TYPE)
-				myerror("struct or union member missing explicit type%DBG", &(sibling->debug_info));
+				myerror("struct or union member missing explicit type%DBG", &sibling->debug_info);
 			if(child->kind == N_IDLIST)
 				child = child->down;
 			member->type = build_type(type_pool, member_pool, sibling);
@@ -1900,7 +1888,7 @@ void resolve_compound_type(Type_info *tinfo) {
 			if(member_type_name) {
 				symptr = pending_symbol(member_type_name);
 				if(symptr)
-					myerror("type %s was not defined, first referenced at%DBG", member_type_name, &(symptr->debug_info));
+					myerror("type %s was not defined, first referenced at%DBG", member_type_name, &symptr->debug_info);
 			}
 			resolve_compound_type(member->type);
 		}
@@ -1973,8 +1961,8 @@ void declare_var(Sym_tab *tab, AST_node *node) {
 			bool var_is_compound = (tinfo->tag >= TY_STRUCT && tinfo->tag <= TY_UNION);
 
 			if(!(init_is_compound && var_is_compound && tinfo_init == tinfo) &&
-			   !(tinfo_init->tag == tinfo->tag && tinfo->bytes >= tinfo_init->bytes))
-				myerror("invalid initialization of %s to %s at%DBG", tstr, tstr_init, &(node->debug_info));
+			   !(tinfo_init->tag == tinfo->tag)) // NOTE don't check bytes yet
+				myerror("invalid initialization of %s to %s at%DBG", tstr, tstr_init, &node->debug_info);
 		}
 
 		if(tinfo->tag == TY_TYPE)
@@ -2007,7 +1995,7 @@ void declare_var(Sym_tab *tab, AST_node *node) {
 		sym.addr = *seg_count;
 		*seg_count += sym.type->bytes;
 		if(!define_symbol(tab, &sym)) {
-			myerror("redefinition of '%s' at%DBG", child->str, &(child->debug_info));
+			myerror("redefinition of '%s' at%DBG", child->str, &child->debug_info);
 		}
 	}
 }
@@ -2050,7 +2038,7 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 			tinfo = build_type(&type_pool, &member_pool, type_node);
 			tinfo_init = typecheck(initializer_node);
 			if(tinfo_init->tag == TY_VOID)
-				myerror("invalid uninitialized constant at%DBG", &(node->debug_info));
+				myerror("invalid uninitialized constant at%DBG", &node->debug_info);
 
 			tstr_init = type_tag_debug[tinfo_init->tag];
 			tstr = type_tag_debug[tinfo->tag];
@@ -2063,7 +2051,7 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 
 			if(!(init_is_compound && var_is_compound && tinfo_init == tinfo) &&
 			   !(tinfo_init->tag == tinfo->tag && tinfo->bytes >= tinfo_init->bytes))
-				myerror("invalid initialization of %s to %s at%DBG", tstr, tstr_init, &(node->debug_info));
+				myerror("invalid initialization of %s to %s at%DBG", tstr, tstr_init, &node->debug_info);
 		}
 
 		sym = (Sym){0};
@@ -2071,7 +2059,7 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 
 		if(initializer_node->kind >= N_STRUCTURE && initializer_node->kind <= N_ENUMERATION) {
 			if(id_node->next)
-				myerror("compound type cannot be declared with id list%DBG", &(child->debug_info));
+				myerror("compound type cannot be declared with id list%DBG", &child->debug_info);
 			sym.type = builtin_types + TY_TYPE;
 			symptr = pending_symbol(id_node->str);
 
@@ -2081,7 +2069,7 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 				debug_info = id_node->debug_info;
 			} else {
 				if(!sym.constant)
-					myerror("%s was not declared as constant, to use it in type declarations it must be constant%DBG", symptr->name, &(child->debug_info));
+					myerror("%s was not declared as constant, to use it in type declarations it must be constant%DBG", symptr->name, &child->debug_info);
 				tinfo = symptr->val.tinfo;
 				name = symptr->name;
 				debug_info = symptr->debug_info;
@@ -2112,7 +2100,7 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 			}
 
 			if(!define_symbol(tab, &sym))
-				myerror("redefinition of '%s'%DBG", name, &(child->debug_info));
+				myerror("redefinition of '%s'%DBG", name, &child->debug_info);
 		} else {
 			tinfo = infer_type(&type_pool, &member_pool, sibling);
 			sym.type = tinfo;
@@ -2120,7 +2108,7 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 			sym.debug_info = child->debug_info;
 			if(sibling->kind == N_FUNCTION) {
 				if(id_node->next)
-					myerror("function cannot be declared with id list%DBG", &(child->debug_info));
+					myerror("function cannot be declared with id list%DBG", &child->debug_info);
 				sym.seg = SEG_TEXT;
 			} else {
 				sym.seg = SEG_DATA;
@@ -2131,7 +2119,7 @@ void declare_constants(Sym_tab *tab, AST_node *root) {
 			for(; id_node; id_node = id_node->next) {
 				sym.name = id_node->str;
 				if(!define_symbol(tab, &sym)) {
-					myerror("redefinition of %s%DBG", child->str, &(child->debug_info));
+					myerror("redefinition of %s%DBG", child->str, &child->debug_info);
 				}
 			}
 		}
@@ -2802,9 +2790,9 @@ AST_node* declaration(void) {
 	lexer.ptr = unget2;
 	t = lex();
 
-	root = ast_alloc_node(&ast, N_DEC, &lexer.debug_info);
-	root->down = ast_alloc_node(&ast, N_IDLIST, &lexer.debug_info);
-	child = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+	root = ast_alloc(&ast, N_DEC, &lexer.debug_info);
+	root->down = ast_alloc(&ast, N_IDLIST, &lexer.debug_info);
+	child = ast_alloc(&ast, N_ID, &lexer.debug_info);
 	child->str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 	root->down->down = child;
 
@@ -2814,7 +2802,7 @@ AST_node* declaration(void) {
 		t = lex();
 		if(t != T_ID)
 			parse_error("identifier");
-		child->next = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_ID, &lexer.debug_info);
 		child = child->next;
 		child->str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
@@ -2837,7 +2825,7 @@ AST_node* declaration(void) {
 	if(child->next)
 		child = child->next;
 
-	child->next = ast_alloc_node(&ast, N_INITIALIZER, &lexer.debug_info);
+	child->next = ast_alloc(&ast, N_INITIALIZER, &lexer.debug_info);
 	child = child->next;
 
 	if(t == ':')
@@ -2896,9 +2884,9 @@ AST_node* vardec(void) {
 	lexer.ptr = unget2;
 	t = lex();
 
-	root = ast_alloc_node(&ast, N_DEC, &lexer.debug_info);
-	root->down = ast_alloc_node(&ast, N_IDLIST, &lexer.debug_info);
-	child = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+	root = ast_alloc(&ast, N_DEC, &lexer.debug_info);
+	root->down = ast_alloc(&ast, N_IDLIST, &lexer.debug_info);
+	child = ast_alloc(&ast, N_ID, &lexer.debug_info);
 	child->str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 	root->down->down = child;
 
@@ -2908,7 +2896,7 @@ AST_node* vardec(void) {
 		t = lex();
 		if(t != T_ID)
 			parse_error("identifier");
-		child->next = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_ID, &lexer.debug_info);
 		child = child->next;
 		child->str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
@@ -2934,7 +2922,7 @@ AST_node* vardec(void) {
 	if(child->next)
 		child = child->next;
 
-	child->next = ast_alloc_node(&ast, N_INITIALIZER, &lexer.debug_info);
+	child->next = ast_alloc(&ast, N_INITIALIZER, &lexer.debug_info);
 	child = child->next;
 
 	if(t != '=')
@@ -2965,7 +2953,7 @@ AST_node* literal(void) {
 	t = lex();
 
 	if((t >= T_TRUE  && t <= T_BAR) || t == '.' || t == '{')
-		root = ast_alloc_node(&ast, 0, &lexer.debug_info);
+		root = ast_alloc(&ast, 0, &lexer.debug_info);
 	else if(t != T_ID) {
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
@@ -3031,7 +3019,7 @@ AST_node* typename(void) {
 	if(t == '*' || t == '[') {
 		node = &tmp;
 		while(t == '*' || t == '[') {
-			node->down = ast_alloc_node(&ast, N_POINTER, &lexer.debug_info);
+			node->down = ast_alloc(&ast, N_POINTER, &lexer.debug_info);
 			node = node->down;
 			if(t == '[') {
 				node->kind = N_ARRAY;
@@ -3077,9 +3065,9 @@ AST_node* typename(void) {
 	}
 
 	if(!node)
-		node = ast_alloc_node(&ast, 0, &lexer.debug_info);
+		node = ast_alloc(&ast, 0, &lexer.debug_info);
 
-	root = ast_alloc_node(&ast, N_TYPE, &lexer.debug_info);
+	root = ast_alloc(&ast, N_TYPE, &lexer.debug_info);
 	if(head && tail) {
 		root->down = head;
 		child = tail;
@@ -3102,7 +3090,7 @@ AST_node* typename(void) {
 		t = lex();
 		if(t != '(')
 			parse_error("'('");
-		child->down = ast_alloc_node(&ast, N_ARGLIST, &lexer.debug_info);
+		child->down = ast_alloc(&ast, N_ARGLIST, &lexer.debug_info);
 		child = child->down;
 		child->down = node = typename();
 		t = lex();
@@ -3120,7 +3108,7 @@ AST_node* typename(void) {
 			lexer.debug_info.col -= lexer.ptr - lexer.unget;
 			lexer.ptr = lexer.unget;
 		} else {
-			child->next = ast_alloc_node(&ast, N_RETLIST, &lexer.debug_info);
+			child->next = ast_alloc(&ast, N_RETLIST, &lexer.debug_info);
 			child = child->next;
 			child->down = node = typename();
 			t = lex();
@@ -3164,13 +3152,13 @@ AST_node* function(void) {
 
 	child = NULL;
 
-	root = ast_alloc_node(&ast, N_FUNCTION, &lexer.debug_info);
+	root = ast_alloc(&ast, N_FUNCTION, &lexer.debug_info);
 
 	t = lex();
 	if(t == '(') {
 		node = vardec();
 		if(node) {
-			root->down = child = ast_alloc_node(&ast, N_ARGLIST, &lexer.debug_info);
+			root->down = child = ast_alloc(&ast, N_ARGLIST, &lexer.debug_info);
 			child->down = node;
 		}
 
@@ -3183,8 +3171,8 @@ AST_node* function(void) {
 		}
 
 		if(t == T_VOID) {
-			node = ast_alloc_node(&ast, N_TYPE, &lexer.debug_info);
-			node->down = ast_alloc_node(&ast, N_BUILTINTYPE, &lexer.debug_info);
+			node = ast_alloc(&ast, N_TYPE, &lexer.debug_info);
+			node->down = ast_alloc(&ast, N_BUILTINTYPE, &lexer.debug_info);
 			node->down->typesig = T_VOID;
 			t = lex();
 		}
@@ -3200,10 +3188,10 @@ AST_node* function(void) {
 	node = typename();
 	if(node) {
 		if(!child) {
-			root->down = child = ast_alloc_node(&ast, N_RETLIST, &lexer.debug_info);
+			root->down = child = ast_alloc(&ast, N_RETLIST, &lexer.debug_info);
 			child->down = node;
 		} else {
-			child->next = ast_alloc_node(&ast, N_RETLIST, &lexer.debug_info);
+			child->next = ast_alloc(&ast, N_RETLIST, &lexer.debug_info);
 			child = child->next;
 			child->down = node;
 		}
@@ -3224,7 +3212,7 @@ AST_node* function(void) {
 	}
 
 	if(t == T_INLINE) {
-		node = ast_alloc_node(&ast, N_STORAGEQUALIFIER, &lexer.debug_info);
+		node = ast_alloc(&ast, N_STORAGEQUALIFIER, &lexer.debug_info);
 		node->str = keyword[T_INLINE-T_ENUM];
 		if(!child)
 			root->down = child = node;
@@ -3263,7 +3251,7 @@ AST_node* block(void) {
 	AST_node tmp;
 
 	child = &tmp;
-	root = ast_alloc_node(&ast, N_BLOCK, &lexer.debug_info);
+	root = ast_alloc(&ast, N_BLOCK, &lexer.debug_info);
 
 	for(; child; child = child->next) {
 		if((child->next = returnstatement())) continue;
@@ -3313,7 +3301,7 @@ AST_node* structure(void) {
 	}
 
 	child = &tmp;
-	root = ast_alloc_node(&ast, N_STRUCTURE, &lexer.debug_info);
+	root = ast_alloc(&ast, N_STRUCTURE, &lexer.debug_info);
 
 	t = lex();
 	if(t != '{')
@@ -3379,7 +3367,7 @@ AST_node* unionation(void) {
 	}
 
 	child = &tmp;
-	root = ast_alloc_node(&ast, N_UNIONATION, &lexer.debug_info);
+	root = ast_alloc(&ast, N_UNIONATION, &lexer.debug_info);
 
 	t = lex();
 	if(t != '{')
@@ -3445,12 +3433,12 @@ AST_node* enumeration(void) {
 	}
 
 	child = NULL;
-	root = ast_alloc_node(&ast, N_ENUMERATION, &lexer.debug_info);
+	root = ast_alloc(&ast, N_ENUMERATION, &lexer.debug_info);
 
 	t = lex();
 	if(t >= T_INT && t <= T_S64) {
-		root->down = child = ast_alloc_node(&ast, N_BUILTINTYPE, &lexer.debug_info);
-		child->str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+		root->down = child = ast_alloc(&ast, N_BUILTINTYPE, &lexer.debug_info);
+		child->typesig = t - T_INT;
 		t = lex();
 	}
 
@@ -3462,10 +3450,10 @@ AST_node* enumeration(void) {
 		parse_error("identifier");
 
 	if(!child) {
-		root->down = child = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+		root->down = child = ast_alloc(&ast, N_ID, &lexer.debug_info);
 		child->str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 	} else {
-		child->next = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_ID, &lexer.debug_info);
 		child = child->next;
 		child->str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 	}
@@ -3475,7 +3463,7 @@ AST_node* enumeration(void) {
 		t = lex();
 		if(t != T_INTEGER && t != T_CHARACTER)
 			parse_error("numerical or character constant");
-		child->next = ast_alloc_node(&ast, N_INTLIT, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_INTLIT, &lexer.debug_info);
 		child = child->next;
 		if(t == T_CHARACTER)
 			child->kind = N_CHARLIT;
@@ -3494,7 +3482,7 @@ AST_node* enumeration(void) {
 
 		if(t != T_ID)
 			parse_error("identifier");
-		child->next = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_ID, &lexer.debug_info);
 		child = child->next;
 		child->str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		t = lex();
@@ -3502,7 +3490,7 @@ AST_node* enumeration(void) {
 			t = lex();
 			if(t != T_INTEGER && t != T_CHARACTER)
 				parse_error("numerical or character constant");
-			child->next = ast_alloc_node(&ast, N_INTLIT, &lexer.debug_info);
+			child->next = ast_alloc(&ast, N_INTLIT, &lexer.debug_info);
 			child = child->next;
 			if(t == T_CHARACTER)
 				child->kind = N_CHARLIT;
@@ -3531,7 +3519,7 @@ AST_node* statement(void) {
 		return NULL;
 	}
 
-	root = ast_alloc_node(&ast, N_STATEMENT, &lexer.debug_info);
+	root = ast_alloc(&ast, N_STATEMENT, &lexer.debug_info);
 
 	if(t == T_DEFER) {
 		root->kind = N_DEFERSTATEMENT;
@@ -3576,7 +3564,7 @@ AST_node* label(void) {
 		return NULL;
 	}
 
-	root = ast_alloc_node(&ast, N_LABEL, &lexer.debug_info);
+	root = ast_alloc(&ast, N_LABEL, &lexer.debug_info);
 	root->str = pool_alloc_string(&string_pool, text_e - text_s, text_s);
 
 	return root;
@@ -3598,16 +3586,16 @@ AST_node* ifstatement(void) {
 		return NULL;
 	}
 
-	root = ast_alloc_node(&ast, N_IFSTATEMENT, &lexer.debug_info);
+	root = ast_alloc(&ast, N_IFSTATEMENT, &lexer.debug_info);
 
 	child = label();
 
 	if(!child) {
-		root->down = child = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
+		root->down = child = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
 		child->down = expression();
 	} else {
 		root->down = child;
-		child->next = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
 		child->next->down = expression();
 		child = child->next;
 	}
@@ -3622,7 +3610,7 @@ AST_node* ifstatement(void) {
 	while(1) {
 		t = lex();
 		if(t == T_ELIF) {
-			child->next = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
+			child->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
 			child->next->down = expression();
 			child = child->next;
 		} else if(t != T_ELSE) {
@@ -3656,16 +3644,16 @@ AST_node* whilestatement(void) {
 		return NULL;
 	}
 
-	root = ast_alloc_node(&ast, N_WHILESTATEMENT, &lexer.debug_info);
+	root = ast_alloc(&ast, N_WHILESTATEMENT, &lexer.debug_info);
 
 	child = label();
 
 	if(!child) {
-		root->down = child = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
+		root->down = child = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
 		child->down = expression();
 	} else {
 		root->down = child;
-		child->next = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
 		child->next->down = expression();
 		child = child->next;
 	}
@@ -3694,14 +3682,14 @@ AST_node* returnstatement(void) {
 		return NULL;
 	}
 
-	root = ast_alloc_node(&ast, N_RETURNSTATEMENT, &lexer.debug_info);
+	root = ast_alloc(&ast, N_RETURNSTATEMENT, &lexer.debug_info);
 
-	root->down = child = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
+	root->down = child = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
 	child->down = expression();
 
 	t = lex();
 	while(t == ',') {
-		child->next = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
 		child->next->down = expression();
 		child = child->next;
 		t = lex();
@@ -3727,7 +3715,7 @@ AST_node* forstatement(void) {
 		return NULL;
 	}
 
-	root = ast_alloc_node(&ast, N_FORSTATEMENT, &lexer.debug_info);
+	root = ast_alloc(&ast, N_FORSTATEMENT, &lexer.debug_info);
 
 	child = label();
 
@@ -3736,11 +3724,11 @@ AST_node* forstatement(void) {
 		node = assignment();
 
 	if(!child) {
-		root->down = child = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
+		root->down = child = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
 		child->down = expression();
 	} else {
 		root->down = child;
-		child->next = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
 		child->next->down = expression();
 		child = child->next;
 	}
@@ -3761,10 +3749,10 @@ AST_node* forstatement(void) {
 	if(t != ';')
 		parse_error("';'");
 	if(child) {
-		child->next = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
 		child->next->down = expression();
 	} else {
-		root->down = child = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
+		root->down = child = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
 		child->down = expression();
 	}
 	if(child->next)
@@ -3822,24 +3810,24 @@ AST_node* assignment(void) {
 		parse_error("expression");
 	}
 
-	root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
 	root->down = child;
 
 	if(t == ',') {
-		root->down = ast_alloc_node(&ast, N_IDLIST, &lexer.debug_info);
+		root->down = ast_alloc(&ast, N_IDLIST, &lexer.debug_info);
 		root->down->down = child;
 	}
 
 	while(t == ',') {
 		child->next = expression();
 		if(!child->next)
-			child->next = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+			child->next = ast_alloc(&ast, N_ID, &lexer.debug_info);
 		child = child->next;
 		t = lex();
 	}
 
 	if(t != '=' && root->down->kind == N_IDLIST)
-		myerror("multiple assignment must use '=' operator%DBG", &(root->down->debug_info));
+		myerror("multiple assignment must use '=' operator%DBG", &root->down->debug_info);
 
 	root->op = (t == '=') ? OP_ASSIGN : (t - T_ASSIGNPLUS);
 
@@ -3880,7 +3868,7 @@ AST_node* logical(void) {
 		return child;
 	}
 
-	root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
 	root->op = (t == T_AND) ? OP_LAND : OP_LOR;
 	root->down = child;
 	root->next = logical();
@@ -3907,7 +3895,7 @@ AST_node* compare(void) {
 		return child;
 	}
 
-	root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
 	switch(t) {
 	case '<':
 		root->op = OP_LT;
@@ -3944,7 +3932,7 @@ AST_node* shift(void) {
 		return child;
 	}
 
-	root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
 	root->op = (t == T_LSHIFT) ? OP_LSHIFT : OP_RSHIFT;
 	root->down = child;
 	root->next = shift();
@@ -3971,7 +3959,7 @@ AST_node* bitwise(void) {
 		return child;
 	}
 
-	root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
 	switch(t) {
 	case '&':
 		root->op = OP_AND;
@@ -4008,7 +3996,7 @@ AST_node* arith(void) {
 		return child;
 	}
 
-	root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
 	root->op = (t == '+') ? OP_ADD : OP_SUB;
 	root->down = child;
 	root->next = arith();
@@ -4035,7 +4023,7 @@ AST_node* factor(void) {
 		return child;
 	}
 
-	root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
 	switch(t) {
 	case '*':
 		root->op = OP_MUL;
@@ -4065,35 +4053,35 @@ AST_node* unary(void) {
 
 	switch(t) {
 		case '*':
-			root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			root = ast_alloc(&ast, N_OP, &lexer.debug_info);
 			root->op = OP_DEREF;
 			root->down = unary();
 			if(!root->down)
 				parse_error("term");
 			break;
 		case '&':
-			root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			root = ast_alloc(&ast, N_OP, &lexer.debug_info);
 			root->op = OP_ADDR;
 			root->down = unary();
 			if(!root->down)
 				parse_error("term");
 			break;
 		case T_NOT:
-			root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			root = ast_alloc(&ast, N_OP, &lexer.debug_info);
 			root->op = OP_LNOT;
 			root->down = unary();
 			if(!root->down)
 				parse_error("term");
 			break;
 		case '-':
-			root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			root = ast_alloc(&ast, N_OP, &lexer.debug_info);
 			root->op = OP_NEG;
 			root->down = unary();
 			if(!root->down)
 				parse_error("term");
 			break;
 		case '~':
-			root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			root = ast_alloc(&ast, N_OP, &lexer.debug_info);
 			root->op = OP_NOT;
 			root->down = unary();
 			if(!root->down)
@@ -4102,7 +4090,7 @@ AST_node* unary(void) {
 		case T_CAST:
 			t = lex();
 
-			root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
+			root = ast_alloc(&ast, N_OP, &lexer.debug_info);
 			root->op = OP_CAST;
 			root->next = typename();
 			if(!root)
@@ -4119,69 +4107,72 @@ AST_node* unary(void) {
 	}
 
 	if(!root)
-		return member();
+		return postfix();
 
 	return root;
 }
 
-AST_node* member(void) {
+// use shunting yard to parse postfix operators . [] ()
+AST_node* postfix(void) {
 	register int t;
-	AST_node *root, *child;
-
-	child = subscript();
-
-	if(!child)
-		return NULL;
-
-	t = lex();
-	if(t != '.') {
-		lexer.debug_info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		return child;
-	}
-
-	root = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
-	root->op = OP_DOT;
-	root->down = child;
-	root->next = member();
-
-	if(!root->next)
-		parse_error("right operand");
-
-	return root;
-}
-
-AST_node* subscript(void) {
-	register int t;
-	AST_node *child, *node;
-	AST_node tmp1, tmp2;
-	AST_node *head1, *tail1, *head2, *tail2;
+	AST_node *child, *node, *root;
 
 	child = term();
+	root = child;
 
 	if(!child)
 		return NULL;
 
-	head1 = tail1 = &tmp1;
-	head2 = tail2 = &tmp2;
-
 	t = lex();
-	while(t == '[') {
-		tail1->down = ast_alloc_node(&ast, N_OP, &lexer.debug_info);
-		tail1 = tail1->down;
+	while (t == '.' || t == '(' || t == '[') {
+		if(t == '.') {
+			t = lex();
+			if(t != T_ID)
+				parse_error("identifier");
+			child = ast_alloc(&ast, N_OP, &lexer.debug_info);
+			child->op = OP_DOT;
+			child->next = ast_alloc(&ast, N_ID, &lexer.debug_info);
+			child->next->str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
+			child->down = root;
+			root = child;
+		} else if(t == '[') {
+			child = ast_alloc(&ast, N_OP, &lexer.debug_info);
+			child->op = OP_SUBSCRIPT;
+			child->next = expression();
+			if(!child->next)
+				parse_error("expression");
+			t = lex();
+			if(t != ']')
+				parse_error("']'");
+			child->down = root;
+			root = child;
+		} else if(t == '(') {
+			child = ast_alloc(&ast, N_OP, &lexer.debug_info);
+			child->op = OP_CALL;
+			child->down = root;
+			child->next = expression();
+			if(child->next) {
+				node = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+				node->down = child->next;
+				child->next = node;
+				t = lex();
+				while(t == ',') {
+					node->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+					node->next->down = expression();
+					node = node->next;
+					t = lex();
+				}
+			} else {
+				t = lex();
+			}
 
-		tail1->op = OP_SUBSCRIPT;
+			if(t != ')')
+				parse_error("')'");
 
-		head2 = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
-		head2->down = expression();
-		head2->next = tail2;
-		tail2 = head2;
-
-		if(!head2)
-			parse_error("expression");
-		t = lex();
-		if(t != ']')
-			parse_error("']'");
+			root = child;
+		} else {
+			assert(0);
+		}
 
 		t = lex();
 	}
@@ -4189,38 +4180,19 @@ AST_node* subscript(void) {
 	lexer.debug_info.col -= lexer.ptr - lexer.unget;
 	lexer.ptr = lexer.unget;
 
-	if(head1 == tail1)
-		return child;
-
-	head1 = head1->down;
-	node = head1;
-	tail1->down = child;
-	while(head1 && head2 && head1->kind == N_OP && head1->op == OP_SUBSCRIPT) {
-		head1->next = head2;
-		tail2 = head2->next;
-		head2->next = NULL;
-		head1 = head1->down;
-		head2 = tail2;
-	}
-
-	return node;
+	return root;
 }
 
 AST_node* term(void) {
 	register int t;
 	AST_node *node;
 
-	node = call();
-	if(node)
-		return node;
-
 	node = literal();
 	if(node)
 		return node;
-
 	t = lex();
 	if(t == T_ID) {
-		node = ast_alloc_node(&ast, N_ID, &lexer.debug_info);
+		node = ast_alloc(&ast, N_ID, &lexer.debug_info);
 		node->str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 		return node;
 	}
@@ -4237,59 +4209,6 @@ AST_node* term(void) {
 	lexer.ptr = lexer.unget;
 
 	return NULL;
-}
-
-
-/*
- * call: identifier '(' expression (',' expression)* ')'
- */
-AST_node* call(void) {
-	register int t;
-	AST_node *root, *child;
-	char *s, *e, *unget;
-
-	t = lex();
-
-	if(t != T_ID) {
-		lexer.debug_info.col -= lexer.ptr - lexer.unget;
-		lexer.ptr = lexer.unget;
-		return NULL;
-	}
-
-	s = lexer.text_s;
-	e = lexer.text_e;
-	unget = lexer.unget;
-
-	t = lex();
-	if(t != '(') {
-		lexer.debug_info.col -= lexer.ptr - unget;
-		lexer.ptr = unget;
-		return NULL;
-	}
-
-	root = ast_alloc_node(&ast, N_CALL, &lexer.debug_info);
-	root->str = pool_alloc_string(&string_pool, e - s, s);
-
-	root->down = expression();
-	if(root->down) {
-		child = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
-		child->down = root->down;
-		root->down = child;
-		t = lex();
-		while(t == ',') {
-			child->next = ast_alloc_node(&ast, N_EXPRESSION, &lexer.debug_info);
-			child->next->down = expression();
-			child = child->next;
-			t = lex();
-		}
-	} else {
-		t = lex();
-	}
-
-	if(t != ')')
-		parse_error("')'");
-
-	return root;
 }
 
 void compile(AST_node *root) {
@@ -4323,7 +4242,7 @@ void compile_function(AST_node *node) {
 
 	functype = symptr->type;
 	args = functype->Func.arg_types;
-	rets = functype->Func.return_types;
+	rets = functype->Func.ret_types;
 	tab->name = funcname;
 
 	// declare arguments
