@@ -49,7 +49,7 @@ add_abc :: func(a, b, c: int) int {
 		result += 1;
 	}
 
-	for i, j : int, c : char = 'c'; i < 10; i += j - c {
+	for i: x+1..8 {
 		i = 2;
 		print("%i");
 	}

@@ -1,3 +1,7 @@
+*.exrc
+thing.c
+types.c
+util.h
 *.seer
 *.log
 jcc_out

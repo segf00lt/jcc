@@ -1,3 +1,4 @@
+i := 0;
 Vec3 :: struct {
 	struct {
 		x,y,z: float;
@@ -27,6 +28,7 @@ test :: func(void) int, int, int {
 BUFSIZE : u64 : 0xff;
 
 main :: func {
+	function_pointer: func(int, int) (char);
 	test_int : s32 = -12;
 	test_float : float = 1.2;
 	typevar: Type = struct { x,y,z: float; }
@@ -75,4 +77,7 @@ main :: func {
 	f = new_i;
 	test_arr: [12 * 2 << 3]int;
 	hello : string = ---;
+	make_type :: func() Type { return int; }
+	type_var : Type : make_type();
+	poly_type_var: type_var;
 }

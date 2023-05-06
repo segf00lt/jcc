@@ -12,13 +12,13 @@ struct Pool {
 void pool_init(Pool *pool, size_t objsize, size_t pagesize, size_t initial_pagecount) {
 	pool->pagesize = pagesize;
 	pool->objsize = objsize;
-	pool->pages = malloc(sizeof(void*) * initial_pagecount);
+	pool->pages = (void**)malloc(sizeof(void*) * initial_pagecount);
 	pool->pages[0] = pool->base = pool->free = calloc(pagesize, objsize);
 	pool->pagecount = initial_pagecount;
 }
 
 void* pool_alloc(Pool *pool) {
-	register void *p;
+	void *p;
 
 	assert(pool->objsize != 0);
 
@@ -26,7 +26,7 @@ void* pool_alloc(Pool *pool) {
 		++pool->curpage;
 		if(pool->curpage >= pool->pagecount) {
 			pool->pagecount <<= 1;
-			pool->pages = realloc(pool->pages, pool->pagecount * sizeof(void*));
+			pool->pages = (void**)realloc(pool->pages, pool->pagecount * sizeof(void*));
 		}
 		pool->pages[pool->curpage] = calloc(pool->pagesize, pool->objsize);
 		pool->base = pool->free = pool->pages[pool->curpage];
@@ -39,14 +39,14 @@ void* pool_alloc(Pool *pool) {
 }
 
 void* pool_alloc_string(Pool *pool, size_t len, char *s) {
-	register void *p;
+	void *p;
 	size_t i;
 
 	if((char*)pool->free - (char*)pool->base + len >= pool->objsize * pool->pagesize) {
 		++pool->curpage;
 		if(pool->curpage >= pool->pagecount) {
 			pool->pagecount <<= 1;
-			pool->pages = realloc(pool->pages, pool->pagecount * sizeof(void*));
+			pool->pages = (void**)realloc(pool->pages, pool->pagecount * sizeof(void*));
 		}
 		pool->pages[pool->curpage] = calloc(pool->pagesize, pool->objsize);
 		pool->base = pool->free = pool->pages[pool->curpage];
