@@ -17,7 +17,7 @@ mystruct :: struct {
 	v: Vec3;
 }
 
-main :: func() {
+main :: func(i: int) {
 	a, b,c: int;
 	ptr: *int;
 	a = b + 1;

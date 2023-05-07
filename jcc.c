@@ -59,7 +59,6 @@ enum TOKENS {
 	T_FUNC,
 	T_STRUCT,
 	T_UNION,
-	T_INLINE,
 	T_DEFER,
 	T_CAST,
 
@@ -114,7 +113,6 @@ char *tokens_debug[] = {
 	"T_FUNC",
 	"T_STRUCT",
 	"T_UNION",
-	"T_INLINE",
 	"T_DEFER",
 	"T_CAST",
 	"T_INT", "T_BOOL", "T_FLOAT", "T_STRING", "T_TYPE", "T_VOID",
@@ -158,7 +156,6 @@ char *segments_debug[] = {
 
 enum AST_kind {
 	N_DECL,
-	N_TYPE,
 	N_ARGLIST,
 	N_RETLIST,
 	N_FUNCTION,
@@ -175,8 +172,7 @@ enum AST_kind {
 	N_FORSTATEMENT,
 	N_POINTER,
 	N_ARRAY,
-	N_OP,
-	N_EXPRESSION,
+	N_EXPR,
 	N_INTLIT,
 	N_FLOATLIT,
 	N_STRLIT,
@@ -184,16 +180,14 @@ enum AST_kind {
 	N_BOOLLIT,
 	N_ARRAYLIT,
 	N_STRUCTLIT,
-	N_RANGELIT,
 	N_UNINIT,
-	N_STORAGEQUALIFIER,
 	N_BUILTINTYPE,
 	N_ID,
+	N_NONE,
 };
 
 char *nodes_debug[] = {
 	"N_DECL",
-	"N_TYPE",
 	"N_ARGLIST",
 	"N_RETLIST",
 	"N_FUNCTION",
@@ -210,8 +204,7 @@ char *nodes_debug[] = {
 	"N_FORSTATEMENT",
 	"N_POINTER",
 	"N_ARRAY",
-	"N_OP",
-	"N_EXPRESSION",
+	"N_EXPR",
 	"N_INTLIT",
 	"N_FLOATLIT",
 	"N_STRLIT",
@@ -219,11 +212,10 @@ char *nodes_debug[] = {
 	"N_BOOLLIT",
 	"N_ARRAYLIT",
 	"N_STRUCTLIT",
-	"N_RANGELIT",
 	"N_UNINIT",
-	"N_STORAGEQUALIFIER",
 	"N_BUILTINTYPE",
 	"N_ID",
+	"N_NONE",
 };
 
 char *keyword[] = {
@@ -232,7 +224,6 @@ char *keyword[] = {
 	"func",
 	"struct",
 	"union",
-	"inline",
 	"defer",
 	"cast",
 	"int", "bool", "float", "string", "Type", "void",
@@ -255,7 +246,6 @@ size_t keyword_length[] = {
 	STRLEN("func"),
 	STRLEN("struct"),
 	STRLEN("union"),
-	STRLEN("inline"),
 	STRLEN("defer"),
 	STRLEN("cast"),
 	STRLEN("int"), STRLEN("bool"), STRLEN("float"), STRLEN("string"), STRLEN("Type"), STRLEN("void"),
@@ -317,6 +307,7 @@ enum AST_op {
 	OP_SUBSCRIPT,
 	OP_CALL,
 	OP_RANGE,
+	OP_COMMA,
 };
 
 char *operators_debug[] = {
@@ -364,6 +355,7 @@ char *operators_debug[] = {
 	"OP_SUBSCRIPT",
 	"OP_CALL",
 	"OP_RANGE",
+	"OP_COMMA",
 };
 
 enum Type_tag {
@@ -401,6 +393,7 @@ enum Sym_kind {
 };
 
 char *sym_kind_debug[] = {
+	"SYM_UNKOWN",
 	"SYM_CONST",
 	"SYM_VAR",
 	"SYM_TYPE",
@@ -706,14 +699,15 @@ struct Lexer {
 };
 
 struct AST_node {
-	unsigned int id; /* debug */
+	unsigned int uid; /* debug */
 	AST_kind kind;
-	bool visited;
 	union {
 		char *str;
 		AST_op op;
 		int typesig;
 		int boolean;
+		char *label; // for and while loops
+		AST_node *type;
 	};
 	AST_node *down; /* down */
 	AST_node *next; /* across */
@@ -799,17 +793,21 @@ struct Sym_index_map {
 };
 
 struct Sym {
+	Sym_kind kind;
 	char *name;
-	bool constant;
-	Scope scope;
-	size_t pos;
-	Type_info *type;
-	union {
-		Type_info *tinfo;
-		AST_node *ast;
-		uint64_t label : 64 - 3;
-	} val;
+	bool resolved_type : 1;
+	bool has_exact_value : 1;
+	BCseg seg;
 	Debug_info debug_info;
+	uint64_t offset;
+	union {
+		AST_node *ast;
+		Type_info *tinfo;
+	} type;
+	union {
+		AST_node *ast;
+		Type_info *tinfo;
+	} val;
 };
 
 struct Sym_tab {
@@ -825,8 +823,8 @@ struct Sym_tab {
 };
 
 struct BCptr {
-	BCseg seg : 4;
 	uint64_t offset : 60;
+	BCseg seg : 4;
 };
 
 union BCreg {
@@ -981,7 +979,7 @@ void ast_print(AST_node *node, size_t depth, bool skip_next) {
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		fprintf(stderr, "AST_NODE\n");
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
-		fprintf(stderr, "id: %u\n", node->id);
+		fprintf(stderr, "id: %u\n", node->uid);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
 		fprintf(stderr, "kind: %s\n", nodes_debug[node->kind]);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
@@ -989,14 +987,14 @@ void ast_print(AST_node *node, size_t depth, bool skip_next) {
 			fprintf(stderr, "type: %s\n", type_tag_debug[node->typesig]);
 		else if(node->kind == N_BOOLLIT)
 			fprintf(stderr, "boolean: %u\n", node->boolean);
-		else if(node->kind != N_OP)
+		else if(node->kind != N_EXPR)
 			fprintf(stderr, "str: %s\n", node->str);
 		else
 			fprintf(stderr, "op: %s\n", operators_debug[node->op]);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
-		fprintf(stderr, "down: %i\n", node->down ? node->down->id : -1);
+		fprintf(stderr, "down: %i\n", node->down ? node->down->uid : -1);
 		for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
-		fprintf(stderr, "next: %i\n\n", node->next ? node->next->id : -1);
+		fprintf(stderr, "next: %i\n\n", node->next ? node->next->uid : -1);
 		if(node->down)
 			ast_print(node->down, depth+1, false);
 		if(skip_next)
@@ -1004,15 +1002,36 @@ void ast_print(AST_node *node, size_t depth, bool skip_next) {
 	}
 }
 
+void ast_node_print(AST_node *node, size_t depth) {
+	int i;
+	for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+	fprintf(stderr, "AST_NODE\n");
+	for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+	fprintf(stderr, "id: %u\n", node->uid);
+	for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+	fprintf(stderr, "kind: %s\n", nodes_debug[node->kind]);
+	for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+	if(node->kind == N_BUILTINTYPE)
+		fprintf(stderr, "type: %s\n", type_tag_debug[node->typesig]);
+	else if(node->kind == N_BOOLLIT)
+		fprintf(stderr, "boolean: %u\n", node->boolean);
+	else if(node->kind != N_EXPR)
+		fprintf(stderr, "str: %s\n", node->str);
+	else
+		fprintf(stderr, "op: %s\n", operators_debug[node->op]);
+	for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+	fprintf(stderr, "down: %i\n", node->down ? node->down->uid : -1);
+	for(i = 0; i < depth; ++i) fwrite("*   ", 1, 4, stderr);
+	fprintf(stderr, "next: %i\n", node->next ? node->next->uid : -1);
+}
 AST_node* ast_alloc(AST *ast, int kind, Debug_info *debug_info) {
 	register AST_node *node;
 	node = pool_alloc(&(ast->pool));
 	*node = (AST_node){
-			.id = ast->nodecount++,
+			.uid = ast->nodecount++,
 			.kind = kind,
 			.down = NULL,
 			.next = NULL,
-			.visited = false,
 			.debug_info = *debug_info
 		};
 	return node;
@@ -1293,15 +1312,18 @@ Type_info* typecheck(AST_node *node) {
 	Type_info *tinfo = NULL, *tinfo_down = NULL, *tinfo_next = NULL;
 	Type_info *merged_type = NULL;
 	Type_member *memberptr = NULL;
-	//Sym *symptr = NULL;
+	Sym *symptr = NULL;
 	char *tstr_down = NULL, *tstr_next = NULL, *opstr = NULL;
 	bool invalid = false;
 
-	if(node->kind == N_EXPRESSION)
-		node = node->down;
+	//if(node->kind == N_EXPRLIST)
+	//	node = node->down;
 
-	if(node->kind != N_OP) {
+	if(node->kind != N_EXPR) {
 		switch(node->kind) {
+		case N_NONE:
+			tinfo = builtin_types + TY_VOID;
+			break;
 		case N_UNINIT:
 			tinfo = builtin_types + TY_VOID;
 			break;
@@ -1323,12 +1345,10 @@ Type_info* typecheck(AST_node *node) {
 			break;
 		case N_ID:
 			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__,__func__);
-			/*
 			symptr = lookup_symbol(node->str);
 			if(!symptr)
 				myerror("undefined identifier %s at %DBG", node->str, &node->debug_info);
-			tinfo = symptr->type;
-			*/
+			tinfo = symptr->type.tinfo;
 			break;
 		case N_STRLIT:
 		case N_ARRAYLIT:
@@ -1465,10 +1485,10 @@ Type_info* typecheck(AST_node *node) {
 		memberptr = NULL;
 
 		tinfo_next = typecheck(node->next);
-		if(node->next->kind == N_OP && node->next->op == OP_CALL)
+		if(node->next->kind == N_EXPR && node->next->op == OP_CALL)
 			memberptr = tinfo_next->Func.ret_types;
 
-		if(node->down->kind == N_EXPRESSION) {
+		if(node->down->kind == N_EXPRLIST) {
 			save = node->down;
 			node = node->down;
 			for(; node; node = node->next) {
@@ -1537,20 +1557,16 @@ Type_info* typecheck(AST_node *node) {
 			{TY_VOIDPOINTER, TY_INT, TY_POINTER, TY_BOOL,-1},
 		};
 
-		assert(node->next->kind == N_TYPE);
-
 		AST_node *cast_type_node = node->next->down;
 
 		if(cast_type_node->kind == N_ID) {
 			myerror("feature unimplemented on compiler source line: %i in function %s\n", __LINE__, __func__);
-			/*
 			symptr = lookup_symbol(node->str);
 			if(!symptr)
 				myerror("undefined identifier %s at %DBG", node->str, &node->debug_info);
-			if(symptr->type->tag != TY_TYPE)
+			if(symptr->type.tinfo->tag != TY_TYPE)
 				myerror("invalid type %s at %DBG", node->str, &node->debug_info);
 			tinfo_next = symptr->val.tinfo;
-			*/
 		} else if(cast_type_node->kind == N_FUNCTION) {
 			myerror("attempted to cast %s to function type at%DBG", tstr_down, &node->debug_info);
 		} else if(cast_type_node->kind >= N_STRUCTURE && cast_type_node->kind <= N_ENUMERATION) {
@@ -1715,7 +1731,7 @@ Type_info* typecheck(AST_node *node) {
 bool define_symbol(Sym_tab *tab, Sym symbol) {
 	uint64_t i;
 	i = shget(tab->hashmap, symbol.name);
-	if(i == SYM_TAB_DEFAULT)
+	if(i != SYM_TAB_DEFAULT)
 		return false;
 	arrput(sym_array, symbol);
 	i = arrlen(sym_array) - 1;
@@ -1740,16 +1756,20 @@ Sym* lookup_symbol(char *name) {
 }
 
 void sym_print(Sym *sym) {
-	fprintf(stderr, "SYM\n*   name: %s\n*   constant: %i\n*   scop: %s\n*   pos: %zu\n*   type:\n",
-			sym->name, sym->constant, scope_debug[sym->scope], sym->pos);
-	type_info_print(sym->type, 2);
+	fprintf(stderr, "SYM\n*   kind: %s\n*   name: %s\n*   seg: %s\n*   offset: %lu\n*   type:\n",
+			sym_kind_debug[sym->kind], sym->name, segments_debug[sym->seg], sym->offset);
+	if(sym->kind == SYM_TYPE)
+		type_info_print(sym->type.tinfo, 2);
+	else
+		ast_node_print(sym->type.ast, 2);
 	fprintf(stderr, "*   val:\n");
-	if(sym->type->tag == TY_TYPE)
+	if(sym->kind == SYM_TYPE)
 		type_info_print(sym->val.tinfo, 2);
 	else
-		ast_print(sym->val.ast, 2, true);
+		ast_node_print(sym->val.ast, 2);
 }
 
+/*
 int bc_interpreter(BCinst *prog, BCmem *mem) {
 	BCinst *curinst;
 	BCptr *ptr_reg;
@@ -2082,6 +2102,7 @@ int bc_interpreter(BCinst *prog, BCmem *mem) {
 		assert(mem->stack_ptr >= mem->seg[SEG_STACK] && mem->stack_ptr < (mem->seg[SEG_STACK] + mem->stack_size));
 	}
 }
+*/
 
 void parse_error(char *expect) {
 	fprintf(stderr, "jcc: error: parser expected %s got '", expect);
@@ -2462,22 +2483,26 @@ AST_node* declaration(void) {
 		parse_error("':'");
 
 	type_node = typename();
+	if(!type_node)
+		type_node = ast_alloc(&ast, N_NONE, &lexer.debug_info);
 
 	t = lex();
 
-	bind_node = ast_alloc(&ast, N_OP, &lexer.debug_info);
+	bind_node = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 	bind_node->op = OP_BINDTYPE;
 	bind_node->down = id_node;
 	bind_node->next = type_node;
 
-	root->down = assign_node = ast_alloc(&ast, N_OP, &lexer.debug_info);
+	root->down = assign_node = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 	assign_node->op = OP_ASSIGN;
 	assign_node->down = bind_node;
 
-	if(type_node && t == ';')
+	if(type_node && t == ';') {
+		assign_node->next = ast_alloc(&ast, N_NONE, &lexer.debug_info);
 		return root;
-	else if(!type_node && t != ':' && t != '=')
+	} else if(!type_node && t != ':' && t != '=') {
 		parse_error("type");
+	}
 
 	if(t == ':')
 		assign_node->op = OP_ASSIGNCONST;
@@ -2573,19 +2598,22 @@ AST_node* vardec(void) {
 		parse_error("':'");
 
 	type_node = typename();
+	if(!type_node)
+		type_node = ast_alloc(&ast, N_NONE, &lexer.debug_info);
 
 	t = lex();
 
-	bind_node = ast_alloc(&ast, N_OP, &lexer.debug_info);
+	bind_node = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 	bind_node->op = OP_BINDTYPE;
 	bind_node->down = id_node;
 	bind_node->next = type_node;
 
-	root->down = assign_node = ast_alloc(&ast, N_OP, &lexer.debug_info);
+	root->down = assign_node = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 	assign_node->op = OP_ASSIGN;
 	assign_node->down = bind_node;
 
 	if(type_node && (t == ';' || t == ',' || t == ')')) {
+		assign_node->next = ast_alloc(&ast, N_NONE, &lexer.debug_info);
 		lexer.debug_info.col -= lexer.ptr - lexer.unget;
 		lexer.ptr = lexer.unget;
 		return root;
@@ -2829,17 +2857,15 @@ AST_node* function(void) {
 		}
 
 		t = lex();
+
+		if(t == T_VOID) {
+			t = lex();
+		}
+
 		while(t == ',') {
 			node->next = vardec();
 			if(node->next)
 				node = node->next;
-			t = lex();
-		}
-
-		if(t == T_VOID) {
-			node = ast_alloc(&ast, N_TYPE, &lexer.debug_info);
-			node->down = ast_alloc(&ast, N_BUILTINTYPE, &lexer.debug_info);
-			node->down->typesig = T_VOID;
 			t = lex();
 		}
 
@@ -2875,19 +2901,6 @@ AST_node* function(void) {
 				node = node->next;
 			t = lex();
 		}
-	}
-
-	if(t == T_INLINE) {
-		node = ast_alloc(&ast, N_STORAGEQUALIFIER, &lexer.debug_info);
-		node->str = keyword[T_INLINE-T_ENUM];
-		if(!child)
-			root->down = child = node;
-		else {
-			child->next = node;
-			child = child->next;
-		}
-
-		t = lex();
 	}
 
 	if(t != '{')
@@ -3255,11 +3268,11 @@ AST_node* ifstatement(void) {
 	child = label();
 
 	if(!child) {
-		root->down = child = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+		root->down = child = ast_alloc(&ast, N_EXPRLIST, &lexer.debug_info);
 		child->down = expression();
 	} else {
 		root->down = child;
-		child->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_EXPRLIST, &lexer.debug_info);
 		child->next->down = expression();
 		child = child->next;
 	}
@@ -3274,7 +3287,7 @@ AST_node* ifstatement(void) {
 	while(1) {
 		t = lex();
 		if(t == T_ELIF) {
-			child->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+			child->next = ast_alloc(&ast, N_EXPRLIST, &lexer.debug_info);
 			child->next->down = expression();
 			child = child->next;
 		} else if(t != T_ELSE) {
@@ -3313,11 +3326,11 @@ AST_node* whilestatement(void) {
 	child = label();
 
 	if(!child) {
-		root->down = child = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+		root->down = child = ast_alloc(&ast, N_EXPRLIST, &lexer.debug_info);
 		child->down = expression();
 	} else {
 		root->down = child;
-		child->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_EXPRLIST, &lexer.debug_info);
 		child->next->down = expression();
 		child = child->next;
 	}
@@ -3348,12 +3361,12 @@ AST_node* returnstatement(void) {
 
 	root = ast_alloc(&ast, N_RETURNSTATEMENT, &lexer.debug_info);
 
-	root->down = child = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+	root->down = child = ast_alloc(&ast, N_EXPRLIST, &lexer.debug_info);
 	child->down = expression();
 
 	t = lex();
 	while(t == ',') {
-		child->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_EXPRLIST, &lexer.debug_info);
 		child->next->down = expression();
 		child = child->next;
 		t = lex();
@@ -3386,10 +3399,10 @@ AST_node* forstatement(void) {
 
 	if(child) {
 		root->down = child;
-		child->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_EXPRLIST, &lexer.debug_info);
 		child = child->next;
 	} else {
-		child = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+		child = ast_alloc(&ast, N_EXPRLIST, &lexer.debug_info);
 		root->down = child;
 	}
 	child->down = expression();
@@ -3431,23 +3444,23 @@ AST_node* assignment(void) {
 		parse_error("expression");
 	}
 
-	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 	root->down = child;
 
 	if(t == ',') {
-		root->down = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+		root->down = ast_alloc(&ast, N_EXPRLIST, &lexer.debug_info);
 		root->down->down = child;
 		child = root->down;
 	}
 
 	while(t == ',') {
 		child->down = expression();
-		child->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+		child->next = ast_alloc(&ast, N_EXPRLIST, &lexer.debug_info);
 		child = child->next;
 		t = lex();
 	}
 
-	if(t != '=' && root->down->kind == N_EXPRESSION)
+	if(t != '=' && root->down->kind == N_EXPRLIST)
 		myerror("multiple assignment must use '=' operator%DBG", &root->down->debug_info);
 
 	root->op = (t == '=') ? OP_ASSIGN : (t - T_ASSIGNPLUS);
@@ -3488,7 +3501,7 @@ AST_node* range(void) {
 		return child;
 	}
 
-	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 	root->op = OP_RANGE;
 	root->down = child;
 	root->next = expression();
@@ -3515,7 +3528,7 @@ AST_node* logical(void) {
 		return child;
 	}
 
-	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 	root->op = (t == T_AND) ? OP_LAND : OP_LOR;
 	root->down = child;
 	root->next = logical();
@@ -3542,7 +3555,7 @@ AST_node* compare(void) {
 		return child;
 	}
 
-	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 	switch(t) {
 	case '<':
 		root->op = OP_LT;
@@ -3579,7 +3592,7 @@ AST_node* shift(void) {
 		return child;
 	}
 
-	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 	root->op = (t == T_LSHIFT) ? OP_LSHIFT : OP_RSHIFT;
 	root->down = child;
 	root->next = shift();
@@ -3606,7 +3619,7 @@ AST_node* bitwise(void) {
 		return child;
 	}
 
-	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 	switch(t) {
 	case '&':
 		root->op = OP_AND;
@@ -3643,7 +3656,7 @@ AST_node* arith(void) {
 		return child;
 	}
 
-	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 	root->op = (t == '+') ? OP_ADD : OP_SUB;
 	root->down = child;
 	root->next = arith();
@@ -3670,7 +3683,7 @@ AST_node* factor(void) {
 		return child;
 	}
 
-	root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+	root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 	switch(t) {
 	case '*':
 		root->op = OP_MUL;
@@ -3700,35 +3713,35 @@ AST_node* unary(void) {
 
 	switch(t) {
 		case '*':
-			root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+			root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 			root->op = OP_DEREF;
 			root->down = unary();
 			if(!root->down)
 				parse_error("term");
 			break;
 		case '&':
-			root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+			root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 			root->op = OP_ADDR;
 			root->down = unary();
 			if(!root->down)
 				parse_error("term");
 			break;
 		case T_NOT:
-			root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+			root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 			root->op = OP_LNOT;
 			root->down = unary();
 			if(!root->down)
 				parse_error("term");
 			break;
 		case '-':
-			root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+			root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 			root->op = OP_NEG;
 			root->down = unary();
 			if(!root->down)
 				parse_error("term");
 			break;
 		case '~':
-			root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+			root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 			root->op = OP_NOT;
 			root->down = unary();
 			if(!root->down)
@@ -3737,7 +3750,7 @@ AST_node* unary(void) {
 		case T_CAST:
 			t = lex();
 
-			root = ast_alloc(&ast, N_OP, &lexer.debug_info);
+			root = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 			root->op = OP_CAST;
 			root->next = typename();
 			if(!root)
@@ -3775,14 +3788,14 @@ AST_node* postfix(void) {
 			t = lex();
 			if(t != T_ID)
 				parse_error("identifier");
-			child = ast_alloc(&ast, N_OP, &lexer.debug_info);
+			child = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 			child->op = OP_DOT;
 			child->next = ast_alloc(&ast, N_ID, &lexer.debug_info);
 			child->next->str = pool_alloc_string(&string_pool, lexer.text_e - lexer.text_s, lexer.text_s);
 			child->down = root;
 			root = child;
 		} else if(t == '[') {
-			child = ast_alloc(&ast, N_OP, &lexer.debug_info);
+			child = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 			child->op = OP_SUBSCRIPT;
 			child->next = expression();
 			if(!child->next)
@@ -3793,17 +3806,17 @@ AST_node* postfix(void) {
 			child->down = root;
 			root = child;
 		} else if(t == '(') {
-			child = ast_alloc(&ast, N_OP, &lexer.debug_info);
+			child = ast_alloc(&ast, N_EXPR, &lexer.debug_info);
 			child->op = OP_CALL;
 			child->down = root;
 			child->next = expression();
 			if(child->next) {
-				node = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+				node = ast_alloc(&ast, N_EXPRLIST, &lexer.debug_info);
 				node->down = child->next;
 				child->next = node;
 				t = lex();
 				while(t == ',') {
-					node->next = ast_alloc(&ast, N_EXPRESSION, &lexer.debug_info);
+					node->next = ast_alloc(&ast, N_EXPRLIST, &lexer.debug_info);
 					node->next->down = expression();
 					node = node->next;
 					t = lex();
@@ -3857,27 +3870,19 @@ AST_node* term(void) {
 	return NULL;
 }
 
-/*
 void compile(AST_node *root) {
 	AST_node *node;
-	//TODO process directives (import, load, etc)
-
-	declare_constants(&tabstack[0], root);
 
 	for(node = root; node; node = node->next) {
 		if(node->kind == N_DECL)
-			declare_symbol(&tabstack[0], node);
-		if(node->kind != N_FUNCTION)
-			continue;
-		++scope_depth;
-		compile_function(node);
-		--scope_depth;
+			compile_declaration(tabstack, node);
+		// the other case would be a top level directive
 	}
 }
 
 void compile_declaration(Sym_tab *tab, AST_node *node) {
 	AST_node *assign_node, *bind_node, *type_node, *id_node, *initial_node;
-	Type_info *tinfo, *tinfo_init;
+	//Type_info *tinfo, *tinfo_init;
 	Sym sym;
 	size_t *seg_count;
 
@@ -3898,6 +3903,11 @@ void compile_declaration(Sym_tab *tab, AST_node *node) {
 	initial_node = assign_node->next;
 	id_node = bind_node->down;
 	type_node = bind_node->next;
+
+	sym.type.ast = type_node;
+	sym.val.ast = initial_node;
+
+	if(assign_node->op == OP_ASSIGNCONST)
 
 	switch(tab->scope) {
 	case SCOPE_GLOBAL:
@@ -3920,13 +3930,16 @@ void compile_declaration(Sym_tab *tab, AST_node *node) {
 	for(; id_node; id_node = id_node->next) {
 		sym.name = id_node->str;
 		sym.debug_info = id_node->debug_info;
-		sym.pos = *seg_count;
-		*seg_count += sym.type->bytes;
+		sym.offset = *seg_count;
+		//*seg_count += sym.type->tinfo->bytes;
+		*seg_count += 1;
 		if(!define_symbol(tab, sym)) {
 			myerror("redefinition of '%s' at%DBG", id_node->str, &id_node->debug_info);
 		}
 	}
 }
+
+/*
 
 void compile_function(AST_node *node) {
 	Sym_tab *tab = NULL;
@@ -4006,12 +4019,12 @@ void compile_block(AST_node *node) {
 			defer_tail = defer_tail->next;
 			break;
 		case N_STATEMENT:
-			if(child->kind == N_OP) {
+			if(child->kind == N_EXPR) {
 				compile_expression(child);
 				continue;
 			}
 
-			assert(child->kind == N_OP);
+			assert(child->kind == N_EXPR);
 
 			if(child->op == OP_ASSIGN) {
 
@@ -4079,7 +4092,9 @@ int main(int argc, char **argv) {
 
 	tabstack[0].name = argv[1];
 	fprintf(stderr,"################ TESTING COMPILE FUNCTIONS #####################\n");
-	//compile(ast.root);
+	compile(ast.root);
+	for(int i = 0; i < arrlen(sym_array); ++i)
+		sym_print(sym_array + i);
 	//ast_print(ast.root, 0, false);
 	return 0;
 }
