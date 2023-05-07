@@ -140,22 +140,20 @@ char *tokens_debug[] = {
 	"T_ILLEGAL",
 };
 
-enum Segment {
-	SEG_DATA = 0,
+enum BCseg {
+	SEG_TEXT = 0,
 	SEG_BSS,
-	SEG_TEXT,
-	SEG_HEAP,
+	SEG_DATA,
 	SEG_STACK,
-	SEG_COMPILER, // internal use only
+	SEG_HEAP,
 };
 
 char *segments_debug[] = {
-	"SEG_DATA",
-	"SEG_BSS",
 	"SEG_TEXT",
-	"SEG_HEAP",
+	"SEG_BSS",
+	"SEG_DATA",
 	"SEG_STACK",
-	"SEG_COMPILER",
+	"SEG_HEAP",
 };
 
 enum AST_kind {
@@ -409,6 +407,26 @@ char *sym_kind_debug[] = {
 	"SYM_FUNC",
 };
 
+enum BCtype {
+	BC_WORD = 0,
+	BC_HALF,
+	BC_SHORT,
+	BC_BYTE,
+	BC_FLOAT,
+	BC_DOUBLE,
+	BC_PTR,
+};
+
+char *BCtype[] = {
+	"BC_WORD",
+	"BC_HALF",
+	"BC_SHORT",
+	"BC_BYTE",
+	"BC_FLOAT",
+	"BC_DOUBLE",
+	"BC_PTR",
+};
+
 enum BCop {
 	BCOP_SET,
 	BCOP_SET_IMM,
@@ -634,16 +652,13 @@ char *scope_debug[] = {
 };
 
 /* typedefs */
-typedef enum AST_kind AST_kind;
-typedef enum AST_op AST_op;
-typedef enum Type_tag Type_tag;
-typedef enum Segment Segment;
-typedef enum BCop BCop;
-typedef enum Scope Scope;
 typedef struct Debug_info Debug_info;
 typedef struct Lexer Lexer;
+typedef enum AST_kind AST_kind;
+typedef enum AST_op AST_op;
 typedef struct AST_node AST_node;
 typedef struct AST AST;
+typedef enum Type_tag Type_tag;
 typedef struct Type_info Type_info;
 typedef struct Type_info_Int Type_info_Int;
 typedef struct Type_info_Float Type_info_Float;
@@ -655,10 +670,14 @@ typedef struct Type_info_Enum Type_info_Enum;
 typedef struct Type_info_Union Type_info_Union;
 typedef struct Type_member Type_member; /* function arguments and return values, struct, enum or union member */
 typedef struct Type_info_pending Type_info_pending;
+typedef enum Scope Scope;
 typedef enum Sym_kind Sym_kind;
 typedef struct Sym Sym;
 typedef struct Sym_index_map Sym_index_map;
 typedef struct Sym_tab Sym_tab;
+typedef enum BCseg BCseg;
+typedef enum BCop BCop;
+typedef struct BCptr BCptr;
 typedef uint64_t BCword;
 typedef uint32_t BChalf;
 typedef uint8_t BCbyte;
@@ -783,7 +802,6 @@ struct Sym {
 	char *name;
 	bool constant;
 	Scope scope;
-	Segment seg;
 	size_t pos;
 	Type_info *type;
 	union {
@@ -806,10 +824,16 @@ struct Sym_tab {
 	} count;
 };
 
+struct BCptr {
+	BCseg seg : 4;
+	uint64_t offset : 60;
+};
+
 union BCreg {
 	BCword w;
 	BCfloat f;
 	BCdouble d;
+	BCptr p;
 };
 
 struct BCinst {
@@ -817,7 +841,7 @@ struct BCinst {
 	union {
 		uint64_t dest_reg; /* destination register */
 		uint64_t ptr_reg; /* pointer register */
-		uint64_t addr; /* immediate address */
+		BCptr ptr; /* immediate address */
 	};
 	union {
 		struct {
@@ -844,11 +868,6 @@ struct BCmem {
 	 * are used for indexing within that segment
 	 */
 	BCreg *regs;
-	size_t data_size;
-	size_t bss_size;
-	size_t text_size;
-	size_t heap_size;
-	size_t stack_size;
 	BCbyte *stack_ptr;
 	BCbyte *seg[6];
 };
@@ -1733,19 +1752,23 @@ void sym_print(Sym *sym) {
 
 int bc_interpreter(BCinst *prog, BCmem *mem) {
 	BCinst *curinst;
-	BCword *ptr_reg;
+	BCptr *ptr_reg;
 	BCreg *dest, *r1, *r2;
 	BCword *wptr;
 	BChalf *hptr;
 	BCbyte *bptr;
 	BCfloat *fptr;
 	BCdouble *dptr;
-	uint64_t imm_i, addr, seg, sign;
+	BCptr addr;
+	BCseg seg;
+	uint64_t offset;
+	bool sign;
+	uint64_t imm_i;
 	float imm_f;
 	double imm_d;
 
 	for(curinst = prog; ; ++curinst) {
-		ptr_reg = &mem->regs[curinst->ptr_reg].w;
+		ptr_reg = &mem->regs[curinst->ptr_reg].p;
 		dest = mem->regs + curinst->dest_reg;
 		r1 = mem->regs + curinst->r1;
 		r2 = mem->regs + curinst->r2;
@@ -1754,14 +1777,14 @@ int bc_interpreter(BCinst *prog, BCmem *mem) {
 		imm_d = curinst->imm_d;
 
 		if(curinst->opcode >= BCOP_LOAD_WORD_IMM_ADDR && curinst->opcode <= BCOP_STORE_DOUBLE_IMM_ADDR)
-			addr = curinst->addr;
+			addr = curinst->ptr;
 		else if(curinst->opcode >= BCOP_JMP_IMM_ADDR && curinst->opcode <= BCOP_BGE_DOUBLE_IMM_ADDR)
-			addr = curinst->addr;
+			addr = curinst->ptr;
 		else
 			addr = *ptr_reg;
 
-		seg = addr & 0x7;
-		addr >>= 0x3;
+		seg = addr.seg;
+		offset = addr.offset;
 
 		switch(curinst->opcode) {
 		case BCOP_SET:
