@@ -5,7 +5,7 @@ util.h
 *.seer
 *.log
 jcc_out
-jcc.dSYM/
+*.dSYM/
 c_grammar
 *.bin
 jcc

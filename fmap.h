@@ -1,8 +1,22 @@
+#ifndef JLIB_FMAP
+#define JLIB_FMAP
+
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
 typedef struct {
 	int fd;
 	char *buf;
 	size_t size;
 } Fmap;
+
+int fmapfdopen(int fd, Fmap *mp);
+int fmapopen(char *name, int perms, Fmap *mp);
+void fmapclose(Fmap *mp);
+
+#ifdef JLIB_FMAP_IMPL
 
 int fmapfdopen(int fd, Fmap *mp) {
 	struct stat s;
@@ -32,3 +46,7 @@ void fmapclose(Fmap *mp) {
 	if(mp->buf) munmap(mp->buf, mp->size);
 	*mp = (Fmap){0};
 }
+
+#endif
+
+#endif
