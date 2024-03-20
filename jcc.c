@@ -172,6 +172,7 @@ enum AST_kind {
 	N_FORSTATEMENT,
 	N_POINTER,
 	N_ARRAY,
+	N_EXPRLIST,
 	N_EXPR,
 	N_INTLIT,
 	N_FLOATLIT,
@@ -386,9 +387,11 @@ char *type_tag_debug[] = {
 };
 
 enum Sym_kind {
+	SYM_UNKOWN,
 	SYM_CONST,
 	SYM_VAR,
 	SYM_TYPE,
+	SYM_COMPOUND,
 	SYM_FUNC,
 };
 
@@ -397,6 +400,7 @@ char *sym_kind_debug[] = {
 	"SYM_CONST",
 	"SYM_VAR",
 	"SYM_TYPE",
+	"SYM_COMPOUND",
 	"SYM_FUNC",
 };
 
@@ -635,12 +639,14 @@ char *opcode_debug[] = {
 enum Scope {
 	SCOPE_GLOBAL = 0,
 	SCOPE_ARG,
+	SCOPE_COMPOUND,
 	SCOPE_LOCAL,
 };
 
 char *scope_debug[] = {
 	"SCOPE_GLOBAL",
 	"SCOPE_ARG",
+	"SCOPE_COMPOUND",
 	"SCOPE_LOCAL",
 };
 
@@ -795,10 +801,13 @@ struct Sym_index_map {
 struct Sym {
 	Sym_kind kind;
 	char *name;
+	Debug_info debug_info;
 	bool resolved_type : 1;
 	bool has_exact_value : 1;
+	bool type_is_being_resolved : 1;
+	Scope scope;
+	uint64_t pos;
 	BCseg seg;
-	Debug_info debug_info;
 	uint64_t offset;
 	union {
 		AST_node *ast;
@@ -815,11 +824,17 @@ struct Sym_tab {
 	Sym_index_map *hashmap;
 	Scope scope;
 	struct {
+		size_t global;
+		size_t compound;
+		size_t arg;
+		size_t local;
+	} scope_count;
+	struct {
 		size_t text;
 		size_t data;
 		size_t bss;
 		size_t stack;
-	} count;
+	} seg_count;
 };
 
 struct BCptr {
@@ -1756,8 +1771,8 @@ Sym* lookup_symbol(char *name) {
 }
 
 void sym_print(Sym *sym) {
-	fprintf(stderr, "SYM\n*   kind: %s\n*   name: %s\n*   seg: %s\n*   offset: %lu\n*   type:\n",
-			sym_kind_debug[sym->kind], sym->name, segments_debug[sym->seg], sym->offset);
+	fprintf(stderr, "SYM\n*   kind: %s\n*   name: %s\n*   scope: %s\n*   pos: %lu\n*   seg: %s\n*   offset: %lu\n*   type:\n",
+			sym_kind_debug[sym->kind], sym->name, scope_debug[sym->scope], sym->pos, segments_debug[sym->seg], sym->offset);
 	if(sym->kind == SYM_TYPE)
 		type_info_print(sym->type.tinfo, 2);
 	else
@@ -3884,7 +3899,7 @@ void compile_declaration(Sym_tab *tab, AST_node *node) {
 	AST_node *assign_node, *bind_node, *type_node, *id_node, *initial_node;
 	//Type_info *tinfo, *tinfo_init;
 	Sym sym;
-	size_t *seg_count;
+	size_t *scope_count;
 
 	assert(node->kind == N_DECL || (node->kind >= N_STRUCTURE && node->kind <= N_ENUMERATION));
 
@@ -3908,20 +3923,17 @@ void compile_declaration(Sym_tab *tab, AST_node *node) {
 	sym.val.ast = initial_node;
 
 	if(assign_node->op == OP_ASSIGNCONST)
+		sym.kind = SYM_CONST;
 
+	sym.scope = tab->scope;
 	switch(tab->scope) {
 	case SCOPE_GLOBAL:
-		if(initial_node && initial_node->kind == N_UNINIT) {
-			sym.seg = SEG_BSS;
-			seg_count = &(tab->count.bss);
-		} else {
-			sym.seg = SEG_DATA;
-			seg_count = &(tab->count.data);
-		}
+		scope_count = &(tab->scope_count.global);
 		break;
+	case SCOPE_ARG:
+		scope_count = &(tab->scope_count.arg);
 	case SCOPE_LOCAL:
-		sym.seg = SEG_STACK;
-		seg_count = &(tab->count.stack);
+		scope_count = &(tab->scope_count.local);
 		break;
 	default:
 		assert(0);
@@ -3930,9 +3942,9 @@ void compile_declaration(Sym_tab *tab, AST_node *node) {
 	for(; id_node; id_node = id_node->next) {
 		sym.name = id_node->str;
 		sym.debug_info = id_node->debug_info;
-		sym.offset = *seg_count;
+		sym.pos = *scope_count;
 		//*seg_count += sym.type->tinfo->bytes;
-		*seg_count += 1;
+		++*scope_count;
 		if(!define_symbol(tab, sym)) {
 			myerror("redefinition of '%s' at%DBG", id_node->str, &id_node->debug_info);
 		}

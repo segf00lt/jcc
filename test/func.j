@@ -26,7 +26,7 @@ number :: func(x: int = 0, b: int, c: int) int {
 	return cast(u8)(x / b) >> (x)&11;
 }
 
-printer :: func(s: [3]char) inline {
+printer :: func(s: [3]char) {
 }
 
 add_abc :: func(a, b, c: int) int {
@@ -89,7 +89,7 @@ main :: func {
 	i := add_abc(1, 2, 3);
 }
 
-one :: func(i: int) int inline {
+one :: func(i: int) int {
 	return 1;
 }
 

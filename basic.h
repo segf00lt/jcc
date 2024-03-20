@@ -1,11 +1,15 @@
 #ifndef JLIB_BASIC_H
 #define JLIB_BASIC_H
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <assert.h>
 
+#define SQR(x) (x*x)
+#define TIMES2(x) (x+x)
+#define HALF(x) (x*0.5f)
 #define IS_POW_2(x) ((x & (x-1)) == 0)
 #define MAX(a,b) (((a) > (b)) ? (a) : (b))
 #define MIN(a,b) (((a) < (b)) ? (a) : (b))
@@ -16,8 +20,7 @@
 #define Map(K, V) struct { K key; V value; } *
 #define Dict(V) struct { char *key; V value; } *
 #define UNREACHABLE assert(0)
-#define JINLINE __attribute__((always_inline)) inline
-#define STATICARRFOR(arr) for(size_t arr##_index = 0; arr##_index < STATICARRLEN(arr); ++arr##_index)
+#define INLINE __attribute__((always_inline)) inline
 
 typedef int64_t s64;
 typedef uint64_t u64;
