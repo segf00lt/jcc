@@ -7,7 +7,7 @@
 #include <stdbool.h>
 #include <assert.h>
 
-#define SQR(x) (x*x)
+#define SQUARE(x) (x*x)
 #define TIMES2(x) (x+x)
 #define HALF(x) (x*0.5f)
 #define IS_POW_2(x) ((x & (x-1)) == 0)
@@ -21,6 +21,17 @@
 #define Dict(V) struct { char *key; V value; } *
 #define UNREACHABLE assert(0)
 #define INLINE __attribute__((always_inline)) inline
+#if defined(stbsp_sprintf) && defined(stbsp_snprintf)
+#undef sprintf
+#define sprintf stbsp_sprintf
+#undef snprintf
+#define snprintf stbsp_snprintf
+#endif
+#define VEC2_IHAT ((Vector2){1.0f, 0.0f})
+#define VEC2_JHAT ((Vector2){0.0f, 1.0f})
+#define VEC2_ORIGIN ((Vector2){0.0f,0.0f})
+#define VEC2_ZERO ((Vector2){0.0f,0.0f})
+#define F32_NEGATIVE_ZERO (u32)(0x80000000)
 
 typedef int64_t s64;
 typedef uint64_t u64;

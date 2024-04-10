@@ -729,7 +729,11 @@ template<class T> static T * stbds_shmode_func_wrapper(T *, size_t elemsize, int
 //   IMPLEMENTATION
 //
 
-#ifdef STB_DS_IMPLEMENTATION
+#if defined(STB_DS_IMPLEMENTATION) != defined(_UNITY_BUILD_)
+#ifdef _UNITY_BUILD_
+#define STB_DS_IMPLEMENTATION
+#endif
+//#ifdef STB_DS_IMPLEMENTATION
 #include <assert.h>
 #include <string.h>
 

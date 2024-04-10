@@ -1,260 +1,507 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <ctype.h>
+#define _UNITY_BUILD_
+
 #include "basic.h"
-#define STB_DS_IMPLEMENTATION
+#include "lexer.c"
 #include "stb_ds.h"
+#include "slab.h"
 
-typedef char Token;
-typedef struct AST {
-    char c;
-    struct AST *left;
-    union {
-        struct AST *right;
-        struct AST *next;
+#define ASTKINDS                 \
+    X(VARDEC)                    \
+    X(EXPR)                      \
+    X(PARAM)                     \
+    X(ATOM)                      \
+    X(CALL)
+
+#define PIPE_STAGES              \
+    X(PARSE)                     \
+    X(TYPE)                      \
+    X(SIZE)                      \
+    X(IR)
+
+#define JOB_STATES               \
+    X(READY)                     \
+    X(WAIT)                      \
+    X(BLOCK)                     \
+    X(FREE)
+
+#define OPERATOR_PREC_TABLE     \
+    /* indexing */\
+    X((Token)'.',                    10)\
+    X((Token)'[',                    10)\
+    /* additive */\
+    X((Token)'+',                    9)\
+    X((Token)'-',                    9)\
+    /* multiplicative */\
+    X((Token)'*',                    8)\
+    X((Token)'/',                    8)\
+    X((Token)'%',                    8)\
+    /* bitwise */\
+    X((Token)'^',                    7)\
+    X((Token)'&',                    7)\
+    X((Token)'|',                    7)\
+    X(TOKEN_LSHIFT,                  6)\
+    X(TOKEN_RSHIFT,                  6)\
+    /* comparison */\
+    X((Token)'<',                    5)\
+    X((Token)'>',                    5)\
+    X(TOKEN_LESSEQUAL,               5)\
+    X(TOKEN_GREATEQUAL,              5)\
+    X(TOKEN_EXCLAMEQUAL,             5)\
+    X(TOKEN_EQUALEQUAL,              5)\
+    /* logical */\
+    X(TOKEN_AND,                     4)\
+    X(TOKEN_OR,                      4)\
+    /* separators */\
+    X(')',                          -1)\
+    X(',',                          -1)\
+    X(';',                          -1)\
+    X('{',                          -1)\
+    X(']',                          -1)
+
+typedef struct AST AST;
+typedef struct AST_call AST_call;
+typedef struct AST_param AST_param;
+typedef struct AST_expr AST_expr;
+typedef struct AST_atom AST_atom;
+typedef struct AST_vardec AST_vardec;
+
+typedef struct Job Job;
+
+typedef enum ASTkind {
+#define X(x) AST_KIND_##x,
+    ASTKINDS
+#undef X
+} ASTkind;
+
+typedef enum Pipe_stage {
+    PIPE_STAGE_INVALID = -1,
+#define X(s) PIPE_STAGE_##s,
+    PIPE_STAGES
+#undef X
+} Pipe_stage;
+
+typedef enum Job_state {
+    JOB_STATE_INVALID = -1,
+#define X(s) JOB_STATE_##s,
+    JOB_STATES
+#undef X
+} Job_state;
+
+struct Job {
+    u64 id;
+
+    Job_state job_state;
+    Pipe_stage pipe_stage;
+
+    char *ident_waiting;
+    u64 job_id_waiting;
+
+    Lexer lexer;
+    AST *ast;
+
+    Slab ast_allocator;
+    Arr(char) text_allocator;
+
+    Arr(Dict(u64)) scopes;
+    Arr(Token) operators;
+    Arr(u64) operand_type_ids;
+    Arr(AST**) expr_buf;
+    Arr(AST*) tree_pos;
+};
+
+struct AST {
+    ASTkind kind;
+    int checked;
+};
+
+struct AST_param {
+    AST base;
+    char *name;
+    AST *value;
+    AST_param *next;
+};
+
+struct AST_call {
+    AST base;
+    AST *callee;
+    AST_param *params;
+};
+
+struct AST_expr {
+    AST base;
+    Token token;
+    struct {
+        AST *left;
+        AST *right;
     };
-} AST;
+};
 
-AST ast_buf[32] = {0};
-AST *ast_alloc = ast_buf;
+struct AST_atom {
+    AST base;
+    Token token;
+    union {
+        s64 integer;
+        u64 uinteger;
+        f32 floating;
+        f64 dfloating;
+        char character;
+        char *text;
+    };
+};
 
-char *lexer_pos = NULL;
+struct AST_vardec {
+    AST base;
+    char *name;
+    bool constant;
+    AST *type;
+    AST *init;
+    AST *next;
+};
 
-Token lex(void);
-Token unlex(int n);
-Token lexpeek(void);
-int getprec(Token op);
-AST* term(void);
-AST* expr(void);
-AST* expr_increase_prec(AST *left, int min_prec);
-AST* expr_decrease_prec(int min_prec);
 
-INLINE int getprec(Token op) {
-    switch(op) {
-        case '+': case '-': return 1;
-        case '/': return 2;
-        case '*': return 3;
+// a + -v[i][j] --> (a + (-((v[i])[j])))
+//              +
+//             / \
+//            a   -
+//                 \
+//                 [
+//                / \
+//               [   j
+//              / \
+//             v   i
+//
+//
+// some_struct.arr_member[i][j].sub_memeber
+//
+//                           .
+//                          / \
+//                         /   sub_memeber
+//                        [
+//                       / \
+//                      [   j 
+//                     / \
+//                    .   i
+//                   / \
+//                  /   \
+//                 /     \
+//      some_struct       arr_member
+//
+//
+// *[SIZE * CAP]u8
+// u8[SIZE * CAP]*
+//
+INLINE int getprec(Token t) {
+    switch(t) {
+#define X(t, prec) case t: return prec;
+        OPERATOR_PREC_TABLE
+#undef X
+        default: return -1;
     }
-    return 0;
 }
 
-INLINE Token lex(void) {
-    Token t;
-    while(*lexer_pos == ' ') ++lexer_pos;
-    t = *lexer_pos++;
-    return t;
+/*
+ * vardec: ident type_expr (('=' | ':') expr)? ';'
+ *       | ident (':=' | '::') expr ';'
+ */
+
+AST* job_alloc_ast(Job *jp, ASTkind, size_t bytes);
+char* job_alloc_text(Job *jp, char *s, size_t bytes);
+
+AST* parse_vardec(Job *jp);
+AST* parse_type_expr(Job *jp);
+AST* parse_expr(Job *jp);
+AST* parse_expr_increase_prec(Job *jp, AST *left, int min_prec);
+AST* parse_expr_decrease_prec(Job *jp, int min_prec);
+AST* parse_term(Job *jp);
+
+
+AST* job_alloc_ast(Job *jp, ASTkind kind, size_t bytes) {
+    AST *ptr = slab_alloc(&jp->ast_allocator, bytes);
+    ptr->kind = kind;
+    return ptr;
 }
 
-INLINE Token unlex(int n) {
-    lexer_pos -= n;
-    return *lexer_pos;
+char* job_alloc_text(Job *jp, char *s, size_t s_len){
+    char *ptr = arraddnptr(jp->text_allocator, s_len + 1);
+    strncpy(ptr, s, s_len);
+    ptr[s_len] = 0;
+    return ptr;
 }
 
-INLINE Token lexpeek(void) {
-    while(*lexer_pos == ' ') ++lexer_pos;
-    return *lexer_pos;
+AST* parse_vardec(Job *jp) {
+    Lexer *lexer = &jp->lexer;
+    Lexer unlex = *lexer;
+
+    Token t = lex(lexer);
+
+    if(t != TOKEN_IDENT) {
+        *lexer = unlex;
+        return NULL;
+    }
+
+    AST_vardec *node = (AST_vardec*)job_alloc_ast(jp, AST_KIND_VARDEC, sizeof(AST_vardec));
+    node->name = job_alloc_text(jp, lexer->text.s, lexer->text.e - lexer->text.s);
+
+    unlex = *lexer;
+    t = lex(lexer);
+
+    if(t == TOKEN_WALRUS || t == TOKEN_TWOCOLON) {
+        node->constant = (t == TOKEN_TWOCOLON);
+        node->init = parse_expr(jp);
+    } else {
+        *lexer = unlex;
+        node->type = parse_expr(jp);
+
+        t = lex(lexer);
+        if(t == '=' || t == ':') {
+            node->constant = (t == TOKEN_TWOCOLON);
+            node->init = parse_expr(jp);
+            t = lex(lexer);
+        }
+
+        //TODO compiler error messages
+        assert("expected semicolon at end of variable declaration"&&(t == ';'));
+    }
+
+    return (AST*)node;
 }
 
-AST* expr(void) {
-    return expr_decrease_prec(0);
+AST* parse_expr(Job *jp) {
+    return parse_expr_decrease_prec(jp, 0);
 }
 
-AST* expr_increase_prec(AST *left, int min_prec) {
-    AST *op;
+AST* parse_expr_increase_prec(Job *jp, AST *left, int min_prec) {
+    Lexer *lexer = &jp->lexer;
+    Lexer unlex = *lexer;
+    AST_expr *op;
 
-    Token t = lex();
+    Token t = lex(lexer);
     int prec = getprec(t);
 
     if(prec <= min_prec) {
-        unlex(1);
+        *lexer = unlex;
         return left;
     }
 
-    op = ast_alloc++;
-    op->c = t;
-    op->right = expr_decrease_prec(prec);
+    op = (AST_expr*)job_alloc_ast(jp, AST_KIND_EXPR, sizeof(AST_expr));
+    op->token = t;
+    op->right = parse_expr_decrease_prec(jp, prec);
 
-    return op;
+    return (AST*)op;
 }
 
-AST* expr_decrease_prec(int min_prec) {
+AST* parse_expr_decrease_prec(Job *jp, int min_prec) {
     AST *left, *node;
+    AST_expr *op;
 
-    left = term();
+    left = parse_term(jp);
+
+    if(left == NULL)
+        return NULL;
 
     while(true) {
-        node = expr_increase_prec(left, min_prec);
+        node = parse_expr_increase_prec(jp, left, min_prec);
         if(node == left) break;
-        node->left = left;
+        assert(node->kind == AST_KIND_EXPR);
+        op = (AST_expr*)node;
+        op->left = left;
         left = node;
     }
 
     return left;
 }
 
-AST* term(void) {
-    AST *node;
-    Token t = lex();
+AST* parse_term(Job *jp) {
+    Lexer *lexer = &jp->lexer;
+    Lexer unlex = *lexer;
+    Token t = lex(lexer);
+
+    AST *node = NULL;
+    AST_call *call_op = NULL;
+    AST_expr *index_op = NULL;
+    AST_expr *index_op_next = NULL;
+    AST_expr *expr = NULL;
+    AST_expr *unary = NULL;
+    AST_atom *atom = NULL;
+
+    switch(t) {
+        default:
+            //TODO compiler error messages
+            assert("unimplemented"&&0);
+            break;
+        case ')': /* calls with no parameters will end up here */
+            *lexer = unlex;
+            return NULL;
+            break;
+        case '+': case '-': case '!': case '~': case '&': case '*':
+            unary = (AST_expr*)job_alloc_ast(jp, AST_KIND_EXPR, sizeof(AST_expr));
+            unary->token = t;
+            node = parse_term(jp);
+            break;
+        case '[':
+            unary = (AST_expr*)job_alloc_ast(jp, AST_KIND_EXPR, sizeof(AST_expr));
+            unary->token = t;
+            node = parse_expr(jp);
+            t = lex(lexer);
+            //TODO compiler error messages
+            assert("unbalanced square bracket"&&(t == ']'));
+            break;
+        case '(':
+            expr = (AST_expr*)parse_expr(jp);
+            t = lex(lexer);
+            //TODO compiler error messages
+            assert("unbalanced parenthesis"&&(t==')'));
+            node = (AST*)expr;
+            break;
+        case TOKEN_VOID:
+        case TOKEN_INT:  case TOKEN_UINT: 
+        case TOKEN_FLOAT:
+        case TOKEN_CHAR: 
+        case TOKEN_U8:   case TOKEN_U16:  case TOKEN_U32:  case TOKEN_U64:  
+        case TOKEN_S8:   case TOKEN_S16:  case TOKEN_S32:  case TOKEN_S64:  
+        case TOKEN_F32:  case TOKEN_F64:  
+            atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_ATOM, sizeof(AST_atom));
+            atom->token = t;
+            node = (AST*)atom;
+            break;
+        case TOKEN_IDENT:
+            atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_ATOM, sizeof(AST_atom));
+            atom->token = t;
+            atom->text = job_alloc_text(jp, lexer->text.s, lexer->text.e - lexer->text.s);
+            node = (AST*)atom;
+            break;
+        case TOKEN_INTLIT:
+            atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_ATOM, sizeof(AST_atom));
+            atom->token = t;
+            atom->integer = lexer->integer;
+            node = (AST*)atom;
+            break;
+        case TOKEN_HEXLIT: case TOKEN_BINLIT:
+            atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_ATOM, sizeof(AST_atom));
+            atom->token = t;
+            atom->uinteger = lexer->uinteger;
+            node = (AST*)atom;
+            break;
+        case TOKEN_FLOATLIT:
+            atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_ATOM, sizeof(AST_atom));
+            atom->token = t;
+            atom->text = job_alloc_text(jp, lexer->text.s, lexer->text.e - lexer->text.s);
+            node = (AST*)atom;
+            break;
+        case TOKEN_STRINGLIT:
+            atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_ATOM, sizeof(AST_atom));
+            atom->token = t;
+            atom->text = job_alloc_text(jp, lexer->text.s, lexer->text.e - lexer->text.s);
+            node = (AST*)atom;
+            break;
+    }
+
+    /* postfix operators */
+    unlex = *lexer;
+    t = lex(lexer);
 
     if(t == '(') {
-        node = expr();
-        t = lex();
-        assert(t == ')');
-    } else {
-        assert(isalpha(t));
-        node = ast_alloc++;
-        node->c = t;
-    }
+        call_op = (AST_call*)job_alloc_ast(jp, AST_KIND_CALL, sizeof(AST_call));
+        call_op->callee = node;
 
-    return node;
-}
+        Slab_save save = slab_make_save(&jp->ast_allocator);
 
-AST* shunting_term(void) {
-    AST *node;
-    Token t = lex();
+        AST_param head;
+        AST_param *param = (AST_param*)job_alloc_ast(jp, AST_KIND_PARAM, sizeof(AST_param));
+        head.next = param;
 
-    assert(isalpha(t));
-    node = ast_alloc++;
-    node->c = t;
+        while(true) {
+            bool named_param = false;
 
-    return node;
-}
-#define IS_UNOP_PREFIX(op) (op == '-' || op == '&' || op == '~' || op == '*' || op == '!')
-#define IS_UNOP_POSTFIX(op) (op == '$' || op == '@')
-#define IS_BINOP(op) (op == '+' || op == '-' || op == '*' || op == '/' || op == '%')
+            unlex = *lexer;
+            t = lex(lexer);
 
-AST* shunting_expr(void) {
-    Token op = 0;
-    Token t = 0;
-    Arr(AST*) operand_starts = NULL;
-    Arr(AST*) operand_ends = NULL;
-    Arr(Token) binops = NULL;
-    Arr(Token) unops = NULL;
-    Arr(Token) operators = NULL;
-    AST *node = NULL;
-    bool last_was_not_atom = true;
-
-    while(true) {
-        t = lex(); 
-
-        if(t == '(') {
-            arrpush(binops, '(');
-            arrpush(unops, '(');
-            last_was_not_atom = true;
-            continue;
-        } else if(t == ')') {
-            // pop all binary ops
-            assert(!last_was_not_atom);
-            while(arrlen(binops) > 0 && arrlast(binops) != '(') {
-                node = ast_alloc++; 
-                node->c = arrpop(binops);
-                arrpop(operand_ends)->next = node;
-                arrlast(operand_ends)->next = arrpop(operand_starts);
-                operand_ends[arrlen(operand_ends)-1] = node;
-            }
-            // pop '('
-            assert(arrlast(binops) == '(');
-            assert(arrlast(unops) == '(');
-            arrpop(binops);
-            arrpop(unops);
-        } else if(IS_UNOP_PREFIX(t) && last_was_not_atom) {
-            arrpush(unops, t);
-        } else if(IS_UNOP_POSTFIX(t)) {
-            // tack postfix on end
-            u64 last = arrlen(operand_ends) - 1;
-            node = ast_alloc++;
-            node->c = t;
-            operand_ends[last]->next = node;
-            operand_ends[last] = node;
-        } else if(IS_BINOP(t)) {
-            assert(!last_was_not_atom);
-            // pop all unary prefix
-            u64 last = arrlen(operand_ends) - 1;
-            while(arrlen(unops) > 0 && arrlast(unops) != '(') {
-                node = ast_alloc++; 
-                node->c = arrpop(unops);
-                operand_ends[last]->next = node;
-                operand_ends[last] = node;
-            }
-            // pop all higher prec binary ops
-            while(arrlen(binops) > 0 && arrlast(binops) != '(' && getprec(t) <= getprec(arrlast(binops))) {
-                node = ast_alloc++; 
-                node->c = arrpop(binops);
-                arrpop(operand_ends)->next = node;
-                arrlast(operand_ends)->next = arrpop(operand_starts);
-                operand_ends[arrlen(operand_ends)-1] = node;
-            }
-            // push t to binops
-            arrpush(binops, t);
-
-            last_was_not_atom = true;
-            continue;
-        } else if(t == ';' || t == ',') {
-            u64 last = arrlen(operand_ends) - 1;
-
-            while(arrlen(unops) > 0 && arrlast(unops) != '(') {
-                node = ast_alloc++; 
-                node->c = arrpop(unops);
-                operand_ends[last]->next = node;
-                operand_ends[last] = node;
+            if(t == TOKEN_IDENT) {
+                char *s = lexer->text.s;
+                char *e = lexer->text.e;
+                t = lex(lexer);
+                if(t == '=') {
+                    named_param = true;
+                    param->name = job_alloc_text(jp, s, e - s);
+                } else {
+                    *lexer = unlex;
+                }
+            } else {
+                *lexer = unlex;
             }
 
-            while(arrlen(binops) > 0 && arrlast(binops) != '(') {
-                node = ast_alloc++; 
-                node->c = arrpop(binops);
-                arrpop(operand_ends)->next = node;
-                arrlast(operand_ends)->next = arrpop(operand_starts);
-                operand_ends[arrlen(operand_ends)-1] = node;
-            }
-            node = arrpop(operand_starts);
-            arrpop(operand_ends);
+            expr = (AST_expr*)parse_expr(jp);
 
-            // make sure stacks are clear and stop
-            assert(arrlen(operand_starts) == 0);
-            assert(arrlen(operand_ends) == 0);
-            assert(arrlen(binops) == 0);
-            assert(arrlen(unops) == 0);
-            break;
-        } else {
-            unlex(1);
-            node = shunting_term();
-            arrpush(operand_starts, node);
-            arrpush(operand_ends, node);
+            if(expr == NULL) {
+                if(named_param) {
+                    //TODO compiler error messages
+                    assert("named param has no initializer value"&&0);
+                }
+                t = lex(lexer);
+                assert("expected closing paren"&&(t == ')'));
+                slab_from_save(&jp->ast_allocator, save);
+            } else {
+                param->value = (AST*)expr;
+            }
+
+            param->next = (AST_param*)job_alloc_ast(jp, AST_KIND_PARAM, sizeof(AST_param));
+            param = param->next;
         }
 
-        last_was_not_atom = false;
+    } else if(t == '.' || t == '[') {
+        index_op = (AST_expr*)job_alloc_ast(jp, AST_KIND_EXPR, sizeof(AST_expr));
+        index_op->token = t;
+        index_op->left = node;
+        while(true) {
+            if(t == '.') {
+                t = lex(lexer);
+                //TODO compiler error messages
+                assert("expected identifier in struct member reference"&&(t==TOKEN_IDENT));
+                atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_ATOM, sizeof(AST_atom));
+                atom->token = t;
+                atom->text = job_alloc_text(jp, lexer->text.s, lexer->text.e - lexer->text.s);
+                index_op->right = (AST*)atom;
+            } else if(t == '[') {
+                expr = (AST_expr*)parse_expr(jp);
+                t = lex(lexer);
+                //TODO compiler error messages
+                assert("unbalanced square bracket"&&(t == ']'));
+                index_op->right = (AST*)expr;
+            }
+
+            unlex = *lexer;
+            t = lex(lexer);
+
+            if(t == '.' || t == '[') {
+                index_op_next = (AST_expr*)job_alloc_ast(jp, AST_KIND_EXPR, sizeof(AST_expr));
+                index_op_next->left = (AST*)index_op;
+                index_op = index_op_next;
+            } else {
+                break;
+            }
+        }
+
+        node = (AST*)index_op;
+    }
+
+    *lexer = unlex;
+
+    if(unary) {
+        unary->right = node;
+        node = (AST*)unary;
     }
 
     return node;
 }
 
-void print_ast(AST *node) {
-    if(!node) return;
-    print_ast(node->left);
-    print_ast(node->right);
-    printf("%c ", node->c);
-}
-
-void print_ast_linear(AST *node) {
-    if(!node) return;
-    printf("%c ", node->c);
-    print_ast_linear(node->next);
-}
-
-char src1[] = "(a + b)";
-char src2[] = "-(a * b + c)$ - d * e;";
+//TODO test parser
+char *test_src = 
+"i int = 12;\n"
+"f := 1.4e3;\n"
+"PI :: 3.14;\n"
+"s := \"hello sailor\";\n"
+;
 
 int main(void) {
-    lexer_pos = src1;
-    AST *e = expr();
-    printf("%s\n",src1);
-    print_ast(e);
-    printf("\n");
-
-    lexer_pos = src2;
-    e = shunting_expr();
-    printf("%s\n",src2);
-    print_ast_linear(e);
-    printf("\n");
     return 0;
 }

@@ -2,149 +2,97 @@
 #define JLIB_POOL_H
 
 #include <stdlib.h>
-#include <string.h>
 #include <stdint.h>
-#include <stdbool.h>
-#include <assert.h>
 
 /*
  * This is a chunked pool allocator. It's meant to allow you to allocate and
- * free items of the same size in roughly contiguous chunks of memory.
+ * of the same size in roughly contiguous chunks of memory.
+ * Since it gets memory from the OS in separate chunks saved in an array,
+ * it can be used to store self referential structures like trees or linked lists
+ * and free the entire thing at once.
  */
 
+#ifndef POOL_INITIAL_CHUNK_COUNT
+#define POOL_INITIAL_CHUNK_COUNT 4
+#endif
+
 typedef struct Pool Pool;
-typedef struct Pool_free_node Pool_free_node;
-typedef struct Pool_locator Pool_locator;
+typedef struct Pool_save Pool_save;
 
-void pool_init(Pool *p, size_t item_size, size_t max_items, size_t initial_chunk_count);
+void  pool_init(Pool *p, size_t item_size);
 void* pool_alloc(Pool *p);
-void pool_cannibalize(Pool *p, Pool *food);
-void pool_slim(Pool *p);
-void pool_free(Pool *p, void *ptr);
-void pool_free_all(Pool *p);
-void pool_free_current_chunk(Pool *p);
-void pool_free_chunk(Pool *p, size_t index);
-void pool_destroy(Pool *p);
+void  pool_free(Pool *p);
+void  pool_destroy(Pool *p);
+Pool_save pool_to_save(Pool *p);
+void pool_from_save(Pool *p, Pool_save save);
 
-#ifdef JLIB_POOL_IMPL
+#if defined(JLIB_POOL_IMPL) != defined(_UNITY_BUILD_)
+
+#ifdef _UNITY_BUILD_
+#define JLIB_POOL_IMPL
+#endif
 
 struct Pool {
 	size_t item_size;
-	size_t max_items;
-	size_t chunk_bytes;
-	size_t chunks_in_use;
-	size_t chunks_available;
-	unsigned char **chunks;
-	unsigned char *untouched_item;
-	Pool_free_node *free;
+    uint32_t vacant;
+	uint32_t cur_chunk;
+	uint32_t chunks_available;
+	uint8_t **chunks;
 };
 
-struct Pool_free_node {
-	Pool_free_node *next;
+struct Pool_save {
+    uint32_t vacant;
+	uint32_t cur_chunk;
 };
 
-struct Pool_locator {
-	uint32_t chunk, slot;
-};
-
-void pool_init(Pool *p, size_t item_size, size_t max_items, size_t initial_chunk_count) {
-	assert("initial_chunk_count must be > 0" && initial_chunk_count > 0);
-	item_size = (sizeof(Pool_free_node) > item_size) ? sizeof(Pool_free_node) : item_size;
+void pool_init(Pool *p, size_t item_size) {
 	p->item_size = item_size;
-	p->max_items = max_items;
-	p->chunk_bytes = item_size * max_items;
-	p->chunks_in_use = 1;
-	p->chunks_available = initial_chunk_count;
-	p->chunks = malloc(sizeof(unsigned char*) * initial_chunk_count);
-	for(size_t i = 0; i < initial_chunk_count; ++i)
-		p->chunks[i] = malloc(p->chunk_bytes);
-	p->untouched_item = p->chunks[0];
-	p->free = NULL;
+    p->vacant = 0;
+	p->cur_chunk = 0;
+	p->chunks_available = POOL_INITIAL_CHUNK_COUNT;
+	p->chunks = malloc(sizeof(uint8_t*) * POOL_INITIAL_CHUNK_COUNT);
+	for(size_t i = 0; i < POOL_INITIAL_CHUNK_COUNT; ++i)
+		p->chunks[i] = malloc(item_size << 6);
 }
 
 void* pool_alloc(Pool *p) {
-	void *ptr;
+    if(p->vacant >= 64) {
+        p->vacant = 0;
+        ++p->cur_chunk;
+        if(p->cur_chunk >= p->chunks_available) {
+            p->chunks_available <<= 1;
+            p->chunks = realloc(p->chunks, sizeof(uint8_t*) * p->chunks_available);
+            for(uint32_t i = p->cur_chunk; i < p->chunks_available; ++i)
+                p->chunks[i] = malloc(p->item_size << 6);
+        }
+    }
 
-	if(!p->untouched_item && !p->free) {
-		if(p->chunks_in_use >= p->chunks_available) {
-			p->chunks_available += 2;
-			p->chunks = realloc(p->chunks, sizeof(unsigned char *) * p->chunks_available);
-			p->chunks[p->chunks_available-2] = malloc(p->chunk_bytes);
-			p->chunks[p->chunks_available-1] = malloc(p->chunk_bytes);
-		}
-		p->untouched_item = p->chunks[p->chunks_in_use] + p->item_size;
-		ptr = p->chunks[p->chunks_in_use];
-		++p->chunks_in_use;
-	} else if(!p->untouched_item && p->free) {
-		ptr = p->free;
-		p->free = p->free->next;
-	} else {
-		ptr = p->untouched_item;
-		p->untouched_item += p->item_size;
-		if(p->untouched_item >= p->chunks[p->chunks_in_use-1] + p->chunk_bytes)
-			p->untouched_item = NULL;
-	}
+    void *ptr = (void*)(p->chunks[p->cur_chunk] + p->vacant*p->item_size);
+    memset(ptr, 0, p->item_size);
 
-	return ptr;
+    ++p->vacant;
+
+    return ptr;
 }
 
-void pool_free(Pool *p, void *ptr) {
-#ifndef JLIB_POOL_UNSAFE
-	unsigned char *free = ptr;
-	size_t i;
-	for(i = 0; i < p->chunks_in_use; ++i)
-		if(free >= p->chunks[i] && free <= p->chunks[i] + p->chunk_bytes)
-			break;
-	assert("pointer is not in pool bounds" && i < p->chunks_in_use);
-#endif
-	Pool_free_node *free_node = ptr;
-	free_node->next = p->free;
-	p->free = free_node;
-}
-
-void pool_cannibalize(Pool *p, Pool *food) {
-	assert("incompatible pool" && p->chunk_bytes == food->chunk_bytes);
-	p->chunks = realloc(p->chunks,(p->chunks_available+food->chunks_available)*sizeof(unsigned char*));
-	for(size_t i = 0, j = p->chunks_available; i < food->chunks_available; ++i, ++j)
-		p->chunks[j] = food->chunks[i];
-	p->chunks_available += food->chunks_available;
-	free(food->chunks);
-	*food = (Pool){0};
-}
-
-void pool_slim(Pool *p) {
-	size_t n = p->chunks_available - p->chunks_in_use;
-	size_t i = p->chunks_available - 1;
-	while(n-- > 0)
-		free(p->chunks[i--]);
-	p->chunks_available = p->chunks_in_use;
-	p->chunks = realloc(p->chunks, p->chunks_available * sizeof(unsigned char*));
-	p->untouched_item = NULL;
-}
-
-void pool_free_all(Pool *p) {
-	p->free = NULL;
-	p->untouched_item = p->chunks[0];
-}
-
-void pool_free_current_chunk(Pool *p) {
-	p->untouched_item = p->chunks[p->chunks_in_use-1];
-}
-
-void pool_free_locator(Pool *p, Pool_locator l) {
-	assert("pool_free_locator unimplemented" && 0);
-}
-
-void pool_free_chunk(Pool *p, size_t index) {
-	assert("pool_free_chunk unimplemented" && 0);
+void pool_free(Pool *p) {
+    p->cur_chunk = p->vacant = 0;
 }
 
 void pool_destroy(Pool *p) {
-	assert("pool is not initialized" && p->chunks_available && p->chunks);
-	p->free = NULL;
-	for(size_t i = 0; i < p->chunks_available; ++i)
-		free(p->chunks[i]);
-	free(p->chunks);
+    for(uint32_t i = 0; i < p->chunks_available; ++i)
+        free(p->chunks[i]);
+    free(p->chunks);
+    *p = (Pool){0};
+}
+
+Pool_save pool_to_save(Pool *p) {
+    return (Pool_save){ .vacant = p->vacant, .cur_chunk = p->cur_chunk };
+}
+
+void pool_from_save(Pool *p, Pool_save save) {
+    p->vacant = save.vacant;
+    p->cur_chunk = save.cur_chunk;
 }
 
 #endif

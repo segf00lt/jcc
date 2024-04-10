@@ -1,0 +1,43 @@
+a + -v[i][j] --> (a + (-((v[i])[j])))
+             +
+            / \
+           a   -
+                \
+                [
+               / \
+              [   j
+             / \
+            v   i
+
+
+some_struct.arr_member[i][j].sub_memeber
+
+                          .
+                         / \
+                        /   sub_memeber
+                       [
+                      / \
+                     [   j 
+                    / \
+                   .   i
+                  / \
+                 /   \
+                /     \
+     some_struct       arr_member
+
+
+*[SIZE * CAP]u8
+u8[SIZE * CAP]*
+
+
+atan2(x, y)
+
+
+
+
+
+
+
+
+
+

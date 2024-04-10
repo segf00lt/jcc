@@ -1,4 +1,4 @@
-FLAGS = -g -Wall -Wpedantic -Werror
+FLAGS = -g -Wall -Wpedantic -Werror -Wno-switch -Wno-comment -D'_UNITY_BUILD_'
 TARGET = jcc.c
 
 all:
