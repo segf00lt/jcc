@@ -586,47 +586,99 @@ char *test_src =
 "s := \"hello sailor\";\n"
 ;
 
-int main(void) {
-    //Arr(Job) job_queue = NULL;
+void job_runner(char *src, char *src_path) {
+    Arr(Job) job_queue = NULL;
+    Arr(Job) job_queue_next = NULL;
+
+    u64 job_count = 1;
 
     Job job = {
         .id = 0,
         .job_state = JOB_STATE_READY,
-        .pipe_stage = PIPE_STAGE_PARSE,  
+        .pipe_stage = PIPE_STAGE_PARSE,
     };
 
-    lexer_init(&job.lexer, test_src, "not a file");
+    lexer_init(&job.lexer, src, src_path);
 
+    arrpush(job_queue, job);
+
+    while(arrlen(job_queue) > 0) {
+        for(u64 i = 0; i < arrlen(job_queue); ++i) {
+            job = job_queue[i];
+
+            if(job.job_state == JOB_STATE_WAIT) {
+                arrpush(job_queue_next, job);
+                continue;
+            }
+
+            switch(job.pipe_stage) {
+                case PIPE_STAGE_PARSE:
+                    while(true) {
+                        job.text_allocator = NULL;
 #define X(x) pool_init(&job.ast_##x##_allocator, sizeof(AST_##x));
-    ASTKINDS;
+                        ASTKINDS;
 #undef X
 
-    while(true) {
-        AST *ast = parse_vardec(&job, ';');
+                        AST *ast = parse_vardec(&job, ';');
 
-        if(ast == NULL) {
-            Token t = lex(&job.lexer);
-            assert(t == 0);
-            printf("stopping all jobs...\n");
-            break;
+                        if(ast == NULL) {
+                            Token t = lex(&job.lexer);
+                            arrfree(job.text_allocator);
+#define X(x) pool_destroy(&job.ast_##x##_allocator);
+                        ASTKINDS;
+#undef X
+                            assert(t == 0);
+                            break;
+                        }
+
+                        Job new_job = {
+                            .id = job_count++,
+                            .job_state = JOB_STATE_READY,
+                            .pipe_stage = PIPE_STAGE_TYPE,
+                            .ast = ast,
+                            .text_allocator = job.text_allocator,
+                        };
+
+#define X(x) new_job.ast_##x##_allocator = job.ast_##x##_allocator;
+                        ASTKINDS;
+#undef X
+
+                        arrpush(job_queue_next, new_job);
+                    }
+                    break;
+                case PIPE_STAGE_TYPE:
+                    printf("hey mum look! I'm typechecking\n");
+                    {
+                        AST_vardec *node = (AST_vardec*)(job.ast);
+                        printf("vardec: %s\n", node->name);
+                        printf("type:\n");
+                        print_ast_expr(node->type, 1);
+                        printf("init:\n");
+                        print_ast_expr(node->init, 1);
+                        printf("\n");
+                    }
+                    break;
+                case PIPE_STAGE_SIZE:
+                    {
+                    }
+                    break;
+                case PIPE_STAGE_IR:
+                    {
+                    }
+                    break;
+            }
+
         }
 
-        arrpush(job.global_statements, ast);
+        Arr(Job) tmp = job_queue;
+        job_queue = job_queue_next;
+        job_queue_next = tmp;
+        arrsetlen(job_queue_next, 0);
+
     }
+}
 
-    for(int i = 0; i < arrlen(job.global_statements); ++i) {
-        AST_vardec *node = (AST_vardec*)job.global_statements[i];
-        printf("vardec: %s\n", node->name);
-        printf("type:\n");
-        print_ast_expr(node->type, 1);
-        printf("init:\n");
-        print_ast_expr(node->init, 1);
-        printf("\n");
-    }
-
-    //arrpush(job_queue, job);
-    //for(int i = 0; i < arrlen(job_queue); ++i) {
-    //}
-
+int main(void) {
+    job_runner(test_src, "not a file");
     return 0;
 }
