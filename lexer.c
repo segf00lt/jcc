@@ -30,10 +30,13 @@
     X(CONTINUE,                   "continue")\
     X(BREAK,                         "break")\
     X(RETURN,                       "return")\
+    X(TRUE,                           "true")\
+    X(FALSE,                         "false")\
     X(VOID,                           "void")\
     X(INT,                             "int")\
     X(UINT,                           "uint")\
     X(FLOAT,                         "float")\
+    X(BOOL,                           "bool")\
     X(CHAR,                           "char")\
     X(U8,                               "u8")\
     X(U16,                             "u16")\

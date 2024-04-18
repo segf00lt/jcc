@@ -20,6 +20,7 @@
 #define Map(K, V) struct { K key; V value; } *
 #define Dict(V) struct { char *key; V value; } *
 #define UNREACHABLE assert(0)
+#define UNIMPLEMENTED assert("UNIMPLEMENTED"&&0)
 #define INLINE __attribute__((always_inline)) inline
 #if defined(stbsp_sprintf) && defined(stbsp_snprintf)
 #undef sprintf

@@ -1,118 +1,114 @@
 #ifndef JLIB_ARENA_H
 #define JLIB_ARENA_H
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <assert.h>
-#include "basic.h"
-
-#ifndef JLIB_ARENA_DEFAULT_ALIGNMENT
-#define JLIB_ARENA_DEFAULT_ALIGNMENT (sizeof(void*) * 2)
-#endif
 
 typedef struct Arena Arena;
+typedef struct Arena_save Arena_save;
 
-void arena_init(Arena *a, void *buf, size_t buf_cap);
-#define arena_alloc(a, size) arena_alloc_align(a, size, JLIB_ARENA_DEFAULT_ALIGNMENT)
-void* arena_alloc_align(Arena *a, size_t size, size_t align);
-void* arena_alloc_grow(Arena *a, size_t size);
-#define arena_resize(a, ptr, cur_size, new_size) arena_resize_align(a, ptr, cur_size, new_size, JLIB_ARENA_DEFAULT_ALIGNMENT)
-void* arena_resize_align(Arena *a, void *ptr, size_t cur_size, size_t new_size, size_t align);
-#define arena_realloc(a, ptr, cur_size, new_size) arena_realloc_align(a, ptr, cur_size, new_size, JLIB_ARENA_DEFAULT_ALIGNMENT)
-void* arena_realloc_align(Arena *a, void *ptr, size_t cur_size, size_t new_size, size_t align);
+#define JLIB_ARENA_INITIAL_BLOCK_BYTES (1<<13) // 8K bytes
+#define JLIB_ARENA_TMP_INITIAL_BLOCK_BYTES (1<<11) // 2K bytes
+
+#define arena_init(a) arena_init_full(a, false, JLIB_ARENA_INITIAL_BLOCK_BYTES)
+#define arena_tmp(a) arena_init_full(a, true, JLIB_ARENA_TMP_INITIAL_BLOCK_BYTES)
+void arena_init_full(Arena *a, bool cannot_grow, size_t initial_block_bytes);
+void* arena_alloc(Arena *a, size_t bytes);
+Arena_save arena_to_save(Arena *a);
+void arena_from_save(Arena *a, Arena_save save);
 void arena_free(Arena *a);
+void arena_destroy(Arena *a);
 
-#ifdef JLIB_ARENA_IMPL
+#endif
 
-static uintptr_t align_ptr_forward(uintptr_t ptr, size_t align) {
-	uintptr_t p, a, mod;
-	assert(IS_POW_2(align));
-	p = ptr;
-	a = (uintptr_t)align;
-	mod = p & (a-1);
-	if(mod) p += a - mod;
-	return p;
+#if defined(JLIB_ARENA_IMPL) != defined(_UNITY_BUILD_)
+
+#ifdef _UNITY_BUILD_
+#define JLIB_ARENA_IMPL
+#endif
+
+#ifndef INLINE
+#define INLINE __attribute__((always_inline)) inline
+#endif
+
+INLINE uint64_t _round_pow_2(uint64_t n) {
+    --n;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    n |= n >> 32;
+    ++n;
+    return n;
 }
 
 struct Arena {
-    bool can_grow
-	unsigned char *buf;
-	size_t buf_cap;
-	size_t cur_offset;
+    bool cannot_grow;
+    uint64_t pos;
+    uint64_t cur_block;
+    size_t *block_sizes;
+    uint8_t **blocks;
 };
 
-void arena_init(Arena *a, void *buf, size_t buf_cap) {
-	a->buf = (unsigned char*)buf;
-	a->buf_cap = buf_cap;
-    a->cur_offset = 0;
+struct Arena_save {
+    uint64_t pos;
+    uint64_t cur_block;
+};
+
+INLINE void arena_init_full(Arena *a, bool cannot_grow, size_t initial_block_bytes) {
+    *a = (Arena){0};
+    a->cannot_grow = cannot_grow;
+    a->blocks = malloc(sizeof(uint8_t*));
+    a->block_sizes = malloc(sizeof(size_t));
+    a->blocks[0] = malloc(initial_block_bytes);
+    a->block_sizes[0] = initial_block_bytes;
 }
 
-void* arena_alloc_grow(Arena *a, size_t size) {
-	uintptr_t cur_ptr = (uintptr_t)a->buf + (uintptr_t)a->cur_offset;
-	uintptr_t offset = align_ptr_forward(cur_ptr, JLIB_ARENA_DEFAULT_ALIGNMENT) - (uintptr_t)a->buf;
+INLINE void* arena_alloc(Arena *a, size_t bytes) {
+    if(bytes + a->pos >= a->block_sizes[a->cur_block]) {
+        if(a->cannot_grow) {
+            fprintf(stderr, "arena_alloc: arena cannot grow so malloc(%zu) bytes\n", bytes);
+            return malloc(bytes);
+        }
+        size_t new_block_size = a->block_sizes[a->cur_block] << 1;
+        while(new_block_size < bytes) new_block_size <<= 1;
+        a->cur_block++;
+        a->blocks = realloc(a->blocks, (a->cur_block + 1) * new_block_size);
+        a->block_sizes = realloc(a->block_sizes, (a->cur_block + 1) * sizeof(size_t));
+        a->blocks[a->cur_block] = malloc(new_block_size);
+        a->block_sizes[a->cur_block] = new_block_size;
+        a->pos = 0;
+    }
 
-	if(offset+size > a->buf_cap) {
-		size_t newbuf_cap = MAX(offset+size, a->buf_cap<<1);
-		unsigned char *newbuf = malloc(newbuf_cap);
-		memcpy(newbuf, a->buf, a->buf_cap);
-		free(a->buf);
-		a->buf = newbuf;
-		a->buf_cap = newbuf_cap;
-	}
+    void *ptr = a->blocks[a->cur_block] + a->pos;
+    a->pos++;
+    memset(ptr, 0, bytes);
 
-	void *ptr = a->buf + offset; // NOTE make sure this is the same as &a->buf[offset]
-	a->prev_offset = offset;
-	a->cur_offset = offset + size;
-	memset(ptr, 0, size);
-	return ptr;
+    return ptr;
 }
 
-void* arena_alloc_align(Arena *a, size_t size, size_t align) {
-	uintptr_t cur_ptr = (uintptr_t)a->buf + (uintptr_t)a->cur_offset;
-	uintptr_t offset = align_ptr_forward(cur_ptr, align) - (uintptr_t)a->buf;
-
-	if(offset+size > a->buf_cap)
-		return NULL;
-
-	void *ptr = a->buf + offset; // NOTE make sure this is the same as &a->buf[offset]
-	a->prev_offset = offset;
-	a->cur_offset = offset + size;
-	memset(ptr, 0, size);
-	return ptr;
+INLINE void arena_free(Arena *a) {
+    a->pos = a->cur_block = 0;
 }
 
-void* arena_resize_align(Arena *a, void *ptr, size_t cur_size, size_t new_size, size_t align) {
-	assert(IS_POW_2(align)); // align is pow 2
-
-	if(ptr == NULL || cur_size == 0) {
-		return arena_alloc_align(a, new_size, align);
-	} else if(a->buf > (unsigned char*)ptr || (unsigned char*)ptr >= a->buf + a->buf_cap) {
-		assert(0 && "memory is out of bounds of the buffer in this arena");
-		return NULL;
-	}
-
-	if(a->buf + a->prev_offset == (unsigned char*)ptr) {
-		a->cur_offset = a->prev_offset + new_size;
-		if(a->cur_offset >= a->buf_cap)
-			return NULL;
-		if(new_size > cur_size)
-			memset(a->buf + a->cur_offset, 0, new_size-cur_size);
-		return ptr;
-	}
-
-	void *new_ptr = arena_alloc_align(a, new_size, align);
-	if(!new_ptr) return NULL;
-	size_t copy_size = (cur_size < new_size) ? cur_size : new_size;
-	memmove(new_ptr, ptr, copy_size);
-	return new_ptr;
+INLINE void arena_destroy(Arena *a) {
+    for(uint64_t i = 0; i <= a->cur_block; ++i)
+        free(a->blocks[i]);
+    free(a->blocks);
+    free(a->block_sizes);
 }
 
-void arena_free(Arena *a) {
-	a->prev_offset = a->cur_offset = 0;
+INLINE Arena_save arena_to_save(Arena *a) {
+    return (Arena_save){ .pos = a->pos, .cur_block = a->cur_block };
 }
 
-#endif
+INLINE void arena_from_save(Arena *a, Arena_save save) {
+    a->pos = save.pos;
+    a->cur_block = save.cur_block;
+}
 
 #endif

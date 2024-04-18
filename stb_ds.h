@@ -448,6 +448,7 @@ CREDITS
 #define sh_new_arena  stbds_sh_new_arena
 #define sh_new_strdup stbds_sh_new_strdup
 
+#define stralloclen stbds_stralloclen // added by segf00lt
 #define stralloc    stbds_stralloc
 #define strreset    stbds_strreset
 #endif
@@ -480,6 +481,7 @@ extern size_t stbds_hash_string(char *str, size_t seed);
 
 // this is a simple string arena allocator, initialize with e.g. 'stbds_string_arena my_arena={0}'.
 typedef struct stbds_string_arena stbds_string_arena;
+extern char * stbds_stralloclen(stbds_string_arena *a, char *str, size_t len); // added by segf00lt
 extern char * stbds_stralloc(stbds_string_arena *a, char *str);
 extern void   stbds_strreset(stbds_string_arena *a);
 
@@ -1557,6 +1559,57 @@ static char *stbds_strdup(char *str)
 #ifndef STBDS_STRING_ARENA_BLOCKSIZE_MAX
 #define STBDS_STRING_ARENA_BLOCKSIZE_MAX  (1u<<20)
 #endif
+
+// added by segf00lt
+char *stbds_stralloclen(stbds_string_arena *a, char *str, size_t len)
+{
+  char *p;
+  //size_t len = strlen(str)+1;
+  len += 1;
+  if (len > a->remaining) {
+    // compute the next blocksize
+    size_t blocksize = a->block;
+
+    // size is 512, 512, 1024, 1024, 2048, 2048, 4096, 4096, etc., so that
+    // there are log(SIZE) allocations to free when we destroy the table
+    blocksize = (size_t) (STBDS_STRING_ARENA_BLOCKSIZE_MIN) << (blocksize>>1);
+
+    // if size is under 1M, advance to next blocktype
+    if (blocksize < (size_t)(STBDS_STRING_ARENA_BLOCKSIZE_MAX))
+      ++a->block;
+
+    if (len > blocksize) {
+      // if string is larger than blocksize, then just allocate the full size.
+      // note that we still advance string_block so block size will continue
+      // increasing, so e.g. if somebody only calls this with 1000-long strings,
+      // eventually the arena will start doubling and handling those as well
+      stbds_string_block *sb = (stbds_string_block *) STBDS_REALLOC(NULL, 0, sizeof(*sb)-8 + len);
+      memmove(sb->storage, str, len);
+      if (a->storage) {
+        // insert it after the first element, so that we don't waste the space there
+        sb->next = a->storage->next;
+        a->storage->next = sb;
+      } else {
+        sb->next = 0;
+        a->storage = sb;
+        a->remaining = 0; // this is redundant, but good for clarity
+      }
+      return sb->storage;
+    } else {
+      stbds_string_block *sb = (stbds_string_block *) STBDS_REALLOC(NULL, 0, sizeof(*sb)-8 + blocksize);
+      sb->next = a->storage;
+      a->storage = sb;
+      a->remaining = blocksize;
+    }
+  }
+
+  STBDS_ASSERT(len <= a->remaining);
+  p = a->storage->storage + a->remaining - len;
+  a->remaining -= len;
+  memmove(p, str, len);
+  p[len-1] = 0;
+  return p;
+}
 
 char *stbds_stralloc(stbds_string_arena *a, char *str)
 {
