@@ -60,15 +60,17 @@
     X(VARDECL_END)                      \
 
 #define VALUEKINDS                      \
+    X(NIL)                              \
+    X(BOOL)                             \
+    X(CHAR)                             \
     X(INT)                              \
     X(UINT)                             \
     X(FLOAT)                            \
-    X(BOOL)                             \
-    X(CHAR)                             \
-    X(STRING)                           \
     X(TYPE)                             \
+    X(STRING)                           \
     X(ARR_OR_STRUCT_LIT)                \
     X(PARAM)                            \
+    X(TOKEN)                            \
 
 #define TYPEKINDS                       \
     X(VOID)                             \
@@ -90,6 +92,7 @@
     X(ARRAY)                            \
     X(DYNAMIC_ARRAY)                    \
     X(SLICE)                            \
+    X(POINTER)                          \
     X(STRUCT)                           \
     X(UNION)                            \
     X(PROC)                             \
@@ -194,6 +197,8 @@ struct Job {
     Arr(Type*)           type_stack;
     Arr(AST**)           expr;
     u64                  expr_pos;
+
+    bool                 must_const_evaluate; /* used when we process const expressions */
     
     Job_memory allocator;
 };
@@ -262,6 +267,8 @@ struct Value {
         f32 floating;
         f64 dfloating;
         char character;
+        bool boolean;
+        Token token;
         char *str;
         Type *type;
         struct {
@@ -324,50 +331,54 @@ struct Type {
 };
 
 /* function headers */
-Job    job_spawn(Jobid *id_alloc, Pipe_stage stage);
-void   job_die(Job *jp);
-AST*   job_alloc_ast(Job *jp, ASTkind kind);
-Value* job_alloc_value(Job *jp, Valuekind kind);
-Type*  job_alloc_type(Job *jp, Typekind kind);
-Sym*   job_alloc_sym(Job *jp);
-char*  job_alloc_str(Job *jp, char *s);
+Job     job_spawn(Jobid *id_alloc, Pipe_stage stage);
+void    job_die(Job *jp);
+AST*    job_alloc_ast(Job *jp, ASTkind kind);
+Value*  job_alloc_value(Job *jp, Valuekind kind);
+Type*   job_alloc_type(Job *jp, Typekind kind);
+Sym*    job_alloc_sym(Job *jp);
+char*   job_alloc_str(Job *jp, char *s);
 
-void   job_ast_allocator_to_save(Job *jp, Pool_save save[AST_KIND_MAX]);
-void   job_ast_allocator_from_save(Job *jp, Pool_save save[AST_KIND_MAX]);
-void   job_runner(char *src, char *src_path);
-Sym*   job_scope_lookup(Job *jp, char *name);
-void   job_scope_enter(Job *jp, Sym sym);
-void   linearize_expr(Job *jp, AST **astpp);
+void    job_ast_allocator_to_save(Job *jp, Pool_save save[AST_KIND_MAX]);
+void    job_ast_allocator_from_save(Job *jp, Pool_save save[AST_KIND_MAX]);
+void    job_runner(char *src, char *src_path);
+Sym*    job_scope_lookup(Job *jp, char *name);
+void    job_scope_enter(Job *jp, Sym sym);
+void    linearize_expr(Job *jp, AST **astpp);
 
-Value* atom_to_value(Job *jp, AST_atom *atom);
-Type*  atom_to_type(Job *jp, AST_atom *atom);
+Value*  atom_to_value(Job *jp, AST_atom *atom);
+Type*   atom_to_type(Job *jp, AST_atom *atom);
 
-Type*  typecheck_binary(Type *a, Type *b, Token op);
-void   typecheck_expr(Job *jp);
-void   typecheck_vardecl(Job *jp);
-void   typecheck_procdecl(Job *jp);
-void   typecheck_ifstatement(Job *jp);
-void   typecheck_whilestatement(Job *jp);
+Value*  evaluate_unary(Job *jp, Type *type, Value *a, Token op);
+Value*  evaluate_binary(Job *jp, Type *type, Value *a, Value *b, Token op);
 
-int    getprec(Token t);
+Type*   typecheck_unary(Job *jp, Type *a, Token op);
+Type*   typecheck_binary(Job *jp, Type *a, Type *b, Token op);
+void    typecheck_expr(Job *jp);
+void    typecheck_vardecl(Job *jp);
+void    typecheck_procdecl(Job *jp);
+void    typecheck_ifstatement(Job *jp);
+void    typecheck_whilestatement(Job *jp);
 
-AST*   parse_vardecl(Job *jp);
-AST*   parse_type_expr(Job *jp);
-AST*   parse_expr(Job *jp);
-AST*   parse_expr_increase_prec(Job *jp, AST *left, int min_prec);
-AST*   parse_expr_decrease_prec(Job *jp, int min_prec);
-AST*   parse_term(Job *jp);
+int     getprec(Token t);
 
-void*  global_alloc(size_t bytes);
-Sym*   global_alloc_sym(void);
-Value* global_alloc_value(Valuekind kind);
-Type*  global_alloc_type(Typekind kind);
-char*  global_alloc_text(char *s, char *e);
+AST*    parse_vardecl(Job *jp);
+AST*    parse_type_expr(Job *jp);
+AST*    parse_expr(Job *jp);
+AST*    parse_expr_increase_prec(Job *jp, AST *left, int min_prec);
+AST*    parse_expr_decrease_prec(Job *jp, int min_prec);
+AST*    parse_term(Job *jp);
 
-Sym*   global_scope_lookup(char *name);
-void   global_scope_enter(Sym sym);
+void*   global_alloc(size_t bytes);
+Sym*    global_alloc_sym(void);
+Value*  global_alloc_value(Valuekind kind);
+Type*   global_alloc_type(Typekind kind);
+char*   global_alloc_text(char *s, char *e);
 
-char*  global_strdup(char *s);
+Sym*    global_scope_lookup(char *name);
+void    global_scope_enter(Sym sym);
+
+char*   global_strdup(char *s);
 
 /* globals */
 
@@ -390,6 +401,9 @@ Type builtin_type[] = {
     { .kind = TYPE_KIND_TYPE,  .bytes = 8 },
 };
 
+Value builtin_value[] = {
+    { .kind = VALUE_KIND_NIL, },
+};
 stbds_string_arena global_string_allocator;
 Arena      global_scratch_allocator;
 Pool       global_sym_allocator;
@@ -681,6 +695,11 @@ AST* parse_term(Job *jp) {
             assert("unbalanced parenthesis"&&(t==')'));
             node = (AST*)expr;
             break;
+        case TOKEN_TWODOT:
+            atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
+            atom->token = t;
+            node = (AST*)atom;
+            break;
         case TOKEN_VOID:
         case TOKEN_INT:  case TOKEN_UINT: 
         case TOKEN_FLOAT:
@@ -968,10 +987,12 @@ void job_runner(char *src, char *src_path) {
                     break;
                 case PIPE_STAGE_SIZE:
                     {
+                        UNIMPLEMENTED;
                     }
                     break;
                 case PIPE_STAGE_IR:
                     {
+                        UNIMPLEMENTED;
                     }
                     break;
             }
@@ -1000,6 +1021,10 @@ Value *atom_to_value(Job *jp, AST_atom *atom) {
     switch(atom->token) {
         default:
             UNIMPLEMENTED;
+        case TOKEN_TWODOT:
+            vp = job_alloc_value(jp, VALUE_KIND_TOKEN);
+            vp->val.token = atom->token;
+            break;
         case TOKEN_INT:
             vp = job_alloc_value(jp, VALUE_KIND_TYPE);
             vp->val.type = job_alloc_type(jp, TYPE_KIND_INT);
@@ -1025,6 +1050,9 @@ Type *atom_to_type(Job *jp, AST_atom *atom) {
     switch(atom->token) {
         default:
             UNIMPLEMENTED;
+        case TOKEN_TWODOT: /* we do this to make checking array constructors easier */
+            tp = job_alloc_type(jp, TYPE_KIND_U64);
+            break;
         case TOKEN_INT:
         case TOKEN_UINT:
         case TOKEN_FLOAT:
@@ -1044,78 +1072,188 @@ Type *atom_to_type(Job *jp, AST_atom *atom) {
     return tp;
 }
 
-void typecheck_expr(Job *jp) {
-    assert(jp->expr && arrlen(jp->expr) > 0);
-    Arr(Value*) value_stack = jp->value_stack;
-    Arr(Type*) type_stack = jp->type_stack;
-    Arr(AST**) expr = jp->expr;
-    u64 pos = jp->expr_pos;
+Value* evaluate_unary(Job *jp, Type *type, Value *a, Token op) {
+    if(a->kind == VALUE_KIND_NIL)
+        return a;
 
-    for(; pos < arrlen(expr); ++pos) {
-        ASTkind kind = expr[pos][0]->kind;
-        if(kind == AST_KIND_atom) {
-            AST_atom *atom = (AST_atom*)expr[pos][0];
-            if(atom->token == TOKEN_IDENT) {
-                Sym *sym = NULL;
-                sym = job_scope_lookup(jp, atom->text);
+    Value *result = NULL;
 
-                if(!sym) sym = global_scope_lookup(atom->text);
-
-                if(!sym) { 
-                    jp->state = JOB_STATE_WAIT;
-                    jp->waiting_on_name = atom->text;
-                    break;
-                }
-
-                arrpush(value_stack, sym->value);
-                arrpush(type_stack, sym->type);
+    switch(op) {
+        default:
+            UNREACHABLE;
+        case '[':
+            if(type->kind == TYPE_KIND_TYPE) {
+                result = job_alloc_value(jp, VALUE_KIND_TYPE);
+                result->val.type = job_alloc_type(jp, TYPE_KIND_SLICE);
+                result->val.type->array.of = a->val.type;
             } else {
-                Value *v = atom_to_value(jp, atom);
-                Type *t = atom_to_type(jp, atom);
-                arrpush(value_stack, v);
-                arrpush(type_stack, t);
+                UNREACHABLE;
             }
-        } else if(kind == AST_KIND_expr) {
-            UNIMPLEMENTED;
-        } else {
-            UNIMPLEMENTED;
-        }
+            break;
+        case '+':
+            result = a;
+            break;
+        case '-':
+            if(type->kind >= TYPE_KIND_FLOAT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = -a->val.floating;
+            } else {
+                result = job_alloc_value(jp, VALUE_KIND_INT);
+                result->val.integer = -a->val.integer;
+            }
+            break;
+        case '!':
+            result = job_alloc_value(jp, VALUE_KIND_INT);
+            result->val.integer = !a->val.integer;
+            break;
+        case '~':
+            result = job_alloc_value(jp, VALUE_KIND_INT);
+            result->val.integer = ~a->val.integer;
+            break;
+        case '*':
+            if(type->kind == TYPE_KIND_TYPE) {
+                result = job_alloc_value(jp, VALUE_KIND_TYPE);
+                result->val.type = job_alloc_type(jp, TYPE_KIND_POINTER);
+                result->val.type->pointer.to = a->val.type;
+            } else {
+                result = builtin_value+VALUE_KIND_NIL;
+            }
+            break;
     }
 
-    jp->value_stack = value_stack;
-    jp->type_stack = type_stack;
-    jp->expr = expr;
-    jp->expr_pos = pos;
+    return result;
 }
 
-void linearize_expr(Job *jp, AST **astpp) {
-    if(!*astpp) return;
+Value* evaluate_binary(Job *jp, Type *type, Value *a, Value *b, Token op) {
+    Value *result = NULL;
 
-    if(astpp[0]->kind == AST_KIND_expr) {
-        AST_expr *expr = (AST_expr*)*astpp;
-        linearize_expr(jp, &expr->left);
-        linearize_expr(jp, &expr->right);
-        arrpush(jp->expr, astpp);
-    } else if(astpp[0]->kind == AST_KIND_atom) {
-        arrpush(jp->expr, astpp);
-    } else {
-        UNIMPLEMENTED;
+    /* NOTE we return nil value when we wish to ignore the evaluation */
+
+    switch(op) {
+        default:
+            UNREACHABLE;
+        case '[':
+            if(type->kind == TYPE_KIND_TYPE) {
+                result = job_alloc_value(jp, VALUE_KIND_TYPE);
+                if(b->kind == VALUE_KIND_TOKEN) {
+                    assert(b->val.token == TOKEN_TWODOT);
+                    result->val.type = job_alloc_type(jp, TYPE_KIND_DYNAMIC_ARRAY);
+                    result->val.type->array.of = a->val.type;
+                } else {
+                    result->val.type = job_alloc_type(jp, TYPE_KIND_ARRAY);
+                    result->val.type->array.of = a->val.type;
+                    result->val.type->array.n = b->val.integer;
+                }
+            } else {
+                result = builtin_value+VALUE_KIND_NIL;
+            }
+            break;
+        case '+': case '-': case '*': case '/':
+            result = builtin_value+VALUE_KIND_NIL;
+            break;
+        case '%': case '&': case '|': case '^': case TOKEN_LSHIFT: case TOKEN_RSHIFT: 
+            result = builtin_value+VALUE_KIND_NIL;
+            break;
+        case TOKEN_AND: case TOKEN_OR:
+            result = builtin_value+VALUE_KIND_NIL;
+            break;
+    }
+
+    return result;
+}
+
+Type* typecheck_unary(Job *jp, Type *a, Token op) {
+    assert(a->kind != TYPE_KIND_VOID);
+
+    switch(op) {
+        default:
+            UNREACHABLE;
+        case '[':
+            if(a->kind != TYPE_KIND_TYPE) {
+                //TODO compiler error messages
+                return builtin_type+TYPE_KIND_VOID;
+            }
+            return builtin_type+TYPE_KIND_TYPE;
+        case '+': case '-':
+            if(a->kind < TYPE_KIND_BOOL && a->kind > TYPE_KIND_F64) {
+                //TODO compiler error messages
+                return builtin_type+TYPE_KIND_VOID;
+            }
+            return a;
+        case '!':
+            if(a->kind < TYPE_KIND_BOOL && a->kind > TYPE_KIND_INT) {
+                //TODO compiler error messages
+                return builtin_type+TYPE_KIND_VOID;
+            }
+            return builtin_type+TYPE_KIND_BOOL;
+        case '~':
+            if(a->kind < TYPE_KIND_BOOL && a->kind > TYPE_KIND_INT) {
+                //TODO compiler error messages
+                return builtin_type+TYPE_KIND_VOID;
+            }
+            return a;
+        case '*':
+            if(a->kind == TYPE_KIND_TYPE) {
+                return builtin_type+TYPE_KIND_TYPE;
+            }
+            if(a->kind != TYPE_KIND_POINTER) {
+                //TODO compiler error messages
+                return builtin_type+TYPE_KIND_VOID;
+            }
+            return a->pointer.to;
     }
 }
 
-Type* typecheck_binary(Type *a, Type *b, Token op) {
+Type* typecheck_binary(Job *jp, Type *a, Type *b, Token op) {
     assert(a->kind != TYPE_KIND_VOID && b->kind != TYPE_KIND_VOID);
 
     switch(op) {
         default:
             UNREACHABLE;
+        case '[':
+            //TODO compiler error messages
+            assert("subscript must coerce to integer value"&& b->kind >= TYPE_KIND_BOOL && b->kind <= TYPE_KIND_INT);
+
+            if(a->kind == TYPE_KIND_TYPE) {
+                return builtin_type+TYPE_KIND_TYPE;
+            } else {
+                assert("only pointers and array can be subscripted"&&a->kind >= TYPE_KIND_ARRAY && a->kind <= TYPE_KIND_POINTER);
+                if(a->kind == TYPE_KIND_POINTER) {
+                    return a->pointer.to;
+                } else {
+                    //TODO array bounds checking
+                    return a->array.of;
+                }
+            }
+            break;
         case '+': case '-': case '*': case '/':
             if(a->kind > b->kind) { // commutative
                 Type *tmp = a;
                 a = b;
                 b = tmp;
             }
-            UNIMPLEMENTED;
+
+            if(a->kind < TYPE_KIND_TYPE && b->kind < TYPE_KIND_TYPE) {
+                if(b->kind > a->kind) {
+                    //TODO compiler error messages
+                    return builtin_type+TYPE_KIND_VOID;
+                }
+
+                if(a->kind >= TYPE_KIND_INT)
+                    return a;
+                if(b->kind == TYPE_KIND_CHAR)
+                    return a;
+                if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
+                    return a;
+
+                //TODO compiler error messages
+                return builtin_type+TYPE_KIND_VOID;
+            } else if(a->kind == TYPE_KIND_TYPE && b->kind == TYPE_KIND_TYPE) {
+                return a;
+            } else {
+                //TODO compiler error messages
+                return builtin_type+TYPE_KIND_VOID;
+            }
             break;
         case '%': case '&': case '|': case '^': case TOKEN_LSHIFT: case TOKEN_RSHIFT: 
             if(a->kind > b->kind) { // commutative
@@ -1123,7 +1261,26 @@ Type* typecheck_binary(Type *a, Type *b, Token op) {
                 a = b;
                 b = tmp;
             }
-            UNIMPLEMENTED;
+
+            if(a->kind < TYPE_KIND_FLOAT && b->kind < TYPE_KIND_FLOAT) {
+                if(b->kind > a->kind) {
+                    //TODO compiler error messages
+                    return builtin_type+TYPE_KIND_VOID;
+                }
+
+                if(a->kind >= TYPE_KIND_INT)
+                    return a;
+                if(b->kind == TYPE_KIND_CHAR)
+                    return a;
+                if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
+                    return a;
+
+                //TODO compiler error messages
+                return builtin_type+TYPE_KIND_VOID;
+            } else {
+                //TODO compiler error messages
+                return builtin_type+TYPE_KIND_VOID;
+            }
             break;
         case '=':
             if(a->kind < TYPE_KIND_TYPE && b->kind < TYPE_KIND_TYPE) {
@@ -1198,6 +1355,106 @@ Type* typecheck_binary(Type *a, Type *b, Token op) {
     }
 }
 
+void typecheck_expr(Job *jp) {
+    assert(jp->expr && arrlen(jp->expr) > 0);
+    Arr(Value*) value_stack = jp->value_stack;
+    Arr(Type*) type_stack = jp->type_stack;
+    Arr(AST**) expr = jp->expr;
+    u64 pos = jp->expr_pos;
+
+    for(; pos < arrlen(expr); ++pos) {
+        ASTkind kind = expr[pos][0]->kind;
+        if(kind == AST_KIND_atom) {
+            AST_atom *atom = (AST_atom*)expr[pos][0];
+            if(atom->token == TOKEN_IDENT) {
+                Sym *sym = NULL;
+                sym = job_scope_lookup(jp, atom->text);
+
+                if(!sym) sym = global_scope_lookup(atom->text);
+
+                if(!sym) { 
+                    jp->state = JOB_STATE_WAIT;
+                    jp->waiting_on_name = atom->text;
+                    break;
+                }
+
+                if(jp->must_const_evaluate && !sym->constant) {
+                    //TODO compiler error messages
+                    assert("expected constant expression"&&0);
+                }
+
+                arrpush(value_stack, sym->value);
+                arrpush(type_stack, sym->type);
+            } else {
+                Value *v = atom_to_value(jp, atom);
+                Type *t = atom_to_type(jp, atom);
+                arrpush(value_stack, v);
+                arrpush(type_stack, t);
+            }
+        } else if(kind == AST_KIND_expr) {
+            AST_expr *node = (AST_expr*)(expr[pos][0]);
+
+            Type *result_type = NULL;
+            Value *result_value = NULL;
+
+            if(node->left && node->right) {
+                Token op = node->token;
+
+                Type *b_type = arrpop(type_stack);
+                Type *a_type = arrpop(type_stack);
+
+                result_type = typecheck_binary(jp, a_type, b_type, op);
+
+                Value *b_value = arrpop(value_stack);
+                Value *a_value = arrpop(value_stack);
+
+                //TODO casts
+                a_value = typecast(jp, result_type, a_type, a_value);
+                b_value = typecast(jp, result_type, b_type, b_value);
+
+                result_value = evaluate_binary(jp, result_type, a_value, b_value, op);
+            } else {
+                Token op = node->token;
+
+                Type *a_type = arrpop(type_stack);
+
+                result_type = typecheck_unary(jp, a_type, op);
+
+                Value *a_value = arrpop(value_stack);
+
+                a_value = typecast(jp, result_type, a_type, a_value);
+
+                result_value = evaluate_unary(jp, result_type, a_value, op);
+            }
+
+            //TODO compiler error messages
+            assert("type checking error"&&result_type->kind != TYPE_KIND_VOID);
+        } else {
+            UNIMPLEMENTED;
+        }
+    }
+
+    jp->value_stack = value_stack;
+    jp->type_stack = type_stack;
+    jp->expr = expr;
+    jp->expr_pos = pos;
+}
+
+void linearize_expr(Job *jp, AST **astpp) {
+    if(!*astpp) return;
+
+    if(astpp[0]->kind == AST_KIND_expr) {
+        AST_expr *expr = (AST_expr*)*astpp;
+        linearize_expr(jp, &expr->left);
+        linearize_expr(jp, &expr->right);
+        arrpush(jp->expr, astpp);
+    } else if(astpp[0]->kind == AST_KIND_atom) {
+        arrpush(jp->expr, astpp);
+    } else {
+        UNIMPLEMENTED;
+    }
+}
+
 void typecheck_vardecl(Job *jp) {
     assert(jp->step > TYPECHECK_STEP_VARDECL_BEGIN && jp->step < TYPECHECK_STEP_VARDECL_END);
     AST_vardecl *ast = (AST_vardecl*)arrlast(jp->tree_pos_stack);
@@ -1255,7 +1512,7 @@ void typecheck_vardecl(Job *jp) {
         //TODO compiler error messages
         assert(t->kind == TYPE_KIND_TYPE&&"result of type bind expression is not a type");
 
-        t = typecheck_binary(bind_type, init_type, '=');
+        t = typecheck_binary(jp, bind_type, init_type, '=');
 
         //TODO compiler error messages
         assert("assignment of incompatible types"&&t->kind > TYPE_KIND_VOID);
@@ -1294,6 +1551,8 @@ char *test_src[] = {
 
 "i int = NUMBER_THIRTEEN;\n"
 "NUMBER_THIRTEEN :: 13;\n",
+
+"i int = 12 + 4;\n",
 };
 
 void print_sym(Sym sym) {
@@ -1309,7 +1568,7 @@ int main(void) {
     pool_init(&global_sym_allocator, sizeof(Sym));
     pool_init(&global_type_allocator, sizeof(Type));
     pool_init(&global_value_allocator, sizeof(Value));
-    job_runner(test_src[1], "not a file");
+    job_runner(test_src[2], "not a file");
     for(int i = 0; i < shlen(global_scope); ++i) {
         if(global_scope[i].value) {
             print_sym(global_scope[i].value[0]);
