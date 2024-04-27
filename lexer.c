@@ -33,19 +33,18 @@
     X(TRUE,                           "true")\
     X(FALSE,                         "false")\
     X(VOID,                           "void")\
-    X(INT,                             "int")\
-    X(UINT,                           "uint")\
-    X(FLOAT,                         "float")\
     X(BOOL,                           "bool")\
     X(CHAR,                           "char")\
-    X(U8,                               "u8")\
-    X(U16,                             "u16")\
-    X(U32,                             "u32")\
-    X(U64,                             "u64")\
     X(S8,                               "s8")\
+    X(U8,                               "u8")\
     X(S16,                             "s16")\
+    X(U16,                             "u16")\
     X(S32,                             "s32")\
+    X(U32,                             "u32")\
     X(S64,                             "s64")\
+    X(U64,                             "u64")\
+    X(INT,                             "int")\
+    X(FLOAT,                         "float")\
     X(F32,                             "f32")\
     X(F64,                             "f64")\
     X(LSHIFT,                           "<<")\
@@ -168,12 +167,8 @@ INLINE Token get_literal(char *s, int n) {
                 return TOKEN_INVALID;
         }
         return TOKEN_BINLIT;
-    } else if(s[0] == '-' || isdigit(s[0])) {
-        if(s[0] == '-') {
-            i = 1;
-        } else {
-            i = 0;
-        }
+    } else if(isdigit(s[0])) {
+        i = 0;
 
         bool has_dot = false;
         bool has_exp = false;
@@ -204,16 +199,8 @@ INLINE Token get_literal(char *s, int n) {
 INLINE float strn_to_float(char *s, int n) {
     float result = 0.0f;
     float multiplier = 0.1f;
-    int sign = 1;
     int decimal_pos = -1;
     int i = 0;
-
-    if(s[i] == '-') {
-        sign = -1;
-        ++i;
-    } else if(s[i] == '+') {
-        ++i;
-    }
 
     for(; i < n && isdigit(s[i]); ++i) {
         result *= 10.0f;
@@ -254,25 +241,18 @@ INLINE float strn_to_float(char *s, int n) {
         }
     }
 
-    return result * sign;
+    return result;
 }
 
 INLINE s64 strn_to_int(char *s, int n) {
     s64 result = 0;
-    s64 sign = 1;
-
-    if(s[0] == '-') {
-        sign = -1;
-        ++s;
-        --n;
-    }
 
     for(int i = 0; i < n; ++i) {
         result *= 10;
         result += s[i] - '0';
     }
 
-    return result * sign;
+    return result;
 }
 
 INLINE u64 strn_to_hex(char *s, int n) {

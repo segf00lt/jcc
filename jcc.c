@@ -15,7 +15,7 @@
 #define JOB_STATES               \
     X(READY)                     \
     X(WAIT)                      \
-    X(BLOCK)                     \
+    X(ERROR)                     \
 
 #define ASTKINDS                 \
     X(vardecl)                   \
@@ -91,11 +91,14 @@
     X(TYPE)                             \
     X(ARRAY)                            \
     X(DYNAMIC_ARRAY)                    \
-    X(SLICE)                            \
+    X(ARRAY_VIEW)                       \
     X(POINTER)                          \
     X(STRUCT)                           \
     X(UNION)                            \
     X(PROC)                             \
+
+
+#define TOKEN_TO_TYPEKIND(t) (Typekind)((t-TOKEN_VOID)+TYPE_KIND_VOID)
 
 
 typedef struct Scope_entry* Scope;
@@ -198,6 +201,7 @@ struct Job {
     Arr(AST**)           expr;
     u64                  expr_pos;
 
+    bool                 is_top_level;
     bool                 must_const_evaluate; /* used when we process const expressions */
     
     Job_memory allocator;
@@ -209,6 +213,7 @@ struct Sym {
     bool constant;
     Type *type;
     Value *value;
+    AST *initializer;
 };
 
 struct AST {
@@ -230,15 +235,17 @@ struct AST_call {
 
 struct AST_expr {
     AST base;
+    Type *type_annotation;
+    Value *value_annotation;
     Token token;
-    struct {
-        AST *left;
-        AST *right;
-    };
+    AST *left;
+    AST *right;
 };
 
 struct AST_atom {
     AST base;
+    Type *type_annotation;
+    Value *value_annotation;
     Token token;
     union {
         s64 integer;
@@ -253,6 +260,7 @@ struct AST_atom {
 struct AST_vardecl {
     AST base;
     char *name;
+    bool is_top_level;
     bool constant;
     AST *type;
     AST *init;
@@ -261,13 +269,14 @@ struct AST_vardecl {
 
 struct Value {
     Valuekind kind;
+    char *name;
     union {
         s64 integer;
         u64 uinteger;
-        f32 floating;
-        f64 dfloating;
         char character;
         bool boolean;
+        f32 floating;
+        f64 dfloating;
         Token token;
         char *str;
         Type *type;
@@ -276,10 +285,6 @@ struct Value {
             char **member_names;
             Value **values;
         } arr_or_struct_lit;
-        struct {
-            char *name;
-            Value *value;
-        } param;
     } val;
 };
 
@@ -320,7 +325,7 @@ struct Type {
         } procedure;
 
         struct { /* static array, dynamic or slice */
-            u64 n;
+            u64 n; /* used for capacity of static array */
             Type *of;
         } array;
 
@@ -349,8 +354,8 @@ void    linearize_expr(Job *jp, AST **astpp);
 Value*  atom_to_value(Job *jp, AST_atom *atom);
 Type*   atom_to_type(Job *jp, AST_atom *atom);
 
-Value*  evaluate_unary(Job *jp, Type *type, Value *a, Token op);
-Value*  evaluate_binary(Job *jp, Type *type, Value *a, Value *b, Token op);
+Value*  evaluate_unary(Job *jp, Value *a, Token op);
+Value*  evaluate_binary(Job *jp, Value *a, Value *b, Token op);
 
 Type*   typecheck_unary(Job *jp, Type *a, Token op);
 Type*   typecheck_binary(Job *jp, Type *a, Type *b, Token op);
@@ -582,6 +587,7 @@ AST* parse_vardecl(Job *jp) {
 
     AST_vardecl *node = (AST_vardecl*)job_alloc_ast(jp, AST_KIND_vardecl);
     node->name = global_alloc_text(lexer->text.s, lexer->text.e);
+    node->is_top_level = jp->is_top_level;
 
     unlex = *lexer;
     t = lex(lexer);
@@ -676,11 +682,11 @@ AST* parse_term(Job *jp) {
         case '[':
             array_type = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
             array_type->token = t;
-            array_type->left = parse_expr(jp);
+            array_type->right = parse_expr(jp);
             t = lex(lexer);
             //TODO compiler error messages
             assert("unbalanced square bracket"&&(t == ']'));
-            array_type->right = parse_term(jp);
+            array_type->left = parse_term(jp);
             node = (AST*)array_type;
             return node;
         case '+': case '-': case '!': case '~': case '&': case '*':
@@ -701,7 +707,7 @@ AST* parse_term(Job *jp) {
             node = (AST*)atom;
             break;
         case TOKEN_VOID:
-        case TOKEN_INT:  case TOKEN_UINT: 
+        case TOKEN_INT:
         case TOKEN_FLOAT:
         case TOKEN_CHAR: 
         case TOKEN_U8:   case TOKEN_U16:  case TOKEN_U32:  case TOKEN_U64:  
@@ -927,7 +933,6 @@ void print_ast_expr(AST *expr, int indent) {
 void job_runner(char *src, char *src_path) {
     Arr(Job) job_queue = NULL;
     Arr(Job) job_queue_next = NULL;
-    Arr(Job) job_queue_wait = NULL;
     Lexer lexer = {0};
     lexer_init(&lexer, src, src_path);
 
@@ -935,6 +940,7 @@ void job_runner(char *src, char *src_path) {
 
     arrpush(job_queue, job_spawn(&id_alloc, PIPE_STAGE_PARSE));
     job_queue[0].lexer = &lexer;
+    job_queue[0].is_top_level = true;
 
     while(arrlen(job_queue) > 0) {
         for(u64 i = 0; i < arrlen(job_queue); ++i) {
@@ -977,7 +983,8 @@ void job_runner(char *src, char *src_path) {
                         typecheck_vardecl(jp);
 
                         if(jp->state == JOB_STATE_WAIT) {
-                            arrpush(job_queue_wait, *jp);
+                            jp->state = JOB_STATE_READY;
+                            arrpush(job_queue_next, *jp);
                             continue;
                         }
 
@@ -1003,17 +1010,10 @@ void job_runner(char *src, char *src_path) {
         job_queue = job_queue_next;
         job_queue_next = tmp;
         arrsetlen(job_queue_next, 0);
-
-        for(int i = 0; i < arrlen(job_queue_wait); ++i) {
-            job_queue_wait[i].state = JOB_STATE_READY;
-            arrpush(job_queue, job_queue_wait[i]);
-        }
-        arrsetlen(job_queue_wait, 0);
     }
 
     arrfree(job_queue);
     arrfree(job_queue_next);
-    if(job_queue_wait) arrfree(job_queue_wait);
 }
 
 Value *atom_to_value(Job *jp, AST_atom *atom) {
@@ -1021,13 +1021,24 @@ Value *atom_to_value(Job *jp, AST_atom *atom) {
     switch(atom->token) {
         default:
             UNIMPLEMENTED;
+        case TOKEN_STRINGLIT:
+            vp = job_alloc_value(jp, VALUE_KIND_STRING);
+            vp->val.str = atom->text;
+            break;
         case TOKEN_TWODOT:
             vp = job_alloc_value(jp, VALUE_KIND_TOKEN);
             vp->val.token = atom->token;
             break;
+        case TOKEN_S8: case TOKEN_S16: case TOKEN_S32: case TOKEN_S64:
+        case TOKEN_U8: case TOKEN_U16: case TOKEN_U32: case TOKEN_U64:
+        case TOKEN_VOID:
+        case TOKEN_BOOL:
+        case TOKEN_CHAR:
+        case TOKEN_FLOAT:
+        case TOKEN_F32: case TOKEN_F64:
         case TOKEN_INT:
             vp = job_alloc_value(jp, VALUE_KIND_TYPE);
-            vp->val.type = job_alloc_type(jp, TYPE_KIND_INT);
+            vp->val.type = job_alloc_type(jp, TOKEN_TO_TYPEKIND(atom->token));
             break;
         case TOKEN_INTLIT:
             vp = job_alloc_value(jp, VALUE_KIND_INT);
@@ -1050,11 +1061,19 @@ Type *atom_to_type(Job *jp, AST_atom *atom) {
     switch(atom->token) {
         default:
             UNIMPLEMENTED;
+        case TOKEN_STRINGLIT:
+            tp = job_alloc_type(jp, TYPE_KIND_ARRAY);
+            tp->array.n = strlen(atom->text);
+            tp->array.of = builtin_type+TYPE_KIND_CHAR;
+            break;
         case TOKEN_TWODOT: /* we do this to make checking array constructors easier */
             tp = job_alloc_type(jp, TYPE_KIND_U64);
             break;
+        case TOKEN_VOID:
+        case TOKEN_BOOL:
         case TOKEN_INT:
-        case TOKEN_UINT:
+        case TOKEN_S8: case TOKEN_S16: case TOKEN_S32: case TOKEN_S64:
+        case TOKEN_U8: case TOKEN_U16: case TOKEN_U32: case TOKEN_U64:
         case TOKEN_FLOAT:
         case TOKEN_CHAR:
             tp = job_alloc_type(jp, TYPE_KIND_TYPE);
@@ -1072,7 +1091,7 @@ Type *atom_to_type(Job *jp, AST_atom *atom) {
     return tp;
 }
 
-Value* evaluate_unary(Job *jp, Type *type, Value *a, Token op) {
+Value* evaluate_unary(Job *jp, Value *a, Token op) {
     if(a->kind == VALUE_KIND_NIL)
         return a;
 
@@ -1082,9 +1101,9 @@ Value* evaluate_unary(Job *jp, Type *type, Value *a, Token op) {
         default:
             UNREACHABLE;
         case '[':
-            if(type->kind == TYPE_KIND_TYPE) {
+            if(a->kind == VALUE_KIND_TYPE) {
                 result = job_alloc_value(jp, VALUE_KIND_TYPE);
-                result->val.type = job_alloc_type(jp, TYPE_KIND_SLICE);
+                result->val.type = job_alloc_type(jp, TYPE_KIND_ARRAY_VIEW);
                 result->val.type->array.of = a->val.type;
             } else {
                 UNREACHABLE;
@@ -1094,7 +1113,7 @@ Value* evaluate_unary(Job *jp, Type *type, Value *a, Token op) {
             result = a;
             break;
         case '-':
-            if(type->kind >= TYPE_KIND_FLOAT) {
+            if(a->kind >= VALUE_KIND_FLOAT) {
                 result = job_alloc_value(jp, VALUE_KIND_FLOAT);
                 result->val.floating = -a->val.floating;
             } else {
@@ -1111,7 +1130,7 @@ Value* evaluate_unary(Job *jp, Type *type, Value *a, Token op) {
             result->val.integer = ~a->val.integer;
             break;
         case '*':
-            if(type->kind == TYPE_KIND_TYPE) {
+            if(a->kind == VALUE_KIND_TYPE) {
                 result = job_alloc_value(jp, VALUE_KIND_TYPE);
                 result->val.type = job_alloc_type(jp, TYPE_KIND_POINTER);
                 result->val.type->pointer.to = a->val.type;
@@ -1124,16 +1143,14 @@ Value* evaluate_unary(Job *jp, Type *type, Value *a, Token op) {
     return result;
 }
 
-Value* evaluate_binary(Job *jp, Type *type, Value *a, Value *b, Token op) {
+Value* evaluate_binary(Job *jp, Value *a, Value *b, Token op) {
     Value *result = NULL;
-
-    /* NOTE we return nil value when we wish to ignore the evaluation */
 
     switch(op) {
         default:
             UNREACHABLE;
         case '[':
-            if(type->kind == TYPE_KIND_TYPE) {
+            if(a->kind == VALUE_KIND_TYPE) {
                 result = job_alloc_value(jp, VALUE_KIND_TYPE);
                 if(b->kind == VALUE_KIND_TOKEN) {
                     assert(b->val.token == TOKEN_TWODOT);
@@ -1148,14 +1165,109 @@ Value* evaluate_binary(Job *jp, Type *type, Value *a, Value *b, Token op) {
                 result = builtin_value+VALUE_KIND_NIL;
             }
             break;
-        case '+': case '-': case '*': case '/':
-            result = builtin_value+VALUE_KIND_NIL;
+        case '-':
+            if(a->kind == VALUE_KIND_NIL || b->kind == VALUE_KIND_NIL) {
+                result = builtin_value+VALUE_KIND_NIL;
+            } else if(a->kind == VALUE_KIND_FLOAT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_INT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = a->val.floating - (float)b->val.integer;
+            } else if(a->kind == VALUE_KIND_FLOAT && b->kind == VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = a->val.floating - (float)b->val.uinteger;
+            } else if(b->kind == VALUE_KIND_FLOAT && a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_INT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = (float)a->val.integer - b->val.floating;
+            } else if(b->kind == VALUE_KIND_FLOAT && a->kind == VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = (float)a->val.uinteger - b->val.floating;
+            } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
+                result->val.uinteger = a->val.uinteger - b->val.uinteger;
+            } else {
+                UNREACHABLE;
+            }
+            break;
+        case '*':
+            if(a->kind == VALUE_KIND_NIL || b->kind == VALUE_KIND_NIL) {
+                result = builtin_value+VALUE_KIND_NIL;
+            } else if(a->kind == VALUE_KIND_FLOAT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_INT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = a->val.floating * (float)b->val.integer;
+            } else if(a->kind == VALUE_KIND_FLOAT && b->kind == VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = a->val.floating * (float)b->val.uinteger;
+            } else if(b->kind == VALUE_KIND_FLOAT && a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_INT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = (float)a->val.integer * b->val.floating;
+            } else if(b->kind == VALUE_KIND_FLOAT && a->kind == VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = (float)a->val.uinteger * b->val.floating;
+            } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
+                result->val.uinteger = a->val.uinteger * b->val.uinteger;
+            } else {
+                UNREACHABLE;
+            }
+            break;
+        case '/':
+            if(a->kind == VALUE_KIND_NIL || b->kind == VALUE_KIND_NIL) {
+                result = builtin_value+VALUE_KIND_NIL;
+            } else if(a->kind == VALUE_KIND_FLOAT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_INT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = a->val.floating / (float)b->val.integer;
+            } else if(a->kind == VALUE_KIND_FLOAT && b->kind == VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = a->val.floating / (float)b->val.uinteger;
+            } else if(b->kind == VALUE_KIND_FLOAT && a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_INT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = (float)a->val.integer / b->val.floating;
+            } else if(b->kind == VALUE_KIND_FLOAT && a->kind == VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = (float)a->val.uinteger / b->val.floating;
+            } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
+                result->val.uinteger = a->val.uinteger / b->val.uinteger;
+            } else {
+                UNREACHABLE;
+            }
+            break;
+        case '+':
+            if(a->kind == VALUE_KIND_NIL || b->kind == VALUE_KIND_NIL) {
+                result = builtin_value+VALUE_KIND_NIL;
+            } else if(a->kind == VALUE_KIND_FLOAT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_INT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = a->val.floating + (float)b->val.integer;
+            } else if(a->kind == VALUE_KIND_FLOAT && b->kind == VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = a->val.floating + (float)b->val.uinteger;
+            } else if(b->kind == VALUE_KIND_FLOAT && a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_INT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = (float)a->val.integer + b->val.floating;
+            } else if(b->kind == VALUE_KIND_FLOAT && a->kind == VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = (float)a->val.uinteger + b->val.floating;
+            } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
+                result->val.uinteger = a->val.uinteger + b->val.uinteger;
+            } else {
+                UNREACHABLE;
+            }
             break;
         case '%': case '&': case '|': case '^': case TOKEN_LSHIFT: case TOKEN_RSHIFT: 
-            result = builtin_value+VALUE_KIND_NIL;
+            if(a->kind == VALUE_KIND_NIL || b->kind == VALUE_KIND_NIL) {
+                result = builtin_value+VALUE_KIND_NIL;
+            } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
+                result->val.uinteger = a->val.uinteger + b->val.uinteger;
+            } else {
+                UNREACHABLE;
+            }
             break;
-        case TOKEN_AND: case TOKEN_OR:
-            result = builtin_value+VALUE_KIND_NIL;
+        case TOKEN_AND:
+            UNIMPLEMENTED;
+            break;
+        case TOKEN_OR:
+            UNIMPLEMENTED;
             break;
     }
 
@@ -1227,18 +1339,13 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, Token op) {
             }
             break;
         case '+': case '-': case '*': case '/':
-            if(a->kind > b->kind) { // commutative
+            if(a->kind < b->kind) { // commutative
                 Type *tmp = a;
                 a = b;
                 b = tmp;
             }
 
             if(a->kind < TYPE_KIND_TYPE && b->kind < TYPE_KIND_TYPE) {
-                if(b->kind > a->kind) {
-                    //TODO compiler error messages
-                    return builtin_type+TYPE_KIND_VOID;
-                }
-
                 if(a->kind >= TYPE_KIND_INT)
                     return a;
                 if(b->kind == TYPE_KIND_CHAR)
@@ -1256,18 +1363,13 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, Token op) {
             }
             break;
         case '%': case '&': case '|': case '^': case TOKEN_LSHIFT: case TOKEN_RSHIFT: 
-            if(a->kind > b->kind) { // commutative
+            if(a->kind < b->kind) { // commutative
                 Type *tmp = a;
                 a = b;
                 b = tmp;
             }
 
             if(a->kind < TYPE_KIND_FLOAT && b->kind < TYPE_KIND_FLOAT) {
-                if(b->kind > a->kind) {
-                    //TODO compiler error messages
-                    return builtin_type+TYPE_KIND_VOID;
-                }
-
                 if(a->kind >= TYPE_KIND_INT)
                     return a;
                 if(b->kind == TYPE_KIND_CHAR)
@@ -1289,10 +1391,12 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, Token op) {
                     return builtin_type+TYPE_KIND_VOID;
                 }
 
+                /* TODO don't allow char or bool to be assigned to float */
+
                 if(a->kind >= TYPE_KIND_INT)
                     return a;
                 if(b->kind == TYPE_KIND_CHAR)
-                    return a;
+                    return builtin_type+TYPE_KIND_VOID;
                 if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
                     return a;
 
@@ -1300,7 +1404,29 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, Token op) {
                 return builtin_type+TYPE_KIND_VOID;
             } else if(a->kind == TYPE_KIND_TYPE && b->kind == TYPE_KIND_TYPE) {
                 return a;
+            } else if(a->kind == TYPE_KIND_ARRAY_VIEW && b->kind >= TYPE_KIND_ARRAY && b->kind <= TYPE_KIND_ARRAY_VIEW) {
+                if(a->array.of != b->array.of) {
+                    //TODO compiler error messages
+                    return builtin_type+TYPE_KIND_VOID;
+                }
+
+                a->array.n = b->array.n;
+
+                return a;
+            } else if((a->kind == TYPE_KIND_ARRAY || a->kind == TYPE_KIND_DYNAMIC_ARRAY) && a->kind == b->kind) {
+                if(a->array.of != b->array.of) {
+                    //TODO compiler error messages
+                    return builtin_type+TYPE_KIND_VOID;
+                }
+
+                if(a->kind == TYPE_KIND_ARRAY && a->array.n < b->array.n) {
+                    //TODO compiler error messages
+                    return builtin_type+TYPE_KIND_VOID;
+                }
+
+                return a;
             } else {
+                //TODO compiler error messages
                 UNIMPLEMENTED;
             }
             break;
@@ -1378,18 +1504,26 @@ void typecheck_expr(Job *jp) {
                     break;
                 }
 
-                if(jp->must_const_evaluate && !sym->constant) {
-                    //TODO compiler error messages
-                    assert("expected constant expression"&&0);
+                atom->type_annotation = sym->type;
+                arrpush(type_stack, sym->type);
+
+                if(sym->constant) {
+                    atom->value_annotation = sym->value;
+                    arrpush(value_stack, sym->value);
+                } else {
+                    atom->value_annotation = builtin_value+VALUE_KIND_NIL;
+                    arrpush(value_stack, builtin_value+VALUE_KIND_NIL);
                 }
 
-                arrpush(value_stack, sym->value);
-                arrpush(type_stack, sym->type);
             } else {
-                Value *v = atom_to_value(jp, atom);
                 Type *t = atom_to_type(jp, atom);
-                arrpush(value_stack, v);
+                Value *v = atom_to_value(jp, atom);
+
+                atom->type_annotation = t;
+                atom->value_annotation = v;
+
                 arrpush(type_stack, t);
+                arrpush(value_stack, v);
             }
         } else if(kind == AST_KIND_expr) {
             AST_expr *node = (AST_expr*)(expr[pos][0]);
@@ -1408,11 +1542,13 @@ void typecheck_expr(Job *jp) {
                 Value *b_value = arrpop(value_stack);
                 Value *a_value = arrpop(value_stack);
 
-                //TODO casts
-                a_value = typecast(jp, result_type, a_type, a_value);
-                b_value = typecast(jp, result_type, b_type, b_value);
+                result_value = evaluate_binary(jp, a_value, b_value, op);
 
-                result_value = evaluate_binary(jp, result_type, a_value, b_value, op);
+                node->type_annotation = result_type;
+                node->value_annotation = result_value;
+
+                arrpush(type_stack, result_type);
+                arrpush(value_stack, result_value);
             } else {
                 Token op = node->token;
 
@@ -1422,9 +1558,13 @@ void typecheck_expr(Job *jp) {
 
                 Value *a_value = arrpop(value_stack);
 
-                a_value = typecast(jp, result_type, a_type, a_value);
+                result_value = evaluate_unary(jp, a_value, op);
 
-                result_value = evaluate_unary(jp, result_type, a_value, op);
+                node->type_annotation = result_type;
+                node->value_annotation = result_value;
+                
+                arrpush(type_stack, result_type);
+                arrpush(value_stack, result_value);
             }
 
             //TODO compiler error messages
@@ -1461,10 +1601,10 @@ void typecheck_vardecl(Job *jp) {
     assert(ast->base.kind == AST_KIND_vardecl);
 
     bool infer_type = (ast->type == NULL);
-    bool is_top_level = (arrlen(jp->tree_pos_stack) == 1);
+    bool initialize = (ast->init != NULL);
+    bool is_top_level = ast->is_top_level;
 
-    if(infer_type)
-        jp->step = TYPECHECK_STEP_VARDECL_INITIALIZE;
+    if(infer_type) jp->step = TYPECHECK_STEP_VARDECL_INITIALIZE;
 
     if(jp->step == TYPECHECK_STEP_VARDECL_BIND_TYPE) {
         if(arrlen(jp->expr) == 0)
@@ -1473,14 +1613,18 @@ void typecheck_vardecl(Job *jp) {
 
         if(jp->state == JOB_STATE_WAIT)
             return;
+        if(jp->state == JOB_STATE_ERROR)
+            UNIMPLEMENTED;
 
-        assert(arrlen(jp->value_stack) == 1 && arrlen(jp->type_stack) == 1);
-
+        arrsetlen(jp->type_stack, 0);
+        arrsetlen(jp->value_stack, 0);
         arrsetlen(jp->expr, 0);
         jp->expr_pos = 0;
 
         jp->step = TYPECHECK_STEP_VARDECL_INITIALIZE;
     }
+
+    if(!initialize) jp->step = TYPECHECK_STEP_VARDECL_END;
 
     if(jp->step == TYPECHECK_STEP_VARDECL_INITIALIZE) {
         if(arrlen(jp->expr) == 0)
@@ -1489,9 +1633,11 @@ void typecheck_vardecl(Job *jp) {
 
         if(jp->state == JOB_STATE_WAIT)
             return;
+        if(jp->state == JOB_STATE_ERROR)
+            UNIMPLEMENTED;
 
-        assert((arrlen(jp->value_stack) == 2 && arrlen(jp->type_stack) == 2) || (arrlen(jp->value_stack) == 1 && arrlen(jp->type_stack) == 1));
-
+        arrsetlen(jp->type_stack, 0);
+        arrsetlen(jp->value_stack, 0);
         arrsetlen(jp->expr, 0);
         jp->expr_pos = 0;
 
@@ -1499,27 +1645,39 @@ void typecheck_vardecl(Job *jp) {
     }
 
     char *name = ast->name;
-    Value *init_value = arrpop(jp->value_stack);
-    Type *init_type = arrpop(jp->type_stack);
     Type *bind_type = NULL;
+    Value *init_value = NULL;
+    Type *init_type = NULL;
 
     if(!infer_type) {
-        assert(arrlen(jp->value_stack) == 1 && arrlen(jp->type_stack) == 1);
-        bind_type = arrpop(jp->value_stack)->val.type;
-
-        Type *t = arrpop(jp->type_stack);
-
         //TODO compiler error messages
-        assert(t->kind == TYPE_KIND_TYPE&&"result of type bind expression is not a type");
-
-        t = typecheck_binary(jp, bind_type, init_type, '=');
-
-        //TODO compiler error messages
-        assert("assignment of incompatible types"&&t->kind > TYPE_KIND_VOID);
-    } else {
-        bind_type = init_type;
+        assert("expected type expression"&&((AST_expr*)ast->type)->value_annotation->kind == VALUE_KIND_TYPE);
+        bind_type = ((AST_expr*)ast->type)->value_annotation->val.type;
     }
 
+    if(initialize) {
+        init_value = ((AST_expr*)ast->init)->value_annotation;
+        init_type = ((AST_expr*)ast->init)->type_annotation;
+
+        if(!infer_type) {
+            Type *t = typecheck_binary(jp, bind_type, init_type, '=');
+
+            if(t->kind >= TYPE_KIND_FLOAT && t->kind <= TYPE_KIND_F64 && init_value->kind == VALUE_KIND_INT) {
+                init_value->kind = VALUE_KIND_FLOAT;
+                init_value->val.floating = (float)init_value->val.integer;
+            } else if(t->kind >= TYPE_KIND_FLOAT && t->kind <= TYPE_KIND_F64 && init_value->kind == VALUE_KIND_UINT) {
+                init_value->kind = VALUE_KIND_FLOAT;
+                init_value->val.floating = (float)init_value->val.uinteger;
+            }
+
+            bind_type = t;
+
+            //TODO compiler error messages
+            assert("assignment of incompatible types"&&t->kind > TYPE_KIND_VOID);
+        } else {
+            bind_type = init_type;
+        }
+    }
 
     if(is_top_level) {
         Sym *ptr = global_scope_lookup(name);
@@ -1533,6 +1691,7 @@ void typecheck_vardecl(Job *jp) {
             .constant = ast->constant,
             .type = bind_type,
             .value = init_value,
+            .initializer = ast->init,
         };
 
         global_scope_enter(sym);
@@ -1544,15 +1703,17 @@ void typecheck_vardecl(Job *jp) {
 
 char *test_src[] = {
 "f := atan2(i * 1.4e3 + 0.3, y + \"this wouldn't pass typechecking lol\", z);\n"
-"pointer_to_array_of_int *[12]int;\n"
 "i int = 12;\n"
 "PI :: 3.14;\n"
 "s := \"hello sailor\";\n",
 
-"i int = NUMBER_THIRTEEN;\n"
+"i int = NUMBER_THIRTEEN * 100;\n"
 "NUMBER_THIRTEEN :: 13;\n",
 
-"i int = 12 + 4;\n",
+"i float = 12.2 - 4;\n",
+"pointer_to_array_of_int *[12]int;\n",
+
+"my_string [2]char = \"abcde\";\n",
 };
 
 void print_sym(Sym sym) {
@@ -1568,7 +1729,7 @@ int main(void) {
     pool_init(&global_sym_allocator, sizeof(Sym));
     pool_init(&global_type_allocator, sizeof(Type));
     pool_init(&global_value_allocator, sizeof(Value));
-    job_runner(test_src[2], "not a file");
+    job_runner(test_src[4], "not a file");
     for(int i = 0; i < shlen(global_scope); ++i) {
         if(global_scope[i].value) {
             print_sym(global_scope[i].value[0]);

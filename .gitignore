@@ -20,3 +20,4 @@ vgcore*
 *.o
 *.a
 a.out
+.project.gf
