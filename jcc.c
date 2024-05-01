@@ -19,9 +19,11 @@
 
 #define ASTKINDS                 \
     X(vardecl)                   \
+    X(expr_list)                 \
     X(expr)                      \
     X(param)                     \
     X(atom)                      \
+    X(array_literal)             \
     X(call)                      \
 
 #define OPERATOR_PREC_TABLE             \
@@ -68,7 +70,8 @@
     X(FLOAT)                            \
     X(TYPE)                             \
     X(STRING)                           \
-    X(ARR_OR_STRUCT_LIT)                \
+    X(ARRAY)                            \
+    X(STRUCT)                           \
     X(PARAM)                            \
     X(TOKEN)                            \
 
@@ -242,6 +245,21 @@ struct AST_expr {
     AST *right;
 };
 
+struct AST_expr_list {
+    AST base;
+    AST *expr;
+    AST_expr_list *next;
+};
+
+struct AST_array_literal {
+    AST base;
+    Type *type_annotation;
+    Value *value_annotation;
+    int n;
+    AST *type;
+    AST_expr_list *elements;
+};
+
 struct AST_atom {
     AST base;
     Type *type_annotation;
@@ -282,9 +300,15 @@ struct Value {
         Type *type;
         struct {
             Type *type;
+            Value **elements;
+            u64 n;
+        } array;
+        struct {
+            Type *type;
             char **member_names;
-            Value **values;
-        } arr_or_struct_lit;
+            Value **members;
+            u64 n;
+        } record;
     } val;
 };
 
@@ -343,6 +367,7 @@ Value*  job_alloc_value(Job *jp, Valuekind kind);
 Type*   job_alloc_type(Job *jp, Typekind kind);
 Sym*    job_alloc_sym(Job *jp);
 char*   job_alloc_str(Job *jp, char *s);
+void*   job_alloc_scratch(Job *jp, size_t bytes);
 
 void    job_ast_allocator_to_save(Job *jp, Pool_save save[AST_KIND_MAX]);
 void    job_ast_allocator_from_save(Job *jp, Pool_save save[AST_KIND_MAX]);
@@ -501,6 +526,10 @@ AST* job_alloc_ast(Job *jp, ASTkind kind) {
     }
     ptr->kind = kind;
     return ptr;
+}
+
+void* job_alloc_scratch(Job *jp, size_t bytes) {
+    return arena_alloc(&jp->allocator.scratch, bytes);
 }
 
 void job_ast_allocator_to_save(Job *jp, Pool_save save[AST_KIND_MAX]) {
@@ -679,6 +708,37 @@ AST* parse_term(Job *jp) {
         default:
             *lexer = unlex;
             return NULL;
+        case '.':
+            t = lex(lexer);
+            //TODO compiler error messages
+            assert("expected '['"&&(t=='['));
+            // NOTE copypasta
+            {
+                AST_array_literal *array_lit = (AST_array_literal*)job_alloc_ast(jp, AST_KIND_array_literal);
+                array_lit->type = node;
+                AST_expr_list head = {0};
+                AST_expr_list *list = &head;
+                int n = 0;
+                while(true) {
+                    list->next = (AST_expr_list*)job_alloc_ast(jp, AST_KIND_expr_list);
+                    list->next->expr = parse_expr(jp);
+                    list = list->next;
+                    ++n;
+                    if(lex(lexer) == ']')
+                        break;
+                }
+                array_lit->n = n;
+                array_lit->elements = head.next;
+                node = (AST*)array_lit;
+
+                if(unary) {
+                    unary->right = node;
+                    node = (AST*)unary;
+                }
+
+                return node;
+            }
+            break;
         case '[':
             array_type = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
             array_type->token = t;
@@ -829,6 +889,31 @@ AST* parse_term(Job *jp) {
             if(t == '.') {
                 t = lex(lexer);
                 //TODO compiler error messages
+                if(t == '[') {
+                    AST_array_literal *array_lit = (AST_array_literal*)job_alloc_ast(jp, AST_KIND_array_literal);
+                    array_lit->type = node;
+                    AST_expr_list head = {0};
+                    AST_expr_list *list = &head;
+                    int n = 0;
+                    while(true) {
+                        list->next = (AST_expr_list*)job_alloc_ast(jp, AST_KIND_expr_list);
+                        list->next->expr = parse_expr(jp);
+                        list = list->next;
+                        ++n;
+                        if(lex(lexer) == ']')
+                            break;
+                    }
+                    array_lit->n = n;
+                    array_lit->elements = head.next;
+                    node = (AST*)array_lit;
+
+                    if(unary) {
+                        unary->right = node;
+                        node = (AST*)unary;
+                    }
+
+                    return node;
+                }
                 assert("expected identifier in struct member reference"&&(t==TOKEN_IDENT));
                 atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
                 atom->token = t;
@@ -1569,6 +1654,52 @@ void typecheck_expr(Job *jp) {
 
             //TODO compiler error messages
             assert("type checking error"&&result_type->kind != TYPE_KIND_VOID);
+        } else if(kind == AST_KIND_array_literal) {
+            AST_array_literal *array_lit = (AST_array_literal*)(expr[pos][0]);
+            Type *array_elem_type = NULL;
+            u64 i = 0;
+
+            if(array_lit->type) {
+                Type *t = arrpop(type_stack);
+                Value *t_value = arrpop(value_stack);
+                //TODO compiler error messages
+                assert(t->kind == TYPE_KIND_TYPE);
+                array_elem_type = t_value->val.type;
+                i = arrlen(type_stack) - array_lit->n;
+            } else {
+                i = arrlen(type_stack) - array_lit->n;
+                array_elem_type = type_stack[i++];
+            }
+
+            for(; i < arrlen(type_stack); ++i) {
+                Type *t = typecheck_binary(jp, array_elem_type, type_stack[i], '=');
+                //TODO here we have to modify the error message so it can be more descriptive, can't be the same
+                //     as an assignment error
+                //TODO compiler error messages
+                assert(t->kind != TYPE_KIND_VOID);
+            }
+            Value **elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n);
+            i = arrlen(value_stack) - array_lit->n;
+            u64 j = 0;
+            while(j < array_lit->n)
+                elements[j++] = value_stack[i++];
+            Value *array_val = job_alloc_value(jp, VALUE_KIND_ARRAY);
+            array_val->val.array.n = array_lit->n;
+            array_val->val.array.type = array_elem_type;
+            array_val->val.array.elements = elements;
+
+            arrsetlen(type_stack, arrlen(type_stack) - array_lit->n);
+            arrsetlen(value_stack, arrlen(value_stack) - array_lit->n);
+
+            Type *array_type = job_alloc_type(jp, TYPE_KIND_ARRAY);
+            array_type->array.of = array_elem_type;
+            array_type->array.n = array_lit->n;
+
+            array_lit->type_annotation = array_type;
+            array_lit->value_annotation = array_val;
+
+            arrpush(type_stack, array_type);
+            arrpush(value_stack, array_val);
         } else {
             UNIMPLEMENTED;
         }
@@ -1589,6 +1720,15 @@ void linearize_expr(Job *jp, AST **astpp) {
         linearize_expr(jp, &expr->right);
         arrpush(jp->expr, astpp);
     } else if(astpp[0]->kind == AST_KIND_atom) {
+        arrpush(jp->expr, astpp);
+    } else if(astpp[0]->kind == AST_KIND_array_literal) {
+        AST_array_literal *array_lit = (AST_array_literal*)(astpp[0]);
+        for(AST_expr_list *list = array_lit->elements; list; list = list->next) {
+            linearize_expr(jp, &list->expr);
+        }
+
+        linearize_expr(jp, &array_lit->type);
+
         arrpush(jp->expr, astpp);
     } else {
         UNIMPLEMENTED;
@@ -1714,6 +1854,10 @@ char *test_src[] = {
 "pointer_to_array_of_int *[12]int;\n",
 
 "my_string [2]char = \"abcde\";\n",
+
+"test_array := int.[1 + 4, 2, 3];\n",
+
+"test_array_2 := .[1 + 4, 2, 3];\n",
 };
 
 void print_sym(Sym sym) {
@@ -1729,7 +1873,7 @@ int main(void) {
     pool_init(&global_sym_allocator, sizeof(Sym));
     pool_init(&global_type_allocator, sizeof(Type));
     pool_init(&global_value_allocator, sizeof(Value));
-    job_runner(test_src[4], "not a file");
+    job_runner(test_src[6], "not a file");
     for(int i = 0; i < shlen(global_scope); ++i) {
         if(global_scope[i].value) {
             print_sym(global_scope[i].value[0]);
