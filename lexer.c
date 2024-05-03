@@ -149,7 +149,8 @@ INLINE void lexer_init(Lexer *l, char *src, char *src_path) {
     l->pos = l->src;
     l->loc.src_path = src_path;
     l->loc.line = l->loc.col = 1;
-    l->loc.text.s = l->loc.text.e = NULL;
+    l->loc.text.s = l->pos;
+    l->loc.text.e = l->pos;
 }
 
 INLINE Token get_literal(char *s, int n) {

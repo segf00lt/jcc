@@ -19,6 +19,7 @@ void arena_init_full(Arena *a, bool cannot_grow, size_t initial_block_bytes);
 void* arena_alloc(Arena *a, size_t bytes);
 Arena_save arena_to_save(Arena *a);
 void arena_from_save(Arena *a, Arena_save save);
+void arena_step_back(Arena *a, size_t bytes);
 void arena_free(Arena *a);
 void arena_destroy(Arena *a);
 
@@ -50,6 +51,7 @@ struct Arena {
     bool cannot_grow;
     uint64_t pos;
     uint64_t cur_block;
+    uint64_t n_blocks;
     size_t *block_sizes;
     uint8_t **blocks;
 };
@@ -64,6 +66,7 @@ INLINE void arena_init_full(Arena *a, bool cannot_grow, size_t initial_block_byt
     a->cannot_grow = cannot_grow;
     a->blocks = malloc(sizeof(uint8_t*));
     a->block_sizes = malloc(sizeof(size_t));
+    a->n_blocks = 1;
     a->blocks[0] = malloc(initial_block_bytes);
     a->block_sizes[0] = initial_block_bytes;
 }
@@ -77,6 +80,7 @@ INLINE void* arena_alloc(Arena *a, size_t bytes) {
         size_t new_block_size = a->block_sizes[a->cur_block] << 1;
         while(new_block_size < bytes) new_block_size <<= 1;
         a->cur_block++;
+        a->n_blocks++;
         a->blocks = realloc(a->blocks, (a->cur_block + 1) * new_block_size);
         a->block_sizes = realloc(a->block_sizes, (a->cur_block + 1) * sizeof(size_t));
         a->blocks[a->cur_block] = malloc(new_block_size);
@@ -85,10 +89,20 @@ INLINE void* arena_alloc(Arena *a, size_t bytes) {
     }
 
     void *ptr = a->blocks[a->cur_block] + a->pos;
-    a->pos++;
+    a->pos += bytes;
     memset(ptr, 0, bytes);
 
     return ptr;
+}
+
+INLINE void arena_step_back(Arena *a, size_t bytes) {
+    while(bytes > a->pos) {
+        bytes -= a->pos;
+        a->cur_block--;
+        a->pos = a->block_sizes[a->cur_block];
+    }
+
+    a->pos -= bytes;
 }
 
 INLINE void arena_free(Arena *a) {
@@ -100,6 +114,7 @@ INLINE void arena_destroy(Arena *a) {
         free(a->blocks[i]);
     free(a->blocks);
     free(a->block_sizes);
+    *a = (Arena){0};
 }
 
 INLINE Arena_save arena_to_save(Arena *a) {
