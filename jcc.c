@@ -415,6 +415,7 @@ Sym*    job_scope_lookup(Job *jp, char *name);
 void    job_scope_enter(Job *jp, Sym sym);
 void    job_report_all_messages(Job *jp);
 void    job_assert(Job *jp, bool condition, Loc_info loc, char *fmt, ...);
+char*   job_type_to_str(Job *jp, Type *t);
 void    linearize_expr(Job *jp, AST **astpp);
 
 Value*  atom_to_value(Job *jp, AST_atom *atom);
@@ -433,6 +434,7 @@ void    typecheck_whilestatement(Job *jp);
 
 int     getprec(Token t);
 
+AST*    parse_procdecl(Job *jp);
 AST*    parse_vardecl(Job *jp);
 AST*    parse_type_expr(Job *jp);
 AST*    parse_expr(Job *jp);
@@ -440,7 +442,7 @@ AST*    parse_expr_increase_prec(Job *jp, AST *left, int min_prec);
 AST*    parse_expr_decrease_prec(Job *jp, int min_prec);
 AST*    parse_term(Job *jp);
 
-void*   global_alloc(size_t bytes);
+void*   global_alloc_scratch(size_t bytes);
 Sym*    global_alloc_sym(void);
 Value*  global_alloc_value(Valuekind kind);
 Type*   global_alloc_type(Typekind kind);
@@ -472,9 +474,29 @@ Type builtin_type[] = {
     { .kind = TYPE_KIND_TYPE,  .bytes = 8 },
 };
 
+char *builtin_type_to_str[] = {
+    "void",
+    "bool",
+    "char",
+    "s8",
+    "u8",
+    "s16",
+    "u16",
+    "s32",
+    "u32",
+    "s64",
+    "u64",
+    "int",
+    "float",
+    "f32",
+    "f64",
+    "Type",
+};
+
 Value builtin_value[] = {
     { .kind = VALUE_KIND_NIL, },
 };
+
 stbds_string_arena global_string_allocator;
 Arena      global_scratch_allocator;
 Pool       global_sym_allocator;
@@ -632,11 +654,21 @@ void global_scope_enter(Sym sym) {
     shput(global_scope, symp->name, symp);
 }
 
+INLINE int count_digits(int n) {
+    int count = 0;
+    while(n > 0) {
+        ++count;
+        n /= 10;
+    }
+    return count;
+}
+
 void job_report_all_messages(Job *jp) {
     for(int i = 0; i < arrlen(jp->messages); ++i) {
         Message msg = jp->messages[i];
-        fprintf(stderr, "\njcc: %i: %i: error: %s\n| %i     %.*s\n",
-                msg.loc.line, msg.loc.col, msg.text, msg.loc.line, (int)(msg.loc.text.e - msg.loc.text.s), msg.loc.text.s);
+        fprintf(stderr, "jcc:%i:%i:error: %s\n| %i    %.*s\n%*s^^^\n",
+                msg.loc.line, msg.loc.col, msg.text, msg.loc.line, (int)(msg.loc.text.e - msg.loc.text.s), msg.loc.text.s,
+                msg.loc.col + 6 + count_digits(msg.loc.line) - 3, "");
     }
 }
 
@@ -675,6 +707,86 @@ void job_assert(Job *jp, bool condition, Loc_info loc, char *fmt, ...) {
     jp->state = JOB_STATE_ERROR;
 }
 
+char* global_type_to_str(Type *t) {
+    Arr(char) tmp_buf = NULL;
+
+    while(true) {
+        if(t->kind >= TYPE_KIND_VOID && t->kind <= TYPE_KIND_TYPE) {
+            char *tstr = builtin_type_to_str[t->kind];
+            char *p = arraddnptr(tmp_buf, strlen(tstr));
+            while(*tstr) {
+                *p = *tstr;
+                ++p;
+                ++tstr;
+            }
+            break;
+        } else if(t->kind >= TYPE_KIND_ARRAY && t->kind <= TYPE_KIND_ARRAY_VIEW) {
+            arrpush(tmp_buf, '[');
+            u64 cur_len = arrlen(tmp_buf);
+            char *p = arraddnptr(tmp_buf, 21);
+            u64 n = stbsp_sprintf(p, "%lu", t->array.n);
+            arrsetlen(tmp_buf, cur_len + n);
+            arrpush(tmp_buf, ']');
+            t = t->array.of;
+        } else if(t->kind == TYPE_KIND_POINTER) {
+            arrpush(tmp_buf, '*');
+            t = t->pointer.to;
+        } else {
+            UNIMPLEMENTED;
+        }
+    }
+
+    arrpush(tmp_buf, 0);
+
+    char *buf = global_alloc_scratch(arrlen(tmp_buf));
+    memcpy(buf, tmp_buf, arrlen(tmp_buf));
+    arrfree(tmp_buf);
+
+    return buf;
+}
+
+char* job_type_to_str(Job *jp, Type *t) {
+    Arr(char) tmp_buf = NULL;
+
+    while(true) {
+        if(t->kind >= TYPE_KIND_VOID && t->kind <= TYPE_KIND_TYPE) {
+            char *tstr = builtin_type_to_str[t->kind];
+            char *p = arraddnptr(tmp_buf, strlen(tstr));
+            while(*tstr) {
+                *p = *tstr;
+                ++p;
+                ++tstr;
+            }
+            break;
+        } else if(t->kind >= TYPE_KIND_ARRAY && t->kind <= TYPE_KIND_ARRAY_VIEW) {
+            arrpush(tmp_buf, '[');
+            u64 cur_len = arrlen(tmp_buf);
+            char *p = arraddnptr(tmp_buf, 21);
+            u64 n = stbsp_sprintf(p, "%lu", t->array.n);
+            arrsetlen(tmp_buf, cur_len + n);
+            arrpush(tmp_buf, ']');
+            t = t->array.of;
+        } else if(t->kind == TYPE_KIND_POINTER) {
+            arrpush(tmp_buf, '*');
+            t = t->pointer.to;
+        } else {
+            UNIMPLEMENTED;
+        }
+    }
+
+    arrpush(tmp_buf, 0);
+
+    char *buf = job_alloc_scratch(jp, arrlen(tmp_buf));
+    memcpy(buf, tmp_buf, arrlen(tmp_buf));
+    arrfree(tmp_buf);
+
+    return buf;
+}
+
+INLINE void* global_alloc_scratch(size_t bytes) {
+    return arena_alloc(&global_scratch_allocator, bytes);
+}
+
 int getprec(Token t) {
     switch(t) {
 #define X(t, prec) case (Token)t: return prec;
@@ -701,6 +813,7 @@ AST* parse_vardecl(Job *jp) {
 
     AST_vardecl *node = (AST_vardecl*)job_alloc_ast(jp, AST_KIND_vardecl);
     node->name = global_alloc_text(lexer->text.s, lexer->text.e);
+    node->base.loc = lexer->loc;
     node->is_top_level = jp->is_top_level;
 
     unlex = *lexer;
@@ -712,7 +825,10 @@ AST* parse_vardecl(Job *jp) {
         t = lex(lexer);
     } else {
         *lexer = unlex;
+        Loc_info type_loc = lexer->loc;
         node->type = parse_expr(jp);
+
+        job_assert(jp, node->type, type_loc, "missing type declarator");
 
         t = lex(lexer);
         if(t == '=' || t == ':') {
@@ -720,7 +836,7 @@ AST* parse_vardecl(Job *jp) {
             node->init = parse_expr(jp);
             t = lex(lexer);
         } else if(t != ';' && t != ')' && t != ',' && t != '{') {
-            assert("expected '=', ':' or separator in vardecl"&&0);
+            job_assert(jp, 0, lexer->loc, "expected '=', ':' or separator in declaration");
         }
     }
 
@@ -1104,6 +1220,8 @@ void job_runner(char *src, char *src_path) {
     job_queue[0].lexer = &lexer;
     job_queue[0].is_top_level = true;
 
+    job_init_allocator_scratch(&job_queue[0]);
+
     while(arrlen(job_queue) > 0) {
         for(u64 i = 0; i < arrlen(job_queue); ++i) {
             Job *jp = job_queue + i;
@@ -1113,12 +1231,20 @@ void job_runner(char *src, char *src_path) {
                     while(true) {
                         job_init_allocator_ast(jp);
 
-                        //TODO loop with all top level parse functions
-                        AST *ast = parse_vardecl(jp);
+                        AST *ast = NULL;
+
+                        if(ast == NULL) ast = parse_vardecl(jp);
+                        //if(ast == NULL) ast = parse_procdecl(jp);
 
                         if(ast == NULL) {
                             Token t = lex(jp->lexer);
                             assert(t == 0);
+
+                            if(jp->state == JOB_STATE_ERROR) {
+                                job_report_all_messages(jp);
+                                arrsetlen(job_queue_next, 0);
+                            }
+
                             job_die(jp);
                             break;
                         }
@@ -1137,28 +1263,29 @@ void job_runner(char *src, char *src_path) {
                     }
                     break;
                 case PIPE_STAGE_TYPECHECK:
-                    printf("hey mum look! I'm typechecking\n");
-                    AST *ast = arrlast(jp->tree_pos_stack);
-                    if(ast->kind == AST_KIND_vardecl) {
-                        if(jp->step == TYPECHECK_STEP_NONE)
-                            jp->step = TYPECHECK_STEP_VARDECL_BEGIN + 1;
-                        typecheck_vardecl(jp);
+                    {
+                        AST *ast = arrlast(jp->tree_pos_stack);
+                        if(ast->kind == AST_KIND_vardecl) {
+                            if(jp->step == TYPECHECK_STEP_NONE)
+                                jp->step = TYPECHECK_STEP_VARDECL_BEGIN + 1;
+                            typecheck_vardecl(jp);
 
-                        if(jp->state == JOB_STATE_WAIT) {
-                            jp->state = JOB_STATE_READY;
-                            arrpush(job_queue_next, *jp);
-                            continue;
+                            if(jp->state == JOB_STATE_WAIT) {
+                                jp->state = JOB_STATE_READY;
+                                arrpush(job_queue_next, *jp);
+                                continue;
+                            }
+
+                            if(jp->state == JOB_STATE_ERROR) {
+                                job_report_all_messages(jp);
+                                job_die(jp);
+                                continue;
+                            }
+
+                        } else if(ast->kind == AST_KIND_procdecl) {
+                        } else {
+                            UNIMPLEMENTED;
                         }
-
-                        if(jp->state == JOB_STATE_ERROR) {
-                            job_report_all_messages(jp);
-                            job_die(jp);
-                            continue;
-                        }
-
-                    } else if(ast->kind == AST_KIND_procdecl) {
-                    } else {
-                        UNIMPLEMENTED;
                     }
                     break;
                 case PIPE_STAGE_SIZE:
@@ -1457,25 +1584,25 @@ Type* typecheck_unary(Job *jp, Type *a, AST_expr *op_ast) {
             UNREACHABLE;
         case '[':
             if(a->kind != TYPE_KIND_TYPE) {
-                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to array declarator", typekind_debug[a->kind]);
+                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to array declarator", job_type_to_str(jp, a));
                 return builtin_type+TYPE_KIND_VOID;
             }
             return builtin_type+TYPE_KIND_TYPE;
         case '+': case '-':
             if(a->kind < TYPE_KIND_BOOL && a->kind > TYPE_KIND_F64) {
-                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to '%c'", typekind_debug[a->kind], (char)op);
+                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             }
             return a;
         case '!':
             if(a->kind < TYPE_KIND_BOOL && a->kind > TYPE_KIND_INT) {
-                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to '%c'", typekind_debug[a->kind], (char)op);
+                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             }
             return builtin_type+TYPE_KIND_BOOL;
         case '~':
             if(a->kind < TYPE_KIND_BOOL && a->kind > TYPE_KIND_INT) {
-                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to '%c'", typekind_debug[a->kind], (char)op);
+                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             }
             return a;
@@ -1484,7 +1611,7 @@ Type* typecheck_unary(Job *jp, Type *a, AST_expr *op_ast) {
                 return builtin_type+TYPE_KIND_TYPE;
             }
             if(a->kind != TYPE_KIND_POINTER) {
-                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to '%c'", typekind_debug[a->kind], (char)op);
+                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             }
             return a->pointer.to;
@@ -1503,7 +1630,7 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
             UNREACHABLE;
         case '[':
             job_assert(jp, b->kind >= TYPE_KIND_BOOL && b->kind <= TYPE_KIND_INT, op_ast->base.loc,
-                    "subscript expression of type '%s' cannot coerce to 'int'", typekind_debug[a->kind]);
+                    "subscript expression of type '%s' cannot coerce to 'int'", job_type_to_str(jp, a));
 
             if(a->kind == TYPE_KIND_TYPE) {
                 return builtin_type+TYPE_KIND_TYPE;
@@ -1533,13 +1660,13 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
                     return a;
 
                 job_assert(jp, 0, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
-                        typekind_debug[a_save->kind], typekind_debug[b_save->kind], (char)op);
+                        job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             } else if(a->kind == TYPE_KIND_TYPE && b->kind == TYPE_KIND_TYPE) {
                 return a;
             } else {
                 job_assert(jp, 0, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
-                        typekind_debug[a_save->kind], typekind_debug[b_save->kind], (char)op);
+                        job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             }
             break;
@@ -1559,11 +1686,11 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
                     return a;
 
                 job_assert(jp, 0, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
-                        typekind_debug[a_save->kind], typekind_debug[b_save->kind], (char)op);
+                        job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             } else {
                 job_assert(jp, 0, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
-                        typekind_debug[a_save->kind], typekind_debug[b_save->kind], (char)op);
+                        job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             }
             break;
@@ -1571,7 +1698,7 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
             if(a->kind < TYPE_KIND_TYPE && b->kind < TYPE_KIND_TYPE) {
                 if(b->kind > a->kind) {
                     job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
-                            typekind_debug[b_save->kind], typekind_debug[a_save->kind]);
+                            job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                     return builtin_type+TYPE_KIND_VOID;
                 }
 
@@ -1579,26 +1706,26 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
                     return a;
                 if(b->kind == TYPE_KIND_CHAR) {
                     job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
-                            typekind_debug[b_save->kind], typekind_debug[a_save->kind]);
+                            job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                     return builtin_type+TYPE_KIND_VOID;
                 }
                 if(b->kind == TYPE_KIND_BOOL) {
                     job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
-                            typekind_debug[b_save->kind], typekind_debug[a_save->kind]);
+                            job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                     return builtin_type+TYPE_KIND_VOID;
                 }
                 if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
                     return a;
 
                 job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
-                        typekind_debug[b_save->kind], typekind_debug[a_save->kind]);
+                        job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                 return builtin_type+TYPE_KIND_VOID;
             } else if(a->kind == TYPE_KIND_TYPE && b->kind == TYPE_KIND_TYPE) {
                 return a;
             } else if(a->kind == TYPE_KIND_ARRAY_VIEW && b->kind >= TYPE_KIND_ARRAY && b->kind <= TYPE_KIND_ARRAY_VIEW) {
                 if(a->array.of != b->array.of) {
                     job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
-                            typekind_debug[b_save->kind], typekind_debug[a_save->kind]);
+                            job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                     return builtin_type+TYPE_KIND_VOID;
                 }
 
@@ -1608,13 +1735,13 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
             } else if((a->kind == TYPE_KIND_ARRAY || a->kind == TYPE_KIND_DYNAMIC_ARRAY) && a->kind == b->kind) {
                 if(a->array.of != b->array.of) {
                     job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
-                            typekind_debug[b_save->kind], typekind_debug[a_save->kind]);
+                            job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                     return builtin_type+TYPE_KIND_VOID;
                 }
 
                 if(a->kind == TYPE_KIND_ARRAY && a->array.n < b->array.n) {
                     job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
-                            typekind_debug[b_save->kind], typekind_debug[a_save->kind]);
+                            job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                     return builtin_type+TYPE_KIND_VOID;
                 }
 
@@ -1627,7 +1754,7 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
             if(a->kind < TYPE_KIND_TYPE && b->kind < TYPE_KIND_TYPE) {
                 if(b->kind > a->kind) {
                     job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
-                            typekind_debug[b_save->kind], typekind_debug[a_save->kind]);
+                            job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                     return builtin_type+TYPE_KIND_VOID;
                 }
 
@@ -1639,11 +1766,11 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
                     return a;
 
                 job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
-                        typekind_debug[b_save->kind], typekind_debug[a_save->kind]);
+                        job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                 return builtin_type+TYPE_KIND_VOID;
             } else {
                 job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
-                        typekind_debug[b_save->kind], typekind_debug[a_save->kind]);
+                        job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                 return builtin_type+TYPE_KIND_VOID;
             }
             break;   
@@ -1654,7 +1781,7 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
             if(a->kind < TYPE_KIND_FLOAT && b->kind < TYPE_KIND_FLOAT) {
                 if(b->kind > a->kind) {
                     job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
-                            typekind_debug[b_save->kind], typekind_debug[a_save->kind]);
+                            job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                     return builtin_type+TYPE_KIND_VOID;
                 }
 
@@ -1666,11 +1793,11 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
                     return a;
 
                 job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
-                        typekind_debug[b_save->kind], typekind_debug[a_save->kind]);
+                        job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                 return builtin_type+TYPE_KIND_VOID;
             } else {
                 job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
-                        typekind_debug[b_save->kind], typekind_debug[a_save->kind]);
+                        job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                 return builtin_type+TYPE_KIND_VOID;
             }
             break;   
@@ -1774,7 +1901,7 @@ void typecheck_expr(Job *jp) {
                 Value *t_value = arrpop(value_stack);
                 job_assert(jp, t->kind == TYPE_KIND_TYPE, array_lit->type->loc,
                         "expected type expression before array literal, not '%s'",
-                        typekind_debug[t->kind]);
+                        job_type_to_str(jp, t));
                 array_elem_type = t_value->val.type;
                 i = arrlen(type_stack) - array_lit->n;
             } else {
@@ -1791,7 +1918,7 @@ void typecheck_expr(Job *jp) {
                 if(t == TYPE_KIND_VOID) {
                     arrsetlen(jp->messages, arrlen(jp->messages) - 1);
                     job_assert(jp, 0, tmp.base.loc, "invalid type '%s' in array literal with element type '%s'",
-                            typekind_debug[type_stack[i]->kind], typekind_debug[array_elem_type->kind]);
+                            job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
                 }
             }
             Value **elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n);
@@ -1969,30 +2096,30 @@ void typecheck_vardecl(Job *jp) {
 
 
 char *test_src[] = {
-"f := atan2(i * 1.4e3 + 0.3, y + \"this wouldn't pass typechecking lol\", z);\n"
-"i int = 12;\n"
-"PI :: 3.14;\n"
-"s := \"hello sailor\";\n",
-
-"i int = NUMBER_THIRTEEN * 100;\n"
-"NUMBER_THIRTEEN :: 13;\n",
-
 "i float = 12.2 - 4;\n",
 "pointer_to_array_of_int *[12]int;\n",
 
 "test_array := int.[1 + 4, 2, 3];\n",
 
-"test_array_2 := .[1 + 4, 2, 3];\n",
-
 "my_string [6]char = \"abcde\";\n"
 "my_string int = 132;\n",
+
+"NUMBER_THIRTEEN : 13;\n"
+"i int = NUMBER_THIRTEEN * 100;\n",
+
+//"f := atan2(i * 1.4e3 + 0.3, y + \"this wouldn't pass typechecking lol\", z);\n"
+"i int = 12;\n"
+"PI :: 3.14;\n"
+"s := \"hello sailor\";\n",
+"test_array_2 := .[1 + 4, 2, 3];\n",
+
 };
 
 void print_sym(Sym sym) {
     printf("name: %s\n", sym.name);
     printf("declared_by: %d\n", sym.declared_by);
     printf("constant: %s\n", sym.constant ? "true" : "false");
-    printf("type: %p\n", (void *)sym.type);
+    printf("type: %s\n", global_type_to_str(sym.type));
     printf("value: %p\n", (void *)sym.value);
 }
 

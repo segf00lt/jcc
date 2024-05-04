@@ -151,6 +151,8 @@ INLINE void lexer_init(Lexer *l, char *src, char *src_path) {
     l->loc.line = l->loc.col = 1;
     l->loc.text.s = l->pos;
     l->loc.text.e = l->pos;
+
+    while(*l->loc.text.e != '\n') ++l->loc.text.e;
 }
 
 INLINE Token get_literal(char *s, int n) {
@@ -328,7 +330,7 @@ INLINE Token lex(Lexer *l) {
 	if(l->pos >= l->loc.text.e) {
 		l->loc.text.s = l->loc.text.e;
 		for(s = l->pos; *s && *s != '\n'; ++s);
-		l->loc.text.e = s + 1;
+		l->loc.text.e = s;
 	}
 
 	tp = l->text.s = l->pos;
