@@ -21,6 +21,7 @@
     X(STRUCT,                       "struct")\
     X(ENUM,                           "enum")\
     X(UNION,                         "union")\
+    X(USING,                         "using")\
     X(FOR,                             "for")\
     X(WHILE,                         "while")\
     X(IF,                               "if")\
@@ -59,8 +60,6 @@
     X(TWODOT,                           "..")\
     X(MINUSMINUS,                       "--")\
     X(PLUSPLUS,                         "++")\
-    X(WALRUS,                           ":=")\
-    X(TWOCOLON,                         "::")\
     X(PLUSEQUAL,                        "+=")\
     X(MINUSEQUAL,                       "-=")\
     X(TIMESEQUAL,                       "*=")\
