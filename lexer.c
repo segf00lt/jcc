@@ -299,6 +299,7 @@ INLINE Token lex(Lexer *l) {
 
 	l->text.s = l->text.e = NULL;
 
+    bool found_newline = false;
 	while(true) {
 		while(isspace(*l->pos)) { /* whitespace */
 			if(*l->pos != '\n') {
@@ -306,7 +307,7 @@ INLINE Token lex(Lexer *l) {
 			} else {
 				l->loc.col = 1;
 				++l->loc.line;
-				l->loc.text.e = l->loc.text.s = l->pos + 1;
+                found_newline = true;
 			}
 
 			++l->pos;
@@ -317,20 +318,30 @@ INLINE Token lex(Lexer *l) {
 			while(*l->pos != '\n')
 				++l->pos;
 			l->loc.col = 1;
+            ++l->loc.line;
+            found_newline = true;
 		} else if(l->pos[0] == '/' && l->pos[1] == '*') { /* multi-line comments */
-			while(!(l->pos[0] == '*' && l->pos[1] == '/'))
-				l->loc.line += (*l->pos++ == '\n');
+			while(!(l->pos[0] == '*' && l->pos[1] == '/')) {
+                if(*l->pos != '\n') {
+                    ++l->loc.col;
+                } else {
+                    l->loc.col = 1;
+                    ++l->loc.line;
+                    found_newline = true;
+                }
+
+                ++l->pos;
+            }
 			l->pos += 2;
 		} else {
 			break;
         }
 	}
 
-	if(l->pos >= l->loc.text.e) {
-		l->loc.text.s = l->loc.text.e;
-		for(s = l->pos; *s && *s != '\n'; ++s);
-		l->loc.text.e = s;
-	}
+    if(found_newline) {
+        l->loc.text.e = l->loc.text.s = l->pos;
+        while(*l->loc.text.e != '\n') ++l->loc.text.e;
+    }
 
 	tp = l->text.s = l->pos;
 

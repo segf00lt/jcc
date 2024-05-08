@@ -240,6 +240,7 @@ struct Job {
     Job_state            state;
     Typecheck_step       step;
 
+    char                *handling_name;
     char                *waiting_on_name;
     u64                  job_id_waiting;
 
@@ -531,6 +532,7 @@ void    job_runner(char *src, char *src_path);
 Sym*    job_scope_lookup(Job *jp, char *name);
 void    job_scope_enter(Job *jp, Sym sym);
 void    job_report_all_messages(Job *jp);
+void    job_report_mutual_dependency(Job *jp1, Job *jp2);
 void    job_assert(Job *jp, bool condition, Loc_info loc, char *fmt, ...);
 char*   job_type_to_str(Job *jp, Type *t);
 void    linearize_expr(Job *jp, AST **astpp);
@@ -796,7 +798,7 @@ void job_report_all_messages(Job *jp) {
         Message msg = jp->messages[i];
         fprintf(stderr, "jcc:%i:%i:error: %s\n| %i    %.*s\n%*s^^^\n",
                 msg.loc.line, msg.loc.col, msg.text, msg.loc.line, (int)(msg.loc.text.e - msg.loc.text.s), msg.loc.text.s,
-                msg.loc.col + 6 + count_digits(msg.loc.line) - 3, "");
+                msg.loc.col + 6 + count_digits(msg.loc.line) - 2, "");
     }
 }
 
@@ -833,6 +835,15 @@ void job_assert(Job *jp, bool condition, Loc_info loc, char *fmt, ...) {
 
     arrpush(jp->messages, msg);
     jp->state = JOB_STATE_ERROR;
+}
+
+void job_report_mutual_dependency(Job *jp1, Job *jp2) {
+    Loc_info loc1 = arrlast(jp1->tree_pos_stack)->loc;
+    Loc_info loc2 = arrlast(jp2->tree_pos_stack)->loc;
+    fprintf(stderr, "jcc:error: mutual dependency between '%s' and '%s'\n| %i    %.*s\n----\n| %i    %.*s\n\n",
+            jp1->handling_name, jp2->handling_name,
+            loc1.line, (int)(loc1.text.e - loc1.text.s), loc1.text.s,
+            loc2.line, (int)(loc2.text.e - loc2.text.s), loc2.text.s);
 }
 
 Arr(char) _type_to_str(Type *t, Arr(char) tmp_buf) {
@@ -927,7 +938,6 @@ int getprec(Token t) {
 AST* parse_procdecl(Job *jp) {
     Lexer *lexer = jp->lexer;
     Lexer unlex = *lexer;
-    Loc_info procdecl_loc = lexer->loc;
 
     Token t = lex(lexer);
 
@@ -939,10 +949,14 @@ AST* parse_procdecl(Job *jp) {
     t = lex(lexer);
     job_assert(jp, t == TOKEN_IDENT, lexer->loc, "expected identifier after 'proc' keyword");
 
+    Loc_info procdecl_loc = lexer->loc;
+    procdecl_loc.col -= (int)(lexer->text.e - lexer->text.s);
+
     AST_procdecl *node = (AST_procdecl*)job_alloc_ast(jp, AST_KIND_procdecl);
     node->name = global_alloc_text(lexer->text.s, lexer->text.e);
     node->base.loc = procdecl_loc;
     node->is_top_level = jp->is_top_level;
+
 
     t = lex(lexer);
     job_assert(jp, t == '(', lexer->loc, "expected '(' to begin parameter list");
@@ -1087,7 +1101,6 @@ AST* parse_vardecl(Job *jp) {
     Lexer *lexer = jp->lexer;
     Lexer lexer_reset = *lexer;
 
-    Loc_info vardecl_loc = lexer->loc;
     Token t = lex(lexer);
 
     if(t != TOKEN_IDENT) {
@@ -1097,6 +1110,8 @@ AST* parse_vardecl(Job *jp) {
 
     char *name_s = lexer->text.s;
     char *name_e = lexer->text.e;
+    Loc_info vardecl_loc = lexer->loc;
+    vardecl_loc.col -= (int)(name_e - name_s);
 
     t = lex(lexer);
 
@@ -1155,7 +1170,6 @@ AST* parse_paramdecl(Job *jp) {
     Lexer *lexer = jp->lexer;
     Lexer lexer_reset = *lexer;
 
-    Loc_info paramdecl_loc = lexer->loc;
     Token t = lex(lexer);
 
     if(t != TOKEN_IDENT) {
@@ -1164,6 +1178,8 @@ AST* parse_paramdecl(Job *jp) {
     }
     char *name_s = lexer->text.s;
     char *name_e = lexer->text.e;
+    Loc_info paramdecl_loc = lexer->loc;
+    paramdecl_loc.col -= (int)(name_e - name_s);
 
     t = lex(lexer);
 
@@ -1572,6 +1588,8 @@ void job_runner(char *src, char *src_path) {
     Lexer lexer = {0};
     lexer_init(&lexer, src, src_path);
 
+    bool all_waiting = false;
+
     Jobid id_alloc = -1;
 
     arrpush(job_queue, job_spawn(&id_alloc, PIPE_STAGE_PARSE));
@@ -1681,10 +1699,61 @@ void job_runner(char *src, char *src_path) {
 
         }
 
+        if(arrlen(job_queue) == arrlen(job_queue_next)) {
+            all_waiting = true;
+            break;
+        }
+
         Arr(Job) tmp = job_queue;
         job_queue = job_queue_next;
         job_queue_next = tmp;
         arrsetlen(job_queue_next, 0);
+    }
+    
+    if(all_waiting) {
+        Dict(char*) name_graph = NULL;
+        Dict(Job*) job_graph = NULL;
+
+        for(u64 i = 0; i < arrlen(job_queue); ++i) {
+            Job *jp = job_queue + i;
+            shput(name_graph, jp->handling_name, jp->waiting_on_name);
+            shput(job_graph, jp->handling_name, jp);
+        }
+
+        char *slow = name_graph[0].key;
+        char *fast = name_graph[0].key;
+        char *save1 = NULL;
+        char *save2 = NULL;
+
+        bool has_cycle = false;
+
+        while(slow && fast && !has_cycle) {
+            slow = shget(name_graph, slow);
+            if(slow == NULL) break;
+
+            save1 = fast;
+            fast = shget(name_graph, fast);
+            if(fast == NULL) break;
+
+            save2 = fast;
+            fast = shget(name_graph, fast);
+            if(fast == NULL) break;
+
+            if(!strcmp(slow, fast))
+                has_cycle = true;
+        }
+
+        if(has_cycle) {
+            Job *jp1 = shget(job_graph, save2);
+            Job *jp2 = shget(job_graph, fast);
+            job_report_mutual_dependency(jp1, jp2);
+        } else {
+            //TODO better error printing
+            //     probably need a custom print function with more formats
+            Job *jp = shget(job_graph, save1);
+            job_assert(jp, 0, arrlast(jp->tree_pos_stack)->loc, "undeclared identifier '%s'", save2);
+            job_report_all_messages(jp);
+        }
     }
 
     arrfree(job_queue);
@@ -2267,9 +2336,6 @@ void typecheck_expr(Job *jp) {
                 arrpush(type_stack, result_type);
                 arrpush(value_stack, result_value);
             }
-
-            //TODO remove
-            if(result_type->kind == TYPE_KIND_VOID) printf("jcc debug: there was a typechecking error");
         } else if(kind == AST_KIND_array_literal) {
             AST_array_literal *array_lit = (AST_array_literal*)(expr[pos][0]);
             Type *array_elem_type = NULL;
@@ -2361,6 +2427,9 @@ void typecheck_procdecl(Job *jp) {
     assert(jp->step > TYPECHECK_STEP_PROCDECL_BEGIN && jp->step < TYPECHECK_STEP_PROCDECL_END);
     AST_procdecl *ast = (AST_procdecl*)arrlast(jp->tree_pos_stack);
     assert(ast->base.kind == AST_KIND_procdecl);
+
+    if(jp->handling_name == NULL)
+        jp->handling_name = ast->name;
 
     bool has_body = (ast->body != NULL);
     bool is_top_level = ast->is_top_level;
@@ -2554,6 +2623,9 @@ void typecheck_vardecl(Job *jp) {
     AST_vardecl *ast = (AST_vardecl*)arrlast(jp->tree_pos_stack);
     assert(ast->base.kind == AST_KIND_vardecl);
 
+    if(jp->handling_name == NULL)
+        jp->handling_name = ast->name;
+
     bool infer_type = (ast->type == NULL);
     bool initialize = (ast->init != NULL);
     bool is_top_level = ast->is_top_level;
@@ -2567,8 +2639,6 @@ void typecheck_vardecl(Job *jp) {
 
         if(jp->state == JOB_STATE_WAIT)
             return;
-        if(jp->state == JOB_STATE_ERROR)
-            UNIMPLEMENTED;
 
         arrsetlen(jp->type_stack, 0);
         arrsetlen(jp->value_stack, 0);
@@ -2587,8 +2657,6 @@ void typecheck_vardecl(Job *jp) {
 
         if(jp->state == JOB_STATE_WAIT)
             return;
-        if(jp->state == JOB_STATE_ERROR)
-            UNIMPLEMENTED;
 
         arrsetlen(jp->type_stack, 0);
         arrsetlen(jp->value_stack, 0);
@@ -2680,10 +2748,9 @@ char *test_src[] = {
 
 //"f := atan2(i * 1.4e3 + 0.3, y + \"this wouldn't pass typechecking lol\", z);\n"
 "i: int = 12;\n"
-"PI :: 3.14;\n"
-"s := \"hello sailor\";\n",
-"test_array_2 := .[1 + 4, 2, 3];\n",
-
+"x : y;\n"
+"s := \"hello sailor\";\n"
+"test_array_2 := .[1 + 4, 2, 3];\n"
 "proc test_proc(i: int, c: [3]*[..]char, f: float = 3.14) int, char;\n",
 };
 //TODO test out of order compile for procedures
@@ -2701,7 +2768,7 @@ int main(void) {
     pool_init(&global_sym_allocator, sizeof(Sym));
     pool_init(&global_type_allocator, sizeof(Type));
     pool_init(&global_value_allocator, sizeof(Value));
-    job_runner(test_src[7], "not a file");
+    job_runner(test_src[5], "not a file");
     for(int i = 0; i < shlen(global_scope); ++i) {
         if(global_scope[i].value) {
             print_sym(global_scope[i].value[0]);
