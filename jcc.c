@@ -1720,39 +1720,41 @@ void job_runner(char *src, char *src_path) {
             shput(job_graph, jp->handling_name, jp);
         }
 
-        char *slow = name_graph[0].key;
-        char *fast = name_graph[0].key;
-        char *save1 = NULL;
-        char *save2 = NULL;
+        for(u64 i = 0; i < shlen(name_graph); ++i) {
+            char *slow = name_graph[i].key;
+            char *fast = name_graph[i].key;
+            char *save1 = NULL;
+            char *save2 = NULL;
 
-        bool has_cycle = false;
+            bool has_cycle = false;
 
-        while(slow && fast && !has_cycle) {
-            slow = shget(name_graph, slow);
-            if(slow == NULL) break;
+            while(slow && fast && !has_cycle) {
+                slow = shget(name_graph, slow);
+                if(slow == NULL) break;
 
-            save1 = fast;
-            fast = shget(name_graph, fast);
-            if(fast == NULL) break;
+                save1 = fast;
+                fast = shget(name_graph, fast);
+                if(fast == NULL) break;
 
-            save2 = fast;
-            fast = shget(name_graph, fast);
-            if(fast == NULL) break;
+                save2 = fast;
+                fast = shget(name_graph, fast);
+                if(fast == NULL) break;
 
-            if(!strcmp(slow, fast))
-                has_cycle = true;
-        }
+                if(!strcmp(slow, fast))
+                    has_cycle = true;
+            }
 
-        if(has_cycle) {
-            Job *jp1 = shget(job_graph, save2);
-            Job *jp2 = shget(job_graph, fast);
-            job_report_mutual_dependency(jp1, jp2);
-        } else {
-            //TODO better error printing
-            //     probably need a custom print function with more formats
-            Job *jp = shget(job_graph, save1);
-            job_assert(jp, 0, arrlast(jp->tree_pos_stack)->loc, "undeclared identifier '%s'", save2);
-            job_report_all_messages(jp);
+            if(has_cycle) {
+                Job *jp1 = shget(job_graph, save2);
+                Job *jp2 = shget(job_graph, fast);
+                job_report_mutual_dependency(jp1, jp2);
+            } else {
+                //TODO better error printing
+                //     probably need a custom print function with more formats
+                Job *jp = shget(job_graph, save1);
+                job_assert(jp, 0, arrlast(jp->tree_pos_stack)->loc, "undeclared identifier '%s'", save2);
+                job_report_all_messages(jp);
+            }
         }
     }
 
@@ -2749,6 +2751,11 @@ char *test_src[] = {
 //"f := atan2(i * 1.4e3 + 0.3, y + \"this wouldn't pass typechecking lol\", z);\n"
 "i: int = 12;\n"
 "x : y;\n"
+"TWO_PI := PI * 2;\n"
+"PI :: TWO_PI / 2;\n"
+"A :: B;\n"
+"B :: C;\n"
+"C :: A;\n"
 "s := \"hello sailor\";\n"
 "test_array_2 := .[1 + 4, 2, 3];\n"
 "proc test_proc(i: int, c: [3]*[..]char, f: float = 3.14) int, char;\n",
