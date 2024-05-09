@@ -290,7 +290,13 @@ struct AST_param {
 
 struct AST_call {
     AST base;
+    Type **type_annotation_list; /* because callables can return multiple values */
+    Value **value_annotation_list;
+    int n_types_returned;
     AST *callee;
+    bool has_named_params;
+    int n_params;
+    int first_named_param;
     AST_param *params;
 };
 
@@ -436,6 +442,9 @@ struct AST_procdecl {
     bool is_top_level;
     AST_paramdecl *params;
     AST_retdecl *rets;
+    bool has_defaults;
+    bool varargs;
+    int first_default_param;
     int n_params;
     int n_rets;
     AST *body;
@@ -492,6 +501,9 @@ struct Type {
 
         struct { /* proc, macro, func */
             char *name;
+            bool varargs;
+            bool has_defaults;
+            u64 first_default_param;
             struct {
                 Type  **types;
                 char  **names;
@@ -731,10 +743,16 @@ void job_ast_allocator_from_save(Job *jp, Pool_save save[AST_KIND_MAX]) {
 }
 
 char* job_alloc_text(Job *jp, char *s, char *e) {
-    char *p = arena_alloc(&jp->allocator.scratch, e - s + 1);
-    for(char *c = s; s <= e; ++c)
+    char *ptr = arena_alloc(&jp->allocator.scratch, (e - s) + 1);
+    char *p = ptr;
+
+    while(s < e) {
         *p = *s;
-    return p;
+        ++p;
+        ++s;
+    }
+
+    return ptr;
 }
 
 Sym* job_alloc_sym(Job *jp) {
@@ -825,7 +843,7 @@ void job_assert(Job *jp, bool condition, Loc_info loc, char *fmt, ...) {
         va_end(args);
     }
 
-    arena_step_back(&jp->allocator.scratch, n - n_written);
+    arena_step_back(&jp->allocator.scratch, n - n_written - 1);
 
     Message msg = {
         .kind = MESSAGE_KIND_ERROR,
@@ -965,10 +983,21 @@ AST* parse_procdecl(Job *jp) {
     AST_paramdecl head;
     AST_paramdecl *param_list = &head;
 
+    bool must_be_default = false;
+
     while(true) {
         param_list->next = (AST_paramdecl*)parse_paramdecl(jp);
         param_list = param_list->next;
         param_list->index = n_params;
+        if(!must_be_default && param_list->init != NULL) {
+            node->first_default_param = n_params;
+            must_be_default = true;
+        }
+
+        if(must_be_default && param_list->init == NULL) {
+            job_assert(jp, 0, param_list->base.loc, "once first default parameter is declared, all parameters must have default values");
+            return (AST*)node;
+        }
         t = lex(lexer);
 
         if(param_list) ++n_params;
@@ -981,6 +1010,7 @@ AST* parse_procdecl(Job *jp) {
 
     job_assert(jp, t == ')', lexer->loc, "expected ')' to end parameter list");
 
+    node->has_defaults = must_be_default;
     node->params = head.next;
     node->n_params = n_params;
 
@@ -1121,10 +1151,7 @@ AST* parse_vardecl(Job *jp) {
     }
 
     AST_vardecl *node = (AST_vardecl*)job_alloc_ast(jp, AST_KIND_vardecl);
-    if(jp->is_top_level)
-        node->name = global_alloc_text(name_s, name_e);
-    else
-        node->name = job_alloc_text(jp, name_s, name_e);
+    node->name = global_alloc_text(name_s, name_e);
     node->base.loc = vardecl_loc;
     node->is_top_level = jp->is_top_level;
 
@@ -1189,10 +1216,7 @@ AST* parse_paramdecl(Job *jp) {
     }
 
     AST_paramdecl *node = (AST_paramdecl*)job_alloc_ast(jp, AST_KIND_paramdecl);
-    if(jp->is_top_level)
-        node->name = global_alloc_text(name_s, name_e);
-    else
-        node->name = job_alloc_text(jp, name_s, name_e);
+    node->name = global_alloc_text(name_s, name_e);
     node->base.loc = paramdecl_loc;
     node->is_top_level = jp->is_top_level;
 
@@ -1388,11 +1412,14 @@ AST* parse_term(Job *jp) {
     if(t == '(') {
         call_op = (AST_call*)job_alloc_ast(jp, AST_KIND_call);
         call_op->callee = node;
+        call_op->base.loc = node->loc;
 
-        AST_param head = {0};
+        AST_param head = { .base = { .kind = AST_KIND_param, .loc = lexer->loc }, };
         AST_param *param = &head;
 
-
+        int n_params = 0;
+        int first_named_param = 0;
+        bool must_be_named = false;
         while(param) {
             /* NOTE don't unlex before entering a loop if you don't unlex inside */
             unlex = *lexer;
@@ -1412,6 +1439,16 @@ AST* parse_term(Job *jp) {
                 }
             } else {
                 *lexer = unlex;
+            }
+
+            if(named_param && !must_be_named) {
+                must_be_named = true;
+                first_named_param = n_params;
+            }
+
+            if(must_be_named) {
+                job_assert(jp, named_param, call_op->base.loc,
+                        "once a named parameter is passed, all subsequent parameters must be named");
             }
 
             expr = (AST_expr*)parse_expr(jp);
@@ -1434,6 +1471,8 @@ AST* parse_term(Job *jp) {
             }
 
             param = param->next;
+
+            ++n_params;
         }
 
         if(head.name == NULL && head.value == NULL) {
@@ -1441,6 +1480,17 @@ AST* parse_term(Job *jp) {
         } else {
             call_op->params = (AST_param*)job_alloc_ast(jp, AST_KIND_param);
             *(call_op->params) = head;
+        }
+
+        call_op->n_params = n_params;
+        call_op->first_named_param = first_named_param;
+        call_op->has_named_params = must_be_named;
+
+        if(must_be_named) {
+            job_assert(jp,
+                    call_op->callee->kind == AST_KIND_atom && ((AST_atom*)call_op->callee)->token == TOKEN_IDENT,
+                    call_op->base.loc,
+                    "named parameters can only be passed to a named procedure");
         }
 
         node = (AST*)call_op;
@@ -1472,7 +1522,7 @@ AST* parse_term(Job *jp) {
                     }
                     array_lit->n = n;
                     array_lit->elements = head.next;
-                    array_lit->base.loc.col = array_type->base.loc.col; /* NOTE hack to correct array literal column location */
+                    array_lit->base.loc.col = array_lit->type->loc.col; /* NOTE hack to correct array literal column location */
                     node = (AST*)array_lit;
 
                     if(unary) {
@@ -2146,14 +2196,15 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
             break;
         case '=':
             if(a->kind < TYPE_KIND_TYPE && b->kind < TYPE_KIND_TYPE) {
+                if(a->kind >= TYPE_KIND_INT || b->kind == TYPE_KIND_INT)
+                    return a;
+
                 if(b->kind > a->kind) {
                     job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
                             job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
                     return builtin_type+TYPE_KIND_VOID;
                 }
 
-                if(a->kind >= TYPE_KIND_INT)
-                    return a;
                 if(b->kind == TYPE_KIND_CHAR) {
                     job_assert(jp, 0, op_ast->base.loc, "invalid assignment of '%s' to '%s'",
                             job_type_to_str(jp, b_save), job_type_to_str(jp, a_save));
@@ -2362,7 +2413,7 @@ void typecheck_expr(Job *jp) {
                     .token = '=',
                 };
                 Type *t = typecheck_binary(jp, array_elem_type, type_stack[i], &tmp);
-                if(t == TYPE_KIND_VOID) {
+                if(t->kind == TYPE_KIND_VOID) {
                     arrsetlen(jp->messages, arrlen(jp->messages) - 1);
                     job_assert(jp, 0, tmp.base.loc, "invalid type '%s' in array literal with element type '%s'",
                             job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
@@ -2390,6 +2441,152 @@ void typecheck_expr(Job *jp) {
 
             arrpush(type_stack, array_type);
             arrpush(value_stack, array_val);
+        } else if(kind == AST_KIND_param) {
+            AST_param *paramp = (AST_param*)expr[pos][0];
+            arrlast(value_stack)->name = paramp->name;
+        } else if(kind == AST_KIND_call) {
+            assert(arrlast(type_stack)->kind == TYPE_KIND_PROC);
+
+            AST_call *callp = (AST_call*)expr[pos][0];
+            Type *proc_type = arrpop(type_stack);
+            arrsetlen(value_stack, arrlen(value_stack) - 1);
+
+            u8 params_passed[proc_type->proc.param.n]; //TODO the language should have variable capacity stack arrays
+            memset(params_passed, 0, proc_type->proc.param.n);
+            for(int i = proc_type->proc.first_default_param; i < proc_type->proc.param.n; ++i)
+                params_passed[i] = 2;
+
+            assert(arrlen(type_stack) == arrlen(value_stack));
+
+            if(proc_type->proc.has_defaults && callp->n_params < proc_type->proc.first_default_param) {
+                job_assert(jp, 0, callp->base.loc, "not enough parameters in call");
+                return;
+            } else if(!proc_type->proc.has_defaults && callp->n_params < proc_type->proc.param.n) {
+                job_assert(jp, 0, callp->base.loc, "not enough parameters in call");
+                return;
+            } else if(!proc_type->proc.varargs && callp->n_params > proc_type->proc.param.n) {
+                job_assert(jp, 0, callp->base.loc, "too many parameters in call");
+                return;
+            }
+            
+            int base_index = arrlen(type_stack) - callp->n_params;
+            int n_positional_params = callp->has_named_params ? callp->first_named_param : callp->n_params;
+
+            for(int i = 0; i < n_positional_params; ++i) {
+                Type *param_type = type_stack[base_index + i];
+                Type *expected_type = proc_type->proc.param.types[i];
+                AST_expr tmp = {
+                    .base = { .kind = AST_KIND_expr, },
+                    .token = '=',
+                };
+
+                Type *t = typecheck_binary(jp, expected_type, param_type, &tmp);
+
+                if(t->kind == TYPE_KIND_VOID) {
+                    arrsetlen(jp->messages, arrlen(jp->messages) - 1);
+                    if(proc_type->proc.name == NULL) {
+                        job_assert(jp, 0, callp->base.loc,
+                                "invalid type '%s' passed to parameter of type '%s' in call to a '%s'",
+                                job_type_to_str(jp, param_type),
+                                job_type_to_str(jp, expected_type),
+                                job_type_to_str(jp, proc_type));
+                    } else {
+                        job_assert(jp, 0, callp->base.loc,
+                                "invalid type '%s' passed to parameter '%s' in call to '%s', expected type '%s'",
+                                job_type_to_str(jp, param_type),
+                                proc_type->proc.param.names[i],
+                                proc_type->proc.name,
+                                job_type_to_str(jp, expected_type));
+                    }
+                }
+
+                params_passed[i] = 1;
+            }
+
+            if(callp->has_named_params) {
+                assert(proc_type->proc.name != NULL);
+
+                base_index = arrlen(type_stack) - callp->n_params + callp->first_named_param;
+
+                for(int i = 0; i < callp->n_params; ++i) {
+                    Type *param_type = type_stack[base_index + i];
+                    char *param_name = value_stack[base_index + i]->name;
+
+                    Type *expected_type = NULL;
+                    int param_index = 0;
+                    for(; param_index < proc_type->proc.param.n; ++param_index) {
+                        if(!strcmp(param_name, proc_type->proc.param.names[param_index])) {
+                            expected_type = proc_type->proc.param.types[param_index];
+                            break;
+                        }
+                    }
+
+                    if(expected_type == NULL) {
+                        //TODO custom formatting for printing locations
+                        job_assert(jp, 0, callp->base.loc,
+                                "procedure '%s' has no parameter named '%s'", proc_type->proc.name, param_name);
+                    }
+
+                    if(params_passed[param_index] == 1) {
+                        //TODO custom formatting for printing locations
+                        job_assert(jp, 0, callp->base.loc,
+                                "parameter '%s' was passed multiple times", param_name);
+                    }
+
+                    params_passed[param_index] = 1;
+
+                    AST_expr tmp = {
+                        .base = { .kind = AST_KIND_expr, },
+                        .token = '=',
+                    };
+
+                    Type *t = typecheck_binary(jp, expected_type, param_type, &tmp);
+
+                    if(t->kind == TYPE_KIND_VOID) {
+                        arrsetlen(jp->messages, arrlen(jp->messages) - 1);
+                        job_assert(jp, 0, callp->base.loc,
+                                "invalid type '%s' passed to parameter '%s' in call to '%s', expected type '%s'",
+                                job_type_to_str(jp, param_type),
+                                proc_type->proc.param.names[param_index],
+                                proc_type->proc.name,
+                                job_type_to_str(jp, expected_type));
+                    }
+                }
+            }
+
+            for(int i = 0; i < proc_type->proc.param.n; ++i) {
+                if(params_passed[i] == 0) {
+                    assert(proc_type->proc.name != NULL);
+                    job_assert(jp, 0, callp->base.loc,
+                            "parameter '%s' was never passed",
+                            proc_type->proc.param.names[i]);
+                    break;
+                }
+            }
+
+            if(jp->state == JOB_STATE_ERROR) return;
+
+            bool is_call_expr = (callp->n_params == arrlen(type_stack) && pos == arrlen(expr) - 1);
+
+            arrsetlen(type_stack, arrlen(type_stack) - callp->n_params);
+            arrsetlen(value_stack, arrlen(value_stack) - callp->n_params);
+
+            if(is_call_expr) { /* if the only thing in the expr is a call */
+                assert(arrlen(type_stack) == 0);
+
+                callp->n_types_returned = proc_type->proc.ret.n;
+                callp->type_annotation_list = job_alloc_scratch(jp, sizeof(Type*) * proc_type->proc.ret.n);
+                for(int i = 0; i < proc_type->proc.ret.n; ++i) {
+                    callp->type_annotation_list[i] = proc_type->proc.ret.types[i];
+                }
+            } else {
+                callp->n_types_returned = 1;
+                callp->type_annotation_list = job_alloc_scratch(jp, sizeof(Type*));
+                callp->type_annotation_list[0] = proc_type->proc.ret.types[0];
+                arrpush(type_stack, proc_type->proc.ret.types[0]);
+                arrpush(value_stack, builtin_value+VALUE_KIND_NIL);
+            }
+
         } else {
             UNIMPLEMENTED;
         }
@@ -2419,6 +2616,16 @@ void linearize_expr(Job *jp, AST **astpp) {
 
         linearize_expr(jp, &array_lit->type);
 
+        arrpush(jp->expr, astpp);
+    } else if(astpp[0]->kind == AST_KIND_param) {
+        AST_param *param = (AST_param*)(astpp[0]);
+        linearize_expr(jp, &param->value);
+        arrpush(jp->expr, astpp);
+        linearize_expr(jp, (AST**)&param->next);
+    } else if(astpp[0]->kind == AST_KIND_call) {
+        AST_call *callp = (AST_call*)(astpp[0]);
+        linearize_expr(jp, (AST**)&callp->params);
+        linearize_expr(jp, &callp->callee);
         arrpush(jp->expr, astpp);
     } else {
         UNIMPLEMENTED;
@@ -2512,6 +2719,9 @@ void typecheck_procdecl(Job *jp) {
                 init_value = ((AST_expr*)(p->init))->value_annotation;
                 init_type = ((AST_expr*)(p->init))->type_annotation;
 
+                job_assert(jp, init_value->kind != VALUE_KIND_NIL, p->base.loc,
+                        "parameter default values must evaluate at compile time");
+
                 AST_expr tmp = {
                     .base = { .kind = AST_KIND_expr, .loc = p->base.loc },
                     .token = '=',
@@ -2601,6 +2811,10 @@ void typecheck_procdecl(Job *jp) {
         return;
     }
 
+    proc_type->proc.first_default_param = ast->first_default_param;
+    proc_type->proc.varargs = ast->varargs;
+    proc_type->proc.has_defaults = ast->has_defaults;
+
     Sym proc_sym = {
         .name = ast->name,
         .loc = ast->base.loc,
@@ -2683,8 +2897,13 @@ void typecheck_vardecl(Job *jp) {
     }
 
     if(initialize) {
-        init_value = ((AST_expr*)ast->init)->value_annotation;
-        init_type = ((AST_expr*)ast->init)->type_annotation;
+        //TODO multi-identifier declarations so we can initialize from a function that returns multiple values
+        if(ast->init->kind == AST_KIND_call) {
+            init_type = ((AST_call*)ast->init)->type_annotation_list[0];
+        } else {
+            init_value = ((AST_expr*)ast->init)->value_annotation;
+            init_type = ((AST_expr*)ast->init)->type_annotation;
+        }
 
         if(!infer_type) {
             AST_expr tmp = {
@@ -2759,6 +2978,13 @@ char *test_src[] = {
 "s := \"hello sailor\";\n"
 "test_array_2 := .[1 + 4, 2, 3];\n"
 "proc test_proc(i: int, c: [3]*[..]char, f: float = 3.14) int, char;\n",
+
+"two := add_one(x=1);\n"
+"proc add_one(x: int) int;\n"
+,
+"proc my_proc(a: int, b: u64, s: [3]char = \"abc\") int, *void;\n"
+"n := my_proc(10, 0xff, \"123\");\n"
+,
 };
 //TODO test out of order compile for procedures
 
@@ -2775,7 +3001,7 @@ int main(void) {
     pool_init(&global_sym_allocator, sizeof(Sym));
     pool_init(&global_type_allocator, sizeof(Type));
     pool_init(&global_value_allocator, sizeof(Value));
-    job_runner(test_src[5], "not a file");
+    job_runner(test_src[7], "not a file");
     for(int i = 0; i < shlen(global_scope); ++i) {
         if(global_scope[i].value) {
             print_sym(global_scope[i].value[0]);

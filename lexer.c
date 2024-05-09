@@ -22,6 +22,7 @@
     X(ENUM,                           "enum")\
     X(UNION,                         "union")\
     X(USING,                         "using")\
+    X(DEFER,                         "defer")\
     X(FOR,                             "for")\
     X(WHILE,                         "while")\
     X(IF,                               "if")\
