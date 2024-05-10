@@ -49,6 +49,7 @@
     X(FLOAT,                         "float")\
     X(F32,                             "f32")\
     X(F64,                             "f64")\
+    X(CAST,                           "cast")\
     X(LSHIFT,                           "<<")\
     X(RSHIFT,                           ">>")\
     X(LESSEQUAL,                        "<=")\
@@ -116,7 +117,8 @@ typedef struct Lexer {
             char *s, *e;
         } text;
     };
-	Loc_info loc;
+    Loc_info loc;
+	Loc_info loc_next;
 } Lexer;
 
 
@@ -153,6 +155,8 @@ INLINE void lexer_init(Lexer *l, char *src, char *src_path) {
     l->loc.text.e = l->pos;
 
     while(*l->loc.text.e != '\n') ++l->loc.text.e;
+
+    l->loc_next = l->loc;
 }
 
 INLINE Token get_literal(char *s, int n) {
@@ -300,14 +304,16 @@ INLINE Token lex(Lexer *l) {
 
 	l->text.s = l->text.e = NULL;
 
+    l->loc = l->loc_next;
+
     bool found_newline = false;
 	while(true) {
 		while(isspace(*l->pos)) { /* whitespace */
 			if(*l->pos != '\n') {
-				++l->loc.col;
+				++l->loc_next.col;
 			} else {
-				l->loc.col = 1;
-				++l->loc.line;
+				l->loc_next.col = 1;
+				++l->loc_next.line;
                 found_newline = true;
 			}
 
@@ -318,16 +324,16 @@ INLINE Token lex(Lexer *l) {
 		if((l->pos[0] == '/' && l->pos[1] == '/')) {
 			while(*l->pos != '\n')
 				++l->pos;
-			l->loc.col = 1;
-            ++l->loc.line;
+			l->loc_next.col = 1;
+            ++l->loc_next.line;
             found_newline = true;
 		} else if(l->pos[0] == '/' && l->pos[1] == '*') { /* multi-line comments */
 			while(!(l->pos[0] == '*' && l->pos[1] == '/')) {
                 if(*l->pos != '\n') {
-                    ++l->loc.col;
+                    ++l->loc_next.col;
                 } else {
-                    l->loc.col = 1;
-                    ++l->loc.line;
+                    l->loc_next.col = 1;
+                    ++l->loc_next.line;
                     found_newline = true;
                 }
 
@@ -340,8 +346,8 @@ INLINE Token lex(Lexer *l) {
 	}
 
     if(found_newline) {
-        l->loc.text.e = l->loc.text.s = l->pos;
-        while(*l->loc.text.e != '\n') ++l->loc.text.e;
+        l->loc_next.text.e = l->loc_next.text.s = l->pos;
+        while(*l->loc_next.text.e != '\n') ++l->loc_next.text.e;
     }
 
 	tp = l->text.s = l->pos;
@@ -357,7 +363,7 @@ INLINE Token lex(Lexer *l) {
         if(strstr(tp, token_keywords[i]) == tp && !IS_KEYWORD_CHAR(tp[keyword_length])) {
             l->text.e = tp + keyword_length;
             l->pos += keyword_length;
-            l->loc.col += keyword_length;
+            l->loc_next.col += keyword_length;
             return (l->token = KEYWORD_TO_TOKEN(i));
         }
     }
@@ -378,7 +384,7 @@ INLINE Token lex(Lexer *l) {
         l->text.e = s;
         l->text.s = tp + 1;
         l->pos = s + 1;
-        l->loc.col += l->pos - tp;
+        l->loc_next.col += l->pos - tp;
         return (l->token = TOKEN_STRINGLIT);
     } else {
         /* find possible end of number */
@@ -412,7 +418,7 @@ INLINE Token lex(Lexer *l) {
 
         if(l->token != TOKEN_INVALID) {
             l->pos += n;
-            l->loc.col += n;
+            l->loc_next.col += n;
             return l->token;
         }
     }
@@ -422,7 +428,7 @@ INLINE Token lex(Lexer *l) {
         if(!(*l->pos ^ token_chars[i])) {
             l->token = *l->pos;
             ++l->pos;
-            ++l->loc.col;
+            ++l->loc_next.col;
             return l->token;
         }
 
@@ -432,7 +438,7 @@ INLINE Token lex(Lexer *l) {
         l->text.s = tp;
         l->text.e = s;
         l->pos = s;
-        l->loc.col += s - tp;
+        l->loc_next.col += s - tp;
         return (l->token = TOKEN_IDENT);
     }
 

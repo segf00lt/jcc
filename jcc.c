@@ -816,7 +816,7 @@ void job_report_all_messages(Job *jp) {
         Message msg = jp->messages[i];
         fprintf(stderr, "jcc:%i:%i:error: %s\n| %i    %.*s\n%*s^^^\n",
                 msg.loc.line, msg.loc.col, msg.text, msg.loc.line, (int)(msg.loc.text.e - msg.loc.text.s), msg.loc.text.s,
-                msg.loc.col + 6 + count_digits(msg.loc.line) - 2, "");
+                msg.loc.col + 6 + count_digits(msg.loc.line), "");
     }
 }
 
@@ -1306,9 +1306,22 @@ AST* parse_term(Job *jp) {
         default:
             *lexer = unlex;
             return NULL;
+        case TOKEN_CAST:
+            t = lex(lexer);
+            job_assert(jp, t == '(', lexer->loc, "expected '(' after 'cast' keyword");
+            if(jp->state == JOB_STATE_ERROR) return NULL;
+            unary = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+            unary->token = TOKEN_CAST;
+            unary->left = parse_expr(jp);
+            t = lex(lexer);
+            job_assert(jp, t == ')', lexer->loc, "unbalanced parenthesis");
+            if(jp->state == JOB_STATE_ERROR) return NULL;
+            node = parse_term(jp);
+            break;
         case '.':
             t = lex(lexer);
             job_assert(jp, t=='[', lexer->loc, "expected '[' after '.' to mark beginning of array literal");
+            if(jp->state == JOB_STATE_ERROR) return NULL;
             // NOTE copypasta
             {
                 AST_array_literal *array_lit = (AST_array_literal*)job_alloc_ast(jp, AST_KIND_array_literal);
@@ -1949,6 +1962,9 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
     switch(op) {
         default:
             UNREACHABLE;
+        case TOKEN_CAST:
+            result = builtin_value+VALUE_KIND_NIL;
+            break;
         case '[':
             if(a->kind == VALUE_KIND_TYPE) {
                 result = job_alloc_value(jp, VALUE_KIND_TYPE);
@@ -2125,8 +2141,10 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
         default:
             UNREACHABLE;
         case '=':
-            if(a->kind < TYPE_KIND_TYPE && b->kind < TYPE_KIND_TYPE) {
-                if(a->kind >= TYPE_KIND_INT || b->kind == TYPE_KIND_INT)
+            if(a->kind < TYPE_KIND_TYPE) {
+                if(b->kind >= TYPE_KIND_TYPE) return builtin_type+TYPE_KIND_VOID;
+
+                if(a->kind >= TYPE_KIND_INT || b->kind == TYPE_KIND_INT) /* integers are very flexible */
                     return a;
 
                 if(b->kind > a->kind) return builtin_type+TYPE_KIND_VOID;
@@ -2139,15 +2157,16 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
                 return builtin_type+TYPE_KIND_VOID;
             } else if(a->kind == TYPE_KIND_TYPE && b->kind == TYPE_KIND_TYPE) {
                 return a;
-            } else if(a->kind == TYPE_KIND_ARRAY_VIEW && b->kind >= TYPE_KIND_ARRAY && b->kind <= TYPE_KIND_ARRAY_VIEW) {
+            } else if(a->kind == TYPE_KIND_ARRAY_VIEW) {
+                if( b->kind < TYPE_KIND_ARRAY || b->kind > TYPE_KIND_ARRAY_VIEW) return builtin_type+TYPE_KIND_VOID;
                 if(a->array.of != b->array.of) return builtin_type+TYPE_KIND_VOID;
 
                 a->array.n = b->array.n;
 
                 return a;
-            } else if((a->kind == TYPE_KIND_ARRAY || a->kind == TYPE_KIND_DYNAMIC_ARRAY) && a->kind == b->kind) {
+            } else if(a->kind == TYPE_KIND_ARRAY || a->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+                if(a->kind != b->kind) return builtin_type+TYPE_KIND_VOID;
                 if(a->array.of != b->array.of) return builtin_type+TYPE_KIND_VOID;
-
                 if(a->kind == TYPE_KIND_ARRAY && a->array.n < b->array.n) return builtin_type+TYPE_KIND_VOID;
 
                 return a;
@@ -2193,6 +2212,26 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
     }
 }
 
+bool type_compare(Type *a, Type *b) {
+    if(a->kind != b->kind) return false;
+
+    if(a->kind <= TYPE_KIND_TYPE) return true;
+
+    if(a->kind == TYPE_KIND_POINTER)
+        return type_compare(a->pointer.to, b->pointer.to);
+
+    if(a->kind >= TYPE_KIND_ARRAY && a->kind <= TYPE_KIND_ARRAY_VIEW)
+        return (a->array.n == b->array.n) && type_compare(a->array.of, b->array.of);
+
+    if(a->kind == TYPE_KIND_PROC) {
+        UNIMPLEMENTED;
+    }
+
+    UNIMPLEMENTED;
+
+    return false;
+}
+
 Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
     assert(a->kind != TYPE_KIND_VOID && b->kind != TYPE_KIND_VOID);
 
@@ -2203,6 +2242,32 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
     switch(op) {
         default:
             UNREACHABLE;
+        case TOKEN_CAST:
+            if(type_compare(a, b))
+                return a;
+
+            if(a->kind > TYPE_KIND_VOID && a->kind < TYPE_KIND_TYPE) {
+                if((b->kind > TYPE_KIND_VOID && b->kind < TYPE_KIND_TYPE) ||
+                   (b->kind == TYPE_KIND_POINTER && b->pointer.to->kind == TYPE_KIND_VOID))
+                    return a;
+                job_assert(jp, 0, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
+                return builtin_type+TYPE_KIND_VOID;
+            } else if(a->kind == TYPE_KIND_ARRAY_VIEW) {
+                if((b->kind >= TYPE_KIND_ARRAY && b->kind <= TYPE_KIND_ARRAY_VIEW && type_compare(a->array.of, b->array.of)) ||
+                   (b->kind == TYPE_KIND_POINTER && b->pointer.to->kind == TYPE_KIND_VOID))
+                    return a;
+                job_assert(jp, 0, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
+                return builtin_type+TYPE_KIND_VOID;
+            } else if(a->kind == TYPE_KIND_POINTER) {
+                if(a->pointer.to->kind == TYPE_KIND_VOID || b->pointer.to->kind == TYPE_KIND_VOID)
+                    return a;
+                job_assert(jp, 0, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
+                return builtin_type+TYPE_KIND_VOID;
+            } else {
+                job_assert(jp, 0, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
+                return builtin_type+TYPE_KIND_VOID;
+            }
+            break;
         case '[':
             job_assert(jp, b->kind >= TYPE_KIND_BOOL && b->kind <= TYPE_KIND_INT, op_ast->base.loc,
                     "subscript expression of type '%s' cannot coerce to 'int'", job_type_to_str(jp, a));
@@ -2218,6 +2283,7 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
                     return a->array.of;
                 }
             }
+            return builtin_type+TYPE_KIND_VOID;
             break;
         case '+': case '-': case '*': case '/':
             if(a->kind < b->kind) { // commutative
@@ -2329,10 +2395,16 @@ void typecheck_expr(Job *jp) {
                 Type *b_type = arrpop(type_stack);
                 Type *a_type = arrpop(type_stack);
 
-                result_type = typecheck_binary(jp, a_type, b_type, node);
-
                 Value *b_value = arrpop(value_stack);
                 Value *a_value = arrpop(value_stack);
+
+                if(node->token == TOKEN_CAST) {
+                    job_assert(jp, a_type->kind == TYPE_KIND_TYPE, node->base.loc, "cast must be to type");
+                    if(jp->state != JOB_STATE_ERROR)
+                        a_type = a_value->val.type;
+                }
+
+                result_type = typecheck_binary(jp, a_type, b_type, node);
 
                 result_value = evaluate_binary(jp, a_value, b_value, node);
 
@@ -2356,6 +2428,9 @@ void typecheck_expr(Job *jp) {
                 arrpush(type_stack, result_type);
                 arrpush(value_stack, result_value);
             }
+
+            if(jp->state == JOB_STATE_ERROR)
+                break;
         } else if(kind == AST_KIND_array_literal) {
             AST_array_literal *array_lit = (AST_array_literal*)(expr[pos][0]);
             Type *array_elem_type = NULL;
@@ -2377,7 +2452,7 @@ void typecheck_expr(Job *jp) {
             for(; i < arrlen(type_stack); ++i) {
                 Type *t = typecheck_assign(jp, array_elem_type, type_stack[i], '=');
                 job_assert(jp, t->kind != TYPE_KIND_VOID, array_lit->base.loc,
-                        "invalid type '%s' in array literal with element type '%s'",
+                        "cannot have element of type '%s' in array literal with element type '%s'",
                         job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
             }
             Value **elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n);
@@ -2442,16 +2517,14 @@ void typecheck_expr(Job *jp) {
                 if(t->kind == TYPE_KIND_VOID) {
                     if(proc_type->proc.name == NULL) {
                         job_assert(jp, 0, callp->base.loc,
-                                "invalid type '%s' passed to parameter of type '%s' in call to a '%s'",
+                                "cannot pass type '%s' to parameter of type '%s'",
                                 job_type_to_str(jp, param_type),
-                                job_type_to_str(jp, expected_type),
-                                job_type_to_str(jp, proc_type));
+                                job_type_to_str(jp, expected_type));
                     } else {
                         job_assert(jp, 0, callp->base.loc,
-                                "invalid type '%s' passed to parameter '%s' in call to '%s', expected type '%s'",
+                                "cannot pass type '%s' to parameter '%s' of type '%s'",
                                 job_type_to_str(jp, param_type),
                                 proc_type->proc.param.names[i],
-                                proc_type->proc.name,
                                 job_type_to_str(jp, expected_type));
                     }
                 }
@@ -2929,11 +3002,10 @@ char *test_src[] = {
 "two := add_one(x=1);\n"
 "proc add_one(x: int) int;\n"
 ,
-"proc my_proc(a: int, b: u64, s: [3]char = \"abc\") int, *void;\n"
-"n := my_proc(10, 0xff, \"123\");\n"
+"n := my_proc(10, cast(u64)cast(*void)cast(*int)cast(*void)12, cast(*void)cast([3]char)\"123\");\n"
+"proc my_proc(a: int, b: u64, s: []char = \"abc\") int, *void;\n"
 ,
 };
-//TODO test out of order compile for procedures
 
 void print_sym(Sym sym) {
     printf("name: %s\n", sym.name);
