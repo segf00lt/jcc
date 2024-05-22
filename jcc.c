@@ -2062,11 +2062,74 @@ void job_runner(char *src, char *src_path) {
                                 arrpush(jp->tree_pos_stack, ast_if->branch);
 
                             arrpush(jp->tree_pos_stack, ast_if->body);
+                        } else if(ast->kind == AST_KIND_whilestatement) {
+                            //TODO test
+                            AST_whilestatement *ast_while = (AST_whilestatement*)ast;
+
+                            if(arrlen(jp->expr) == 0)
+                                linearize_expr(jp, &ast_while->condition);
+                            typecheck_expr(jp);
+
+                            if(jp->state == JOB_STATE_WAIT) {
+                                arrpush(job_queue_next, *jp);
+                                arrlast(job_queue_next).state = JOB_STATE_READY;
+                                ++i;
+                                continue;
+                            }
+
+                            if(jp->state == JOB_STATE_ERROR) {
+                                job_report_all_messages(jp);
+                                job_die(jp);
+                                ++i;
+                                continue;
+                            }
+
+                            arrsetlen(jp->type_stack, 0);
+                            arrsetlen(jp->value_stack, 0);
+                            arrsetlen(jp->expr, 0);
+                            jp->expr_pos = 0;
+
+                            arrlast(jp->tree_pos_stack) = ast_while->next;
+                            arrpush(jp->tree_pos_stack, ast_while->body);
+
+                        } else if(ast->kind == AST_KIND_forstatement) {
+                            //TODO test
+                            AST_forstatement *ast_for = (AST_forstatement*)ast;
+
+                            if(arrlen(jp->expr) == 0)
+                                linearize_expr(jp, &ast_for->expr);
+                            typecheck_expr(jp);
+
+                            if(jp->state == JOB_STATE_WAIT) {
+                                arrpush(job_queue_next, *jp);
+                                arrlast(job_queue_next).state = JOB_STATE_READY;
+                                ++i;
+                                continue;
+                            }
+
+                            if(jp->state == JOB_STATE_ERROR) {
+                                job_report_all_messages(jp);
+                                job_die(jp);
+                                ++i;
+                                continue;
+                            }
+
+                            arrsetlen(jp->type_stack, 0);
+                            arrsetlen(jp->value_stack, 0);
+                            arrsetlen(jp->expr, 0);
+                            jp->expr_pos = 0;
+
+                            arrlast(jp->tree_pos_stack) = ast_for->next;
+                            arrpush(jp->tree_pos_stack, ast_for->body);
+
+                        } else if(ast->kind == AST_KIND_switchstatement) {
+                            UNIMPLEMENTED;
                         } else if(ast->kind == AST_KIND_continuestatement) {
                             arrlast(jp->tree_pos_stack) = ((AST_continuestatement*)ast)->next;
                         } else if(ast->kind == AST_KIND_breakstatement) {
                             arrlast(jp->tree_pos_stack) = ((AST_breakstatement*)ast)->next;
                         } else if(ast->kind == AST_KIND_statement) {
+                            //TODO test
                             AST_statement *ast_statement = (AST_statement*)ast;
                             if(jp->step == TYPECHECK_STEP_NONE)
                                 jp->step = TYPECHECK_STEP_STATEMENT_LEFT;
