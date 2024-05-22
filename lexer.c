@@ -23,12 +23,12 @@
     X(UNION,                         "union")\
     X(USING,                         "using")\
     X(DEFER,                         "defer")\
-    X(FOR,                             "for")\
-    X(WHILE,                         "while")\
     X(IF,                               "if")\
     X(ELSE,                           "else")\
     X(SWITCH,                       "switch")\
     X(CASE,                           "case")\
+    X(FOR,                             "for")\
+    X(WHILE,                         "while")\
     X(CONTINUE,                   "continue")\
     X(BREAK,                         "break")\
     X(RETURN,                       "return")\
@@ -206,7 +206,6 @@ INLINE Token get_literal(char *s, int n) {
 INLINE float strn_to_float(char *s, int n) {
     float result = 0.0f;
     float multiplier = 0.1f;
-    int decimal_pos = -1;
     int i = 0;
 
     for(; i < n && isdigit(s[i]); ++i) {
@@ -215,11 +214,9 @@ INLINE float strn_to_float(char *s, int n) {
     }
 
     if(s[i] == '.') {
-        decimal_pos = 0;
         for(++i; i < n && isdigit(s[i]); ++i) {
             result += (s[i] - '0') * multiplier;
             multiplier *= 0.1f;
-            ++decimal_pos;
         }
     }
 
@@ -304,8 +301,6 @@ INLINE Token lex(Lexer *l) {
 
 	l->text.s = l->text.e = NULL;
 
-    l->loc = l->loc_next;
-
     bool found_newline = false;
 	while(true) {
 		while(isspace(*l->pos)) { /* whitespace */
@@ -345,17 +340,20 @@ INLINE Token lex(Lexer *l) {
         }
 	}
 
+    if(*l->pos == 0) {
+        return 0;
+    }
+
     if(found_newline) {
         l->loc_next.text.e = l->loc_next.text.s = l->pos;
         while(*l->loc_next.text.e != '\n') ++l->loc_next.text.e;
     }
 
+    l->loc = l->loc_next;
+
 	tp = l->text.s = l->pos;
 
     l->token = TOKEN_INVALID;
-
-    if(*l->pos == 0)
-        return 0;
 
     /* keywords */
     for(int i = TOKEN_KEYWORD + 1 - TOKEN_INVALID; i < STATICARRLEN(token_keywords); ++i) {

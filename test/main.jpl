@@ -1,0 +1,22 @@
+proc test_proc(i: int, s: []char) bool {
+    if s[i] {
+        return cast(bool)0;
+    } else if s[i+1] {
+        return cast(bool)1;
+    }
+
+    return cast(bool)2;
+}
+
+/*
+i: int = 12;
+x : y;
+TWO_PI := PI * 2;
+PI :: TWO_PI / 2;
+A :: B;
+B :: C;
+C :: A;
+s := "hello sailor";
+test_array_2 := .[1 + 4, 2, 3];
+proc test_proc(i: int, c: [3]*[..]char, f: float = 3.14) int, char;
+*/
