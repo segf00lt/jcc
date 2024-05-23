@@ -274,8 +274,6 @@ struct Job {
     Arr(AST**)           expr_list;
     u64                  expr_list_pos;
 
-    bool                 is_top_level;
-
     Arr(Message)         messages;
     
     Job_memory allocator;
@@ -361,7 +359,6 @@ struct AST_vardecl {
     AST base;
     AST *next;
     char *name;
-    bool is_top_level;
     bool constant;
     bool uninitialized;
     AST *type;
@@ -372,7 +369,6 @@ struct AST_paramdecl {
     AST base;
     AST_paramdecl *next;
     char *name;
-    bool is_top_level;
     AST *type;
     AST *init;
     int index;
@@ -464,7 +460,6 @@ struct AST_procdecl {
     AST base;
     AST *next;
     char *name;
-    bool is_top_level;
     AST_paramdecl *params;
     AST_retdecl *rets;
     bool type_checked_body;
@@ -613,6 +608,8 @@ Sym*    global_scope_lookup(char *name);
 void    global_scope_enter(Sym sym);
 
 char*   global_strdup(char *s);
+
+void    print_sym(Sym sym);
 
 /* globals */
 
@@ -809,13 +806,12 @@ Sym* job_scope_lookup(Job *jp, char *name) {
 }
 
 void job_scope_enter(Job *jp, Sym sym) {
-    int last = arrlen(jp->scopes) - 1;
-    assert(last >= 0);
-    Scope scope = jp->scopes[last];
+    assert(arrlen(jp->scopes) > 0);
+    Scope scope = arrlast(jp->scopes);
     Sym *symp = job_alloc_sym(jp);
     *symp = sym;
     shput(scope, sym.name, symp);
-    jp->scopes[last] = scope;
+    arrlast(jp->scopes) = scope;
 }
 
 Sym* global_scope_lookup(char *name) {
@@ -999,8 +995,6 @@ AST* parse_procdecl(Job *jp) {
     AST_procdecl *node = (AST_procdecl*)job_alloc_ast(jp, AST_KIND_procdecl);
     node->name = global_alloc_text(lexer->text.s, lexer->text.e);
     node->base.loc = procdecl_loc;
-    node->is_top_level = jp->is_top_level;
-
 
     t = lex(lexer);
     job_assert(jp, t == '(', lexer->loc, "expected '(' to begin parameter list");
@@ -1289,6 +1283,10 @@ AST* parse_statement(Job *jp) {
         if(t == '=' || (t >= TOKEN_PLUSEQUAL && t <= TOKEN_TILDEEQUAL)) {
             node->assign_op = t;
             node->right = parse_expr(jp);
+            t = lex(lexer);
+        } else if(t == TOKEN_PLUSPLUS || t == TOKEN_MINUSMINUS) {
+            node->assign_op = t;
+            t = lex(lexer);
         }
 
         job_assert(jp, t == ';', lexer->loc, "expected ';' at end of statement");
@@ -1383,7 +1381,6 @@ AST* parse_vardecl(Job *jp) {
     AST_vardecl *node = (AST_vardecl*)job_alloc_ast(jp, AST_KIND_vardecl);
     node->name = global_alloc_text(name_s, name_e);
     node->base.loc = vardecl_loc;
-    node->is_top_level = jp->is_top_level;
 
     Lexer unlex = *lexer;
 
@@ -1447,7 +1444,6 @@ AST* parse_paramdecl(Job *jp) {
     AST_paramdecl *node = (AST_paramdecl*)job_alloc_ast(jp, AST_KIND_paramdecl);
     node->name = global_alloc_text(name_s, name_e);
     node->base.loc = paramdecl_loc;
-    node->is_top_level = jp->is_top_level;
 
     Lexer unlex = *lexer;
 
@@ -1887,7 +1883,6 @@ void job_runner(char *src, char *src_path) {
 
     arrpush(job_queue, job_spawn(&id_alloc, PIPE_STAGE_PARSE));
     job_queue[0].lexer = &lexer;
-    job_queue[0].is_top_level = true;
 
     job_init_allocator_scratch(&job_queue[0]);
 
@@ -1962,6 +1957,7 @@ void job_runner(char *src, char *src_path) {
                         assert(ast->kind >= AST_KIND_ifstatement && ast->kind <= AST_KIND_procdecl);
 
                         if(ast->kind == AST_KIND_vardecl) {
+                            AST_vardecl *ast_vardecl = (AST_vardecl*)ast;
                             if(jp->step == TYPECHECK_STEP_NONE)
                                 jp->step = TYPECHECK_STEP_VARDECL_BEGIN + 1;
                             typecheck_vardecl(jp);
@@ -1979,6 +1975,10 @@ void job_runner(char *src, char *src_path) {
                                 ++i;
                                 continue;
                             }
+
+                            arrlast(jp->tree_pos_stack) = ast_vardecl->next;
+
+                            jp->step = TYPECHECK_STEP_NONE;
                         } else if(ast->kind == AST_KIND_procdecl) {
                             AST_procdecl *ast_procdecl = (AST_procdecl*)ast;
 
@@ -2022,6 +2022,12 @@ void job_runner(char *src, char *src_path) {
 
                             if(ast_block->visited) {
                                 Scope s = arrpop(jp->scopes);
+                                for(int i = 0; i < shlen(s); ++i) {
+                                    if(s[i].value) {
+                                        print_sym(s[i].value[0]);
+                                        printf("\n");
+                                    }
+                                }
                                 shfree(s);
                                 arrlast(jp->tree_pos_stack) = ast_block->next;
                                 continue;
@@ -2062,8 +2068,10 @@ void job_runner(char *src, char *src_path) {
                                 arrpush(jp->tree_pos_stack, ast_if->branch);
 
                             arrpush(jp->tree_pos_stack, ast_if->body);
+
+                            jp->step = TYPECHECK_STEP_NONE;
+
                         } else if(ast->kind == AST_KIND_whilestatement) {
-                            //TODO test
                             AST_whilestatement *ast_while = (AST_whilestatement*)ast;
 
                             if(arrlen(jp->expr) == 0)
@@ -2092,13 +2100,20 @@ void job_runner(char *src, char *src_path) {
                             arrlast(jp->tree_pos_stack) = ast_while->next;
                             arrpush(jp->tree_pos_stack, ast_while->body);
 
+                            jp->step = TYPECHECK_STEP_NONE;
+
                         } else if(ast->kind == AST_KIND_forstatement) {
-                            //TODO test
                             AST_forstatement *ast_for = (AST_forstatement*)ast;
 
                             if(arrlen(jp->expr) == 0)
                                 linearize_expr(jp, &ast_for->expr);
                             typecheck_expr(jp);
+                            Type *for_expr_type = ((AST_expr*)(ast_for->expr))->type_annotation;
+                            job_assert(jp,
+                                    for_expr_type->kind >= TYPE_KIND_ARRAY && for_expr_type->kind <= TYPE_KIND_ARRAY_VIEW,
+                                    ast_for->expr->loc,
+                                    "for loop expression must evaluate to array type not '%s'",
+                                    job_type_to_str(jp, for_expr_type));
 
                             if(jp->state == JOB_STATE_WAIT) {
                                 arrpush(job_queue_next, *jp);
@@ -2122,6 +2137,8 @@ void job_runner(char *src, char *src_path) {
                             arrlast(jp->tree_pos_stack) = ast_for->next;
                             arrpush(jp->tree_pos_stack, ast_for->body);
 
+                            jp->step = TYPECHECK_STEP_NONE;
+
                         } else if(ast->kind == AST_KIND_switchstatement) {
                             UNIMPLEMENTED;
                         } else if(ast->kind == AST_KIND_continuestatement) {
@@ -2129,7 +2146,6 @@ void job_runner(char *src, char *src_path) {
                         } else if(ast->kind == AST_KIND_breakstatement) {
                             arrlast(jp->tree_pos_stack) = ((AST_breakstatement*)ast)->next;
                         } else if(ast->kind == AST_KIND_statement) {
-                            //TODO test
                             AST_statement *ast_statement = (AST_statement*)ast;
                             if(jp->step == TYPECHECK_STEP_NONE)
                                 jp->step = TYPECHECK_STEP_STATEMENT_LEFT;
@@ -2163,11 +2179,32 @@ void job_runner(char *src, char *src_path) {
                                 jp->step = TYPECHECK_STEP_STATEMENT_RIGHT;
                             }
 
-                            if(ast_statement->right == NULL) {
+                            if(ast_statement->right == NULL && ast_statement->assign_op == 0) {
                                 jp->step = TYPECHECK_STEP_NONE;
                                 arrlast(jp->tree_pos_stack) = ast_statement->next;
                                 continue;
+                            } else if(ast_statement->assign_op == TOKEN_PLUSPLUS || ast_statement->assign_op == TOKEN_MINUSMINUS) {
+                                assert(ast_statement->right == NULL);
+
+                                Type *type_left = ((AST_expr*)(ast_statement->left))->type_annotation;
+                                Type *type_right = builtin_type+TYPE_KIND_INT;
+
+                                Type *t = typecheck_assign(jp, type_left, type_right, ast_statement->assign_op);
+
+                                job_assert(jp, t->kind != TYPE_KIND_VOID, ast_statement->base.loc,
+                                        "invalid assignment of '%s' to '%s'",
+                                        job_type_to_str(jp, type_right),
+                                        job_type_to_str(jp, type_left));
+
+                                jp->step = TYPECHECK_STEP_NONE;
+
+                                arrlast(jp->tree_pos_stack) = ast_statement->next;
+                                continue;
                             }
+
+                            assert(ast_statement->right != NULL);
+                            assert(ast_statement->assign_op == '=' ||
+                                  (ast_statement->assign_op >= TOKEN_PLUSEQUAL && ast_statement->assign_op <= TOKEN_TILDEEQUAL));
 
                             if(jp->step == TYPECHECK_STEP_STATEMENT_RIGHT) {
                                 if(arrlen(jp->expr) == 0)
@@ -2208,6 +2245,7 @@ void job_runner(char *src, char *src_path) {
                                     job_type_to_str(jp, type_left));
 
                             jp->step = TYPECHECK_STEP_NONE;
+
                             arrlast(jp->tree_pos_stack) = ast_statement->next;
 
                         } else if(ast->kind == AST_KIND_returnstatement) {
@@ -2286,6 +2324,8 @@ void job_runner(char *src, char *src_path) {
                             }
 
                             arrlast(jp->tree_pos_stack) = ast_return->next;
+
+                            jp->step = TYPECHECK_STEP_NONE;
                         } else {
                             UNIMPLEMENTED;
                         }
@@ -2703,6 +2743,27 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
     switch(op) {
         default:
             UNREACHABLE;
+        case TOKEN_PLUSPLUS: case TOKEN_MINUSMINUS:
+            if(a->kind < TYPE_KIND_TYPE && b->kind < TYPE_KIND_TYPE) {
+                if(b->kind >= TYPE_KIND_TYPE) return builtin_type+TYPE_KIND_VOID;
+
+                if(a->kind == b->kind) return a;
+
+                if(a->kind >= TYPE_KIND_INT || b->kind == TYPE_KIND_INT) /* integers are very flexible */
+                    return a;
+
+                if(b->kind > a->kind) return builtin_type+TYPE_KIND_VOID;
+                if(b->kind == TYPE_KIND_CHAR) return builtin_type+TYPE_KIND_VOID;
+                if(b->kind == TYPE_KIND_BOOL) return builtin_type+TYPE_KIND_VOID;
+
+                if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
+                    return a;
+
+                return builtin_type+TYPE_KIND_VOID;
+            } else {
+                return builtin_type+TYPE_KIND_VOID;
+            }
+            break;
         case '=':
             if(a->kind < TYPE_KIND_TYPE) {
                 if(b->kind >= TYPE_KIND_TYPE) return builtin_type+TYPE_KIND_VOID;
@@ -2741,12 +2802,17 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
             break;
         case TOKEN_PLUSEQUAL: case TOKEN_MINUSEQUAL: case TOKEN_TIMESEQUAL: case TOKEN_DIVEQUAL:
             if(a->kind < TYPE_KIND_TYPE && b->kind < TYPE_KIND_TYPE) {
-                if(b->kind > a->kind) return builtin_type+TYPE_KIND_VOID;
+                if(b->kind >= TYPE_KIND_TYPE) return builtin_type+TYPE_KIND_VOID;
 
-                if(a->kind >= TYPE_KIND_INT)
+                if(a->kind == b->kind) return a;
+
+                if(a->kind >= TYPE_KIND_INT || b->kind == TYPE_KIND_INT) /* integers are very flexible */
                     return a;
-                if(b->kind <= TYPE_KIND_CHAR)
-                    return a;
+
+                if(b->kind > a->kind) return builtin_type+TYPE_KIND_VOID;
+                if(b->kind == TYPE_KIND_CHAR) return builtin_type+TYPE_KIND_VOID;
+                if(b->kind == TYPE_KIND_BOOL) return builtin_type+TYPE_KIND_VOID;
+
                 if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
                     return a;
 
@@ -2754,18 +2820,23 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
             } else {
                 return builtin_type+TYPE_KIND_VOID;
             }
-            break;   
+            break;
         case TOKEN_MODEQUAL: case TOKEN_ANDEQUAL: case TOKEN_OREQUAL:
         case TOKEN_LSHIFTEQUAL:
         case TOKEN_RSHIFTEQUAL:
         case TOKEN_XOREQUAL: case TOKEN_TILDEEQUAL:
             if(a->kind < TYPE_KIND_FLOAT && b->kind < TYPE_KIND_FLOAT) {
-                if(b->kind > a->kind) return builtin_type+TYPE_KIND_VOID;
+                if(b->kind >= TYPE_KIND_TYPE) return builtin_type+TYPE_KIND_VOID;
 
-                if(a->kind >= TYPE_KIND_INT)
+                if(a->kind == b->kind) return a;
+
+                if(a->kind >= TYPE_KIND_INT || b->kind == TYPE_KIND_INT) /* integers are very flexible */
                     return a;
-                if(b->kind == TYPE_KIND_CHAR)
-                    return a;
+
+                if(b->kind > a->kind) return builtin_type+TYPE_KIND_VOID;
+                if(b->kind == TYPE_KIND_CHAR) return builtin_type+TYPE_KIND_VOID;
+                if(b->kind == TYPE_KIND_BOOL) return builtin_type+TYPE_KIND_VOID;
+
                 if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
                     return a;
 
@@ -2773,7 +2844,7 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
             } else {
                 return builtin_type+TYPE_KIND_VOID;
             }
-            break;   
+            break;
     }
 }
 
@@ -3228,7 +3299,7 @@ void typecheck_procdecl(Job *jp) {
     if(jp->handling_name == NULL)
         jp->handling_name = ast->name;
 
-    bool is_top_level = ast->is_top_level;
+    bool is_top_level = (arrlen(jp->tree_pos_stack) == 1);
 
     if(jp->proc_type == NULL) {
         jp->proc_type = job_alloc_type(jp, TYPE_KIND_PROC);
@@ -3389,15 +3460,6 @@ void typecheck_procdecl(Job *jp) {
         }
     }
 
-    Sym *ptr = is_top_level ? global_scope_lookup(ast->name) : job_scope_lookup(jp, ast->name);
-
-    if(ptr) {
-        job_assert(jp, 0, ast->base.loc,
-                "multiple declaration of identifier '%s', previously declared at line %i",
-                ast->name, ptr->loc.line);
-        return;
-    }
-
     proc_type->proc.first_default_param = ast->first_default_param;
     proc_type->proc.varargs = ast->varargs;
     proc_type->proc.has_defaults = ast->has_defaults;
@@ -3410,12 +3472,21 @@ void typecheck_procdecl(Job *jp) {
         .type = proc_type,
     };
 
+    Sym *ptr = is_top_level ? global_scope_lookup(ast->name) : job_scope_lookup(jp, ast->name);
+
+    if(ptr) {
+        job_assert(jp, 0, ast->base.loc,
+                "multiple declaration of identifier '%s', previously declared at line %i",
+                ast->name, ptr->loc.line);
+        return;
+    }
+
     jp->cur_proc_type = proc_type;
 
     if(is_top_level) {
         global_scope_enter(proc_sym);
     } else {
-        UNIMPLEMENTED;
+        job_scope_enter(jp, proc_sym);
     }
 }
 
@@ -3429,7 +3500,7 @@ void typecheck_vardecl(Job *jp) {
 
     bool infer_type = (ast->type == NULL);
     bool initialize = (ast->init != NULL);
-    bool is_top_level = ast->is_top_level;
+    bool is_top_level = (arrlen(jp->tree_pos_stack) == 1);
 
     if(infer_type) jp->step = TYPECHECK_STEP_VARDECL_INITIALIZE;
 
@@ -3512,29 +3583,29 @@ void typecheck_vardecl(Job *jp) {
         }
     }
 
+    Sym sym = {
+        .name = name,
+        .loc = ast->base.loc,
+        .declared_by = jp->id,
+        .constant = ast->constant,
+        .type = bind_type,
+        .value = init_value,
+        .initializer = ast->init,
+    };
+
+    Sym *ptr = is_top_level ? global_scope_lookup(ast->name) : job_scope_lookup(jp, ast->name);
+
+    if(ptr) {
+        job_assert(jp, 0, ast->base.loc,
+                "multiple declaration of identifier '%s', previously declared at line %i",
+                name, ptr->loc.line);
+        return;
+    }
+
     if(is_top_level) {
-        Sym *ptr = global_scope_lookup(name);
-
-        if(ptr) {
-            job_assert(jp, 0, ast->base.loc,
-                    "multiple declaration of identifier '%s', previously declared at line %i",
-                    name, ptr->loc.line);
-            return;
-        }
-
-        Sym sym = {
-            .name = name,
-            .loc = ast->base.loc,
-            .declared_by = jp->id,
-            .constant = ast->constant,
-            .type = bind_type,
-            .value = init_value,
-            .initializer = ast->init,
-        };
-
         global_scope_enter(sym);
     } else {
-        UNIMPLEMENTED;
+        job_scope_enter(jp, sym);
     }
 }
 

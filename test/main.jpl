@@ -1,9 +1,30 @@
 proc test_proc(i: int, s: []char) bool {
+    x: u64 = 25;
     if s[i] {
+        x += 15;
         return cast(bool)0;
     } else if s[i+1] {
+        x += 15;
+        x = 4;
         return cast(bool)1;
+    } else {
+        dummy := 1293;
     }
+
+    while 0 {
+        one :: 1;
+        x -= one;
+    }
+
+    test_array := .[1 + 4, 2, 3];
+
+    it := 0;
+    for test_array {
+        x *= test_array[it];
+        it++;
+    }
+
+    y := x * 50;
 
     return cast(bool)2;
 }
@@ -17,6 +38,5 @@ A :: B;
 B :: C;
 C :: A;
 s := "hello sailor";
-test_array_2 := .[1 + 4, 2, 3];
 proc test_proc(i: int, c: [3]*[..]char, f: float = 3.14) int, char;
 */
