@@ -13,7 +13,6 @@
     X(NONE)                      \
     X(PARSE)                     \
     X(TYPECHECK)                 \
-    X(SIZE)                      \
     X(IR)                        \
 
 #define JOB_STATES               \
@@ -252,6 +251,9 @@ struct Job {
 
     Lexer               *lexer;
 
+    Pool                *global_sym_allocator;
+    Scope               *global_scope;
+
     AST                 *root;
 
     Type                *cur_proc_type;
@@ -324,12 +326,6 @@ struct AST_expr {
     AST *right;
 };
 
-struct AST_expr_list {
-    AST base;
-    AST *expr;
-    AST_expr_list *next;
-};
-
 struct AST_array_literal {
     AST base;
     Type *type_annotation;
@@ -353,6 +349,12 @@ struct AST_atom {
         char character;
         char *text;
     };
+};
+
+struct AST_expr_list {
+    AST base;
+    AST *expr;
+    AST_expr_list *next;
 };
 
 struct AST_vardecl {
@@ -596,18 +598,14 @@ AST*    parse_paramdecl(Job *jp);
 AST*    parse_expr(Job *jp);
 AST*    parse_expr_increase_prec(Job *jp, AST *left, int min_prec);
 AST*    parse_expr_decrease_prec(Job *jp, int min_prec);
+AST*    parse_prefix(Job *jp);
+AST*    parse_postfix(Job *jp);
 AST*    parse_term(Job *jp);
+AST*    parse_call(Job *jp);
 
 void*   global_alloc_scratch(size_t bytes);
-Sym*    global_alloc_sym(void);
-Value*  global_alloc_value(Valuekind kind);
-Type*   global_alloc_type(Typekind kind);
-char*   global_alloc_text(char *s, char *e);
-
-Sym*    global_scope_lookup(char *name);
-void    global_scope_enter(Sym sym);
-
-char*   global_strdup(char *s);
+Sym*    global_scope_lookup(Job *jp, char *name);
+void    global_scope_enter(Job *jp, Sym sym);
 
 void    print_sym(Sym sym);
 
@@ -655,12 +653,9 @@ Value builtin_value[] = {
     { .kind = VALUE_KIND_NIL, },
 };
 
-stbds_string_arena global_string_allocator;
 Arena      global_scratch_allocator;
 Pool       global_sym_allocator;
-Pool       global_type_allocator;
-Pool       global_value_allocator;
-Dict(Sym*) global_scope;
+Scope      global_scope;
 
 /* function declarations */
 Job job_spawn(Jobid *id_alloc, Pipe_stage pipe_stage) {
@@ -732,6 +727,24 @@ Type* job_alloc_type(Job *jp, Typekind kind) {
         return builtin_type + kind;
     Type *ptr = pool_alloc(&jp->allocator.type);
     ptr->kind = kind;
+
+    switch(kind) {
+        default:
+            break;
+        case TYPE_KIND_PROC:
+            ptr->bytes = 8;
+            break;
+        case TYPE_KIND_POINTER:
+            ptr->bytes = 8;
+            break;
+        case TYPE_KIND_ARRAY: case TYPE_KIND_DYNAMIC_ARRAY:
+            ptr->bytes = 24;
+            break;
+        case TYPE_KIND_ARRAY_VIEW:
+            ptr->bytes = 16;
+            break;
+    }
+
     return ptr;
 }
 
@@ -783,18 +796,6 @@ Sym* job_alloc_sym(Job *jp) {
     return pool_alloc(&jp->allocator.sym);
 }
 
-char* global_alloc_text(char *s, char *e) {
-    return stralloclen(&global_string_allocator, s, (size_t)(e - s));
-}
-
-Sym* global_alloc_sym(void) {
-    return pool_alloc(&global_sym_allocator);
-}
-
-char* global_strdup(char *s) {
-    return stralloc(&global_string_allocator, s);
-}
-
 Sym* job_scope_lookup(Job *jp, char *name) {
     for(int i = arrlen(jp->scopes) - 1; i >= 0; --i) {
         Scope scope = jp->scopes[i];
@@ -807,6 +808,7 @@ Sym* job_scope_lookup(Job *jp, char *name) {
 
 void job_scope_enter(Job *jp, Sym sym) {
     assert(arrlen(jp->scopes) > 0);
+    printf("job %i accessing scope %lu\n", jp->id, arrlen(jp->scopes) - 1);
     Scope scope = arrlast(jp->scopes);
     Sym *symp = job_alloc_sym(jp);
     *symp = sym;
@@ -814,15 +816,16 @@ void job_scope_enter(Job *jp, Sym sym) {
     arrlast(jp->scopes) = scope;
 }
 
-Sym* global_scope_lookup(char *name) {
-    return shget(global_scope, name);
+Sym* global_scope_lookup(Job *jp, char *name) {
+    return shget(*(jp->global_scope), name);
 }
 
-void global_scope_enter(Sym sym) {
-    Sym *symp = global_alloc_sym();
+void global_scope_enter(Job *jp, Sym sym) {
+    printf("job %i accessing global scope\n", jp->id);
+    Sym *symp = pool_alloc(jp->global_sym_allocator);
     *symp = sym;
     symp->name = sym.name;
-    shput(global_scope, symp->name, symp);
+    shput(*(jp->global_scope), symp->name, symp);
 }
 
 INLINE int count_digits(int n) {
@@ -993,7 +996,7 @@ AST* parse_procdecl(Job *jp) {
     Loc_info procdecl_loc = lexer->loc;
 
     AST_procdecl *node = (AST_procdecl*)job_alloc_ast(jp, AST_KIND_procdecl);
-    node->name = global_alloc_text(lexer->text.s, lexer->text.e);
+    node->name = job_alloc_text(jp, lexer->text.s, lexer->text.e);
     node->base.loc = procdecl_loc;
 
     t = lex(lexer);
@@ -1379,7 +1382,7 @@ AST* parse_vardecl(Job *jp) {
     }
 
     AST_vardecl *node = (AST_vardecl*)job_alloc_ast(jp, AST_KIND_vardecl);
-    node->name = global_alloc_text(name_s, name_e);
+    node->name = job_alloc_text(jp, name_s, name_e);
     node->base.loc = vardecl_loc;
 
     Lexer unlex = *lexer;
@@ -1442,7 +1445,7 @@ AST* parse_paramdecl(Job *jp) {
     }
 
     AST_paramdecl *node = (AST_paramdecl*)job_alloc_ast(jp, AST_KIND_paramdecl);
-    node->name = global_alloc_text(name_s, name_e);
+    node->name = job_alloc_text(jp, name_s, name_e);
     node->base.loc = paramdecl_loc;
 
     Lexer unlex = *lexer;
@@ -1496,7 +1499,7 @@ AST* parse_expr_decrease_prec(Job *jp, int min_prec) {
     AST *left, *node;
     AST_expr *op;
 
-    left = parse_term(jp);
+    left = parse_prefix(jp);
 
     if(left == NULL)
         return NULL;
@@ -1513,17 +1516,117 @@ AST* parse_expr_decrease_prec(Job *jp, int min_prec) {
     return left;
 }
 
+AST* parse_prefix(Job *jp) {
+    Lexer *lexer = jp->lexer;
+    Lexer unlex = *lexer;
+    Token t = lex(lexer);
+
+    AST *node = NULL;
+    AST_expr *expr = NULL;
+
+    switch(t) {
+        default:
+            *lexer = unlex;
+            node = parse_postfix(jp);
+            break;
+        case TOKEN_CAST:
+            t = lex(lexer);
+
+            if(t != '(') {
+                job_assert(jp, 0, lexer->loc, "expected '(' after 'cast' keyword");
+                return NULL;
+            }
+
+            expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+            expr->token = TOKEN_CAST;
+            expr->left = parse_expr(jp);
+
+            t = lex(lexer);
+
+            if(t != ')') {
+                job_assert(jp, 0, lexer->loc, "unbalanced parenthesis");
+                return NULL;
+            }
+
+            expr->right = parse_prefix(jp);
+            if(expr->right == NULL) {
+                return NULL;
+            }
+            node = (AST*)expr;
+            break;
+        case '+': case '-': case '!': case '~': case '@': case '>':
+            expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+            expr->token = t;
+            expr->right = parse_prefix(jp);
+
+            node = (AST*)expr;
+            break;
+    }
+
+    return node;
+}
+
+AST* parse_postfix(Job *jp) {
+    AST *node = NULL;
+    AST_expr *expr = NULL;
+    AST_atom *atom = NULL;
+
+    AST *term = parse_term(jp);
+
+    if(term == NULL) {
+        return NULL;
+    }
+
+    Lexer *lexer = jp->lexer;
+    Lexer unlex = *lexer;
+    Token t = lex(lexer);
+
+    while(t == '.' || t == '[') {
+        expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+        expr->token = t;
+        expr->left = term;
+
+        if(t == '[') {
+            expr->right = parse_expr(jp);
+            t = lex(lexer);
+            if(t != ']') {
+                job_assert(jp, 0, lexer->loc, "unbalanced square bracket");
+                return NULL;
+            }
+        } else if(t == '.') {
+            t = lex(lexer);
+            if(t != TOKEN_IDENT) {
+                job_assert(jp, 0, lexer->loc, "identifier expected on right of '.' operator");
+                return NULL;
+            }
+            atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
+            atom->token = TOKEN_IDENT;
+            atom->text = job_alloc_text(jp, lexer->text.s, lexer->text.e);
+            expr->right = (AST*)atom;
+        } else {
+            UNREACHABLE;
+        }
+
+        term = (AST*)expr;
+        unlex = *lexer;
+        t = lex(lexer);
+    }
+
+    *lexer = unlex;
+
+    node = (AST*)term;
+
+    return node;
+}
+
 AST* parse_term(Job *jp) {
     Lexer *lexer = jp->lexer;
     Lexer unlex = *lexer;
     Token t = lex(lexer);
 
     AST *node = NULL;
-    AST_call *call_op = NULL;
-    AST_expr *index_op = NULL;
-    AST_expr *index_op_next = NULL;
     AST_expr *expr = NULL;
-    AST_expr *unary = NULL;
+    AST_expr *pointer_type = NULL;
     AST_expr *array_type = NULL;
     AST_atom *atom = NULL;
 
@@ -1531,17 +1634,40 @@ AST* parse_term(Job *jp) {
         default:
             *lexer = unlex;
             return NULL;
-        case TOKEN_CAST:
+        case '*':
+            pointer_type = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+            pointer_type->token = '*';
+            pointer_type->right = parse_term(jp);
+            node = (AST*)pointer_type;
+            break;
+        case '[':
+            array_type = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+            array_type->token = t;
+            // NOTE
+            // putting the expr inside the [ ] on the right is a little weird
+            // but it is done to be consistent with the other use of '[' for subscript
+            // look at typecheck_binary where we check '[' if you don't remember
+            // 
+            unlex = *lexer;
             t = lex(lexer);
-            job_assert(jp, t == '(', lexer->loc, "expected '(' after 'cast' keyword");
-            if(jp->state == JOB_STATE_ERROR) return NULL;
-            unary = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
-            unary->token = TOKEN_CAST;
-            unary->left = parse_expr(jp);
+            if(t == TOKEN_TWODOT) {
+                atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
+                atom->token = TOKEN_TWODOT;
+                array_type->right = (AST*)atom;
+            } else {
+                *lexer = unlex;
+                array_type->right = parse_expr(jp);
+            }
             t = lex(lexer);
-            job_assert(jp, t == ')', lexer->loc, "unbalanced parenthesis");
-            if(jp->state == JOB_STATE_ERROR) return NULL;
-            node = parse_term(jp);
+            job_assert(jp, t==']', lexer->loc, "unbalanced square bracket");
+            array_type->left = parse_term(jp);
+            node = (AST*)array_type;
+            break;
+        case '(':
+            expr = (AST_expr*)parse_expr(jp);
+            t = lex(lexer);
+            job_assert(jp, t==')', lexer->loc, "unbalanced parenthesis");
+            node = (AST*)expr;
             break;
         case '.':
             t = lex(lexer);
@@ -1550,7 +1676,6 @@ AST* parse_term(Job *jp) {
             // NOTE copypasta
             {
                 AST_array_literal *array_lit = (AST_array_literal*)job_alloc_ast(jp, AST_KIND_array_literal);
-                array_lit->type = node;
                 AST_expr_list head = {0};
                 AST_expr_list *list = &head;
                 int n = 0;
@@ -1559,46 +1684,40 @@ AST* parse_term(Job *jp) {
                     list->next->expr = parse_expr(jp);
                     list = list->next;
                     ++n;
-                    if(lex(lexer) == ']')
+                    t = lex(lexer);
+                    if(t == ']') {
                         break;
+                    } else if(t != ',') {
+                        job_assert(jp, 0, lexer->loc, "expected ',' separating elements in array literal");
+                        return NULL;
+                    }
                 }
                 array_lit->n = n;
                 array_lit->elements = head.next;
                 array_lit->base.loc.col -= 2; /* NOTE hack to correct array literal column location */
                 node = (AST*)array_lit;
 
-                if(unary) {
-                    unary->right = node;
-                    node = (AST*)unary;
-                }
-
                 return node;
             }
             break;
-        case '[':
-            array_type = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
-            array_type->token = t;
-            array_type->right = parse_expr(jp);
-            t = lex(lexer);
-            job_assert(jp, t==']', lexer->loc, "unbalanced square bracket");
-            array_type->left = parse_term(jp);
-            node = (AST*)array_type;
-            return node;
-        case '+': case '-': case '!': case '~': case '&': case '*':
-            unary = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
-            unary->token = t;
-            node = parse_term(jp);
-            break;
-        case '(':
-            expr = (AST_expr*)parse_expr(jp);
-            t = lex(lexer);
-            job_assert(jp, t==')', lexer->loc, "unbalanced parenthesis");
-            node = (AST*)expr;
-            break;
-        case TOKEN_TWODOT:
-            atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
-            atom->token = t;
-            node = (AST*)atom;
+        case TOKEN_IDENT:
+            {
+                Lexer unlex2 = *lexer; // terrible name I'm sorry
+
+                t = lex(lexer);
+
+                if(t == '(') {
+                    *lexer = unlex;
+                    return parse_call(jp);
+                }
+
+                *lexer = unlex2;
+
+                atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
+                atom->token = TOKEN_IDENT;
+                atom->text = job_alloc_text(jp, lexer->text.s, lexer->text.e);
+                node = (AST*)atom;
+            }
             break;
         case TOKEN_VOID:
         case TOKEN_INT:
@@ -1610,12 +1729,6 @@ AST* parse_term(Job *jp) {
         case TOKEN_F32:  case TOKEN_F64:  
             atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
             atom->token = t;
-            node = (AST*)atom;
-            break;
-        case TOKEN_IDENT:
-            atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
-            atom->token = t;
-            atom->text = global_alloc_text(lexer->text.s, lexer->text.e);
             node = (AST*)atom;
             break;
         case TOKEN_INTLIT:
@@ -1639,171 +1752,160 @@ AST* parse_term(Job *jp) {
         case TOKEN_STRINGLIT:
             atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
             atom->token = t;
-            atom->text = global_alloc_text(lexer->text.s, lexer->text.e);
+            atom->text = job_alloc_text(jp, lexer->text.s, lexer->text.e);
             node = (AST*)atom;
             break;
     }
 
-    /* postfix operators */
     unlex = *lexer;
     t = lex(lexer);
 
-    if(t == '(') {
-        call_op = (AST_call*)job_alloc_ast(jp, AST_KIND_call);
-        call_op->callee = node;
-        call_op->base.loc = node->loc;
-
-        AST_param head = { .base = { .kind = AST_KIND_param, .loc = lexer->loc }, };
-        AST_param *param = &head;
-
-        int n_params = 0;
-        int first_named_param = 0;
-        bool must_be_named = false;
-        while(param) {
-            /* NOTE don't unlex before entering a loop if you don't unlex inside */
-            unlex = *lexer;
-            t = lex(lexer);
-
-            bool named_param = false;
-
-            if(t == TOKEN_IDENT) {
-                char *s = lexer->text.s;
-                char *e = lexer->text.e;
-                t = lex(lexer);
-                if(t == '=') {
-                    named_param = true;
-                    param->name = global_alloc_text(s, e);
-                } else {
-                    *lexer = unlex;
-                }
-            } else {
-                *lexer = unlex;
-            }
-
-            if(named_param && !must_be_named) {
-                must_be_named = true;
-                first_named_param = n_params;
-            }
-
-            if(must_be_named) {
-                job_assert(jp, named_param, call_op->base.loc,
-                        "once a named parameter is passed, all subsequent parameters must be named");
-            }
-
-            expr = (AST_expr*)parse_expr(jp);
-
-            if(expr == NULL) {
-                job_assert(jp, !named_param, param->base.loc, "named parameter has no initializer");
-                t = lex(lexer);
-                assert("expected closing paren"&&(t == ')'));
-                break;
-            } else {
-                param->value = (AST*)expr;
-            }
-
-            t = lex(lexer);
-
-            if(t == ',') {
-                param->next = (AST_param*)job_alloc_ast(jp, AST_KIND_param);
-            } else if(t != ')') {
-                job_assert(jp, 0, lexer->loc, "expected comma or end of parameter list");
-            }
-
-            param = param->next;
-
-            ++n_params;
-        }
-
-        if(head.name == NULL && head.value == NULL) {
-            call_op->params = NULL;
-        } else {
-            call_op->params = (AST_param*)job_alloc_ast(jp, AST_KIND_param);
-            *(call_op->params) = head;
-        }
-
-        call_op->n_params = n_params;
-        call_op->first_named_param = first_named_param;
-        call_op->has_named_params = must_be_named;
-
-        if(must_be_named) {
-            job_assert(jp,
-                    call_op->callee->kind == AST_KIND_atom && ((AST_atom*)call_op->callee)->token == TOKEN_IDENT,
-                    call_op->base.loc,
-                    "named parameters can only be passed to a named procedure");
-        }
-
-        node = (AST*)call_op;
-
-        unlex = *lexer;
+    if(t == '.') {
         t = lex(lexer);
-    }
-
-    if(t == '.' || t == '[') {
-        index_op = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
-        index_op->token = t;
-        index_op->left = node;
-        while(true) {
-            if(t == '.') {
-                t = lex(lexer);
-                if(t == '[') {
-                    AST_array_literal *array_lit = (AST_array_literal*)job_alloc_ast(jp, AST_KIND_array_literal);
-                    array_lit->type = node;
-                    AST_expr_list head = {0};
-                    AST_expr_list *list = &head;
-                    int n = 0;
-                    while(true) {
-                        list->next = (AST_expr_list*)job_alloc_ast(jp, AST_KIND_expr_list);
-                        list->next->expr = parse_expr(jp);
-                        list = list->next;
-                        ++n;
-                        if(lex(lexer) == ']')
-                            break;
-                    }
-                    array_lit->n = n;
-                    array_lit->elements = head.next;
-                    array_lit->base.loc.col = array_lit->type->loc.col; /* NOTE hack to correct array literal column location */
-                    node = (AST*)array_lit;
-
-                    if(unary) {
-                        unary->right = node;
-                        node = (AST*)unary;
-                    }
-
-                    return node;
-                }
-                job_assert(jp, t == TOKEN_IDENT, lexer->loc, "expected identifier on right hand side of '.' operator");
-                atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
-                atom->token = t;
-                atom->text = global_alloc_text(lexer->text.s, lexer->text.e);
-                index_op->right = (AST*)atom;
-            } else if(t == '[') {
-                expr = (AST_expr*)parse_expr(jp);
-                t = lex(lexer);
-                job_assert(jp, t==']', lexer->loc, "unbalanced square bracket");
-                index_op->right = (AST*)expr;
-            }
-
-            unlex = *lexer;
-            t = lex(lexer);
-
-            if(t == '.' || t == '[') {
-                index_op_next = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
-                index_op_next->left = (AST*)index_op;
-                index_op = index_op_next;
-            } else {
-                break;
-            }
+        if(t != '[') {
+            job_assert(jp, 0, lexer->loc, "expected '[' after '.' to mark beginning of array literal");
+            return NULL;
         }
+        // NOTE copypasta
+        {
+            AST_array_literal *array_lit = (AST_array_literal*)job_alloc_ast(jp, AST_KIND_array_literal);
+            array_lit->type = node;
+            AST_expr_list head = {0};
+            AST_expr_list *list = &head;
+            int n = 0;
+            while(true) {
+                list->next = (AST_expr_list*)job_alloc_ast(jp, AST_KIND_expr_list);
+                list->next->expr = parse_expr(jp);
+                list = list->next;
+                ++n;
+                t = lex(lexer);
+                if(t == ']') {
+                    break;
+                } else if(t != ',') {
+                    job_assert(jp, 0, lexer->loc, "expected ',' separating elements in array literal");
+                    return NULL;
+                }
+            }
+            array_lit->n = n;
+            array_lit->elements = head.next;
+            array_lit->base.loc.col -= 2; /* NOTE hack to correct array literal column location */
+            node = (AST*)array_lit;
 
-        node = (AST*)index_op;
+            return node;
+        }
     }
 
     *lexer = unlex;
 
-    if(unary) {
-        unary->right = node;
-        node = (AST*)unary;
+    return node;
+}
+
+AST* parse_call(Job *jp) {
+    AST *node = NULL;
+    Lexer *lexer = jp->lexer;
+    Lexer unlex = *lexer;
+    Token t = lex(lexer);
+
+    if(t != TOKEN_IDENT) {
+        job_assert(jp, 0, lexer->loc, "expected call");
+        return NULL;
     }
+
+    AST_atom *callee = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
+    callee->text = job_alloc_text(jp, lexer->text.s, lexer->text.e);
+
+    AST_call *call_op = (AST_call*)job_alloc_ast(jp, AST_KIND_call);
+    call_op->callee = (AST*)callee; //TODO if calls can only be done to a name the call should just have a name field
+    call_op->base.loc = lexer->loc;
+
+    t = lex(lexer);
+
+    if(t != '(') {
+        job_assert(jp, 0, lexer->loc, "expected beginning of parameter list");
+        return NULL;
+    }
+
+    AST_param head = { .base = { .kind = AST_KIND_param, .loc = lexer->loc }, };
+    AST_param *param = &head;
+
+    int n_params = 0;
+    int first_named_param = 0;
+    bool must_be_named = false;
+
+    while(param) {
+        /* NOTE don't unlex before entering a loop if you don't unlex inside */
+        unlex = *lexer;
+        t = lex(lexer);
+
+        bool named_param = false;
+
+        if(t == TOKEN_IDENT) {
+            char *s = lexer->text.s;
+            char *e = lexer->text.e;
+            t = lex(lexer);
+            if(t == '=') {
+                named_param = true;
+                param->name = job_alloc_text(jp, s, e);
+            } else {
+                *lexer = unlex;
+            }
+        } else {
+            *lexer = unlex;
+        }
+
+        if(named_param && !must_be_named) {
+            must_be_named = true;
+            first_named_param = n_params;
+        }
+
+        if(must_be_named) {
+            job_assert(jp, named_param, call_op->base.loc,
+                    "once a named parameter is passed, all subsequent parameters must be named");
+        }
+
+        AST_expr *expr = (AST_expr*)parse_expr(jp);
+
+        if(expr == NULL) {
+            job_assert(jp, !named_param, param->base.loc, "named parameter has no initializer");
+            t = lex(lexer);
+            assert("expected closing paren"&&(t == ')'));
+            break;
+        } else {
+            param->value = (AST*)expr;
+        }
+
+        t = lex(lexer);
+
+        if(t == ',') {
+            param->next = (AST_param*)job_alloc_ast(jp, AST_KIND_param);
+        } else if(t != ')') {
+            job_assert(jp, 0, lexer->loc, "expected comma or end of parameter list");
+        }
+
+        param = param->next;
+
+        ++n_params;
+    }
+
+    if(head.name == NULL && head.value == NULL) {
+        call_op->params = NULL;
+    } else {
+        call_op->params = (AST_param*)job_alloc_ast(jp, AST_KIND_param);
+        *(call_op->params) = head;
+    }
+
+    call_op->n_params = n_params;
+    call_op->first_named_param = first_named_param;
+    call_op->has_named_params = must_be_named;
+
+    if(must_be_named) {
+        job_assert(jp,
+                call_op->callee->kind == AST_KIND_atom && ((AST_atom*)call_op->callee)->token == TOKEN_IDENT,
+                call_op->base.loc,
+                "named parameters can only be passed to a named procedure");
+    }
+
+    node = (AST*)call_op;
 
     return node;
 }
@@ -1812,6 +1914,7 @@ void print_ast_expr(AST *expr, int indent) {
     AST_expr *e;
     AST_atom *a;
     AST_call *c;
+    AST_array_literal *l;
     if(expr == NULL)
         return;
     switch(expr->kind) {
@@ -1868,6 +1971,17 @@ void print_ast_expr(AST *expr, int indent) {
                 print_ast_expr(param->value, indent + 1);
             }
             break;
+        case AST_KIND_array_literal:
+            l = (AST_array_literal*)expr;
+            for(int i = 0; i < indent; ++i) printf("  ");
+            printf("array_literal\n");
+            print_ast_expr(l->type, indent + 1);
+            for(AST_expr_list *element = l->elements; element; element = element->next) {
+                for(int i = 0; i < indent; ++i) printf("  ");
+                printf("element\n");
+                print_ast_expr(element->expr, indent + 1);
+            }
+            break;
     }
 }
 
@@ -1877,23 +1991,26 @@ void job_runner(char *src, char *src_path) {
     Lexer lexer = {0};
     lexer_init(&lexer, src, src_path);
 
+    bool had_error = false;
+
     bool all_waiting = false;
 
     Jobid id_alloc = -1;
 
     arrpush(job_queue, job_spawn(&id_alloc, PIPE_STAGE_PARSE));
     job_queue[0].lexer = &lexer;
-
-    job_init_allocator_scratch(&job_queue[0]);
+    job_queue[0].global_sym_allocator = &global_sym_allocator;
+    job_queue[0].global_scope = &global_scope;
 
     while(arrlen(job_queue) > 0) {
-        for(int i = 0; i < arrlen(job_queue); /*++i*/) {
+        for(int i = 0; i < arrlen(job_queue); ) {
             Job *jp = job_queue + i;
 
             switch(jp->pipe_stage) {
                 case PIPE_STAGE_PARSE:
                     while(true) {
                         job_init_allocator_ast(jp);
+                        job_init_allocator_scratch(jp);
 
                         AST *ast = NULL;
 
@@ -1916,8 +2033,9 @@ void job_runner(char *src, char *src_path) {
                         //TODO clean job forking
                         Job new_job = job_spawn(&id_alloc, PIPE_STAGE_TYPECHECK);
 
-                        new_job.allocator = jp->allocator; /* copy ast allocator */
-                        job_init_allocator_scratch(&new_job);
+                        new_job.allocator = jp->allocator;
+                        new_job.global_sym_allocator = jp->global_sym_allocator;
+                        new_job.global_scope = jp->global_scope;
                         job_init_allocator_value(&new_job);
                         job_init_allocator_sym(&new_job);
                         job_init_allocator_type(&new_job);
@@ -1941,7 +2059,7 @@ void job_runner(char *src, char *src_path) {
                                 arrfree(jp->type_stack);
                                 arrfree(jp->expr);
                                 arrfree(jp->scopes);
-                                jp->pipe_stage = PIPE_STAGE_SIZE;
+                                jp->pipe_stage = PIPE_STAGE_IR;
                                 ++i;
                                 popped_stack = true;
                                 break;
@@ -2039,8 +2157,12 @@ void job_runner(char *src, char *src_path) {
                         } else if(ast->kind == AST_KIND_ifstatement) {
                             AST_ifstatement *ast_if = (AST_ifstatement*)ast;
 
-                            if(arrlen(jp->expr) == 0)
+                            if(arrlen(jp->expr) == 0) {
+                                printf("linearizing expression!!!!!\n");
+                                print_ast_expr(ast_if->condition, 0);
                                 linearize_expr(jp, &ast_if->condition);
+                                printf("finished linearizing expression!!!!!\n\n\n");
+                            }
                             typecheck_expr(jp);
 
                             if(jp->state == JOB_STATE_WAIT) {
@@ -2074,8 +2196,12 @@ void job_runner(char *src, char *src_path) {
                         } else if(ast->kind == AST_KIND_whilestatement) {
                             AST_whilestatement *ast_while = (AST_whilestatement*)ast;
 
-                            if(arrlen(jp->expr) == 0)
+                            if(arrlen(jp->expr) == 0) {
+                                printf("linearizing expression!!!!!\n");
+                                print_ast_expr(ast_while->condition, 0);
                                 linearize_expr(jp, &ast_while->condition);
+                                printf("finished linearizing expression!!!!!\n\n\n");
+                            }
                             typecheck_expr(jp);
 
                             if(jp->state == JOB_STATE_WAIT) {
@@ -2105,8 +2231,12 @@ void job_runner(char *src, char *src_path) {
                         } else if(ast->kind == AST_KIND_forstatement) {
                             AST_forstatement *ast_for = (AST_forstatement*)ast;
 
-                            if(arrlen(jp->expr) == 0)
+                            if(arrlen(jp->expr) == 0) {
+                                printf("linearizing expression!!!!!\n");
+                                print_ast_expr(ast_for->expr, 0);
                                 linearize_expr(jp, &ast_for->expr);
+                                printf("finished linearizing expression!!!!!\n\n\n");
+                            }
                             typecheck_expr(jp);
                             Type *for_expr_type = ((AST_expr*)(ast_for->expr))->type_annotation;
                             job_assert(jp,
@@ -2155,8 +2285,12 @@ void job_runner(char *src, char *src_path) {
                             bool type_error_in_statement = false;
 
                             if(jp->step == TYPECHECK_STEP_STATEMENT_LEFT) {
-                                if(arrlen(jp->expr) == 0)
+                                if(arrlen(jp->expr) == 0) {
+                                    printf("linearizing expression!!!!!\n");
+                                    print_ast_expr(ast_statement->left, 0);
                                     linearize_expr(jp, &ast_statement->left);
+                                printf("finished linearizing expression!!!!!\n\n\n");
+                                }
                                 typecheck_expr(jp);
 
                                 if(jp->state == JOB_STATE_WAIT) {
@@ -2207,8 +2341,12 @@ void job_runner(char *src, char *src_path) {
                                   (ast_statement->assign_op >= TOKEN_PLUSEQUAL && ast_statement->assign_op <= TOKEN_TILDEEQUAL));
 
                             if(jp->step == TYPECHECK_STEP_STATEMENT_RIGHT) {
-                                if(arrlen(jp->expr) == 0)
+                                if(arrlen(jp->expr) == 0) {
+                                    printf("linearizing expression!!!!!\n");
+                                    print_ast_expr(ast_statement->right, 0);
                                     linearize_expr(jp, &ast_statement->right);
+                                printf("finished linearizing expression!!!!!\n\n\n");
+                                }
                                 typecheck_expr(jp);
 
                                 if(jp->state == JOB_STATE_WAIT) {
@@ -2244,6 +2382,12 @@ void job_runner(char *src, char *src_path) {
                                     job_type_to_str(jp, type_right),
                                     job_type_to_str(jp, type_left));
 
+                            if(jp->state == JOB_STATE_ERROR) {
+                                job_report_all_messages(jp);
+                                job_die(jp);
+                                ++i;
+                                continue;
+                            }
                             jp->step = TYPECHECK_STEP_NONE;
 
                             arrlast(jp->tree_pos_stack) = ast_statement->next;
@@ -2274,8 +2418,12 @@ void job_runner(char *src, char *src_path) {
                             }
 
                             for(u64 expr_list_pos = jp->expr_list_pos; expr_list_pos < arrlen(jp->expr_list); ++expr_list_pos) {
-                                if(arrlen(jp->expr) == 0)
+                                if(arrlen(jp->expr) == 0) {
+                                    printf("linearizing expression!!!!!\n");
+                                    print_ast_expr(jp->expr_list[expr_list_pos][0], 0);
                                     linearize_expr(jp, jp->expr_list[expr_list_pos]);
+                                printf("finished linearizing expression!!!!!\n\n\n");
+                                }
                                 typecheck_expr(jp);
 
                                 if(jp->state == JOB_STATE_WAIT) {
@@ -2314,7 +2462,6 @@ void job_runner(char *src, char *src_path) {
                                 continue;
                             }
 
-                            //TODO warn about unreachable code
                             if(ast_return->next) {
                                 job_assert(jp, 0, ast_return->next->loc,
                                         "unreachable code after return from '%s'",
@@ -2329,11 +2476,6 @@ void job_runner(char *src, char *src_path) {
                         } else {
                             UNIMPLEMENTED;
                         }
-                    }
-                    break;
-                case PIPE_STAGE_SIZE:
-                    {
-                        UNIMPLEMENTED;
                     }
                     break;
                 case PIPE_STAGE_IR:
@@ -2357,6 +2499,16 @@ void job_runner(char *src, char *src_path) {
                 break;
             }
         }
+
+        for(int i = 0; i < arrlen(job_queue); ++i) {
+            if(job_queue[i].state == JOB_STATE_ERROR) {
+                had_error = true;
+                break;
+            }
+        }
+
+        if(had_error)
+            break;
 
         Arr(Job) tmp = job_queue;
         job_queue = job_queue_next;
@@ -2408,6 +2560,15 @@ void job_runner(char *src, char *src_path) {
                 Job *jp = shget(job_graph, save1);
                 job_assert(jp, 0, arrlast(jp->tree_pos_stack)->loc, "undeclared identifier '%s'", save2);
                 job_report_all_messages(jp);
+            }
+        }
+    }
+
+    if(!had_error) {
+        for(int i = 0; i < shlen(global_scope); ++i) {
+            if(global_scope[i].value) {
+                print_sym(global_scope[i].value[0]);
+                printf("\n");
             }
         }
     }
@@ -2726,9 +2887,12 @@ Type* typecheck_unary(Job *jp, Type *a, AST_expr *op_ast) {
             }
             return a;
         case '*':
-            if(a->kind == TYPE_KIND_TYPE) {
-                return builtin_type+TYPE_KIND_TYPE;
+            if(a->kind != TYPE_KIND_TYPE) {
+                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to pointer declarator", job_type_to_str(jp, a), (char)op);
+                return builtin_type+TYPE_KIND_VOID;
             }
+            return builtin_type+TYPE_KIND_TYPE;
+        case '>':
             if(a->kind != TYPE_KIND_POINTER) {
                 job_assert(jp, 0, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
@@ -2906,7 +3070,7 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
             break;
         case '[':
             job_assert(jp, b->kind >= TYPE_KIND_BOOL && b->kind <= TYPE_KIND_INT, op_ast->base.loc,
-                    "subscript expression of type '%s' cannot coerce to 'int'", job_type_to_str(jp, a));
+                    "expression in square brackets must coerce to 'int'");
 
             if(a->kind == TYPE_KIND_TYPE) {
                 return builtin_type+TYPE_KIND_TYPE;
@@ -2992,7 +3156,7 @@ void typecheck_expr(Job *jp) {
                 Sym *sym = NULL;
                 sym = job_scope_lookup(jp, atom->text);
 
-                if(!sym) sym = global_scope_lookup(atom->text);
+                if(!sym) sym = global_scope_lookup(jp, atom->text);
 
                 if(!sym) { 
                     jp->state = JOB_STATE_WAIT;
@@ -3327,8 +3491,13 @@ void typecheck_procdecl(Job *jp) {
             bool initialize = (p->init != NULL);
 
             if(jp->step == TYPECHECK_STEP_PROCDECL_PARAMS_BIND_TYPE) {
-                if(arrlen(jp->expr) == 0)
+                if(arrlen(jp->expr) == 0) {
+                    printf("linearizing expression!!!!!\n");
+                    print_ast_expr(p->type, 0);
+
                     linearize_expr(jp, &p->type);
+                                printf("finished linearizing expression!!!!!\n\n\n");
+                }
                 typecheck_expr(jp);
 
                 if(jp->state == JOB_STATE_WAIT) {
@@ -3349,8 +3518,12 @@ void typecheck_procdecl(Job *jp) {
             }
 
             if(initialize && jp->step == TYPECHECK_STEP_PROCDECL_PARAMS_INITIALIZE) {
-                if(arrlen(jp->expr) == 0)
+                if(arrlen(jp->expr) == 0) {
+                    printf("linearizing expression!!!!!\n");
+                    print_ast_expr(p->init, 0);
                     linearize_expr(jp, &p->init);
+                                printf("finished linearizing expression!!!!!\n\n\n");
+                }
                 typecheck_expr(jp);
 
                 if(jp->state == JOB_STATE_WAIT) {
@@ -3437,8 +3610,12 @@ void typecheck_procdecl(Job *jp) {
         }
 
         for(AST_retdecl *r = jp->cur_retdecl; r; r = r->next) {
-            if(arrlen(jp->expr) == 0)
+            if(arrlen(jp->expr) == 0) {
+                printf("linearizing expression!!!!!\n");
+                print_ast_expr(r->expr, 0);
                 linearize_expr(jp, &r->expr);
+                                printf("finished linearizing expression!!!!!\n\n\n");
+            }
             typecheck_expr(jp);
 
             if(jp->state == JOB_STATE_WAIT) {
@@ -3472,7 +3649,7 @@ void typecheck_procdecl(Job *jp) {
         .type = proc_type,
     };
 
-    Sym *ptr = is_top_level ? global_scope_lookup(ast->name) : job_scope_lookup(jp, ast->name);
+    Sym *ptr = is_top_level ? global_scope_lookup(jp, ast->name) : job_scope_lookup(jp, ast->name);
 
     if(ptr) {
         job_assert(jp, 0, ast->base.loc,
@@ -3484,7 +3661,7 @@ void typecheck_procdecl(Job *jp) {
     jp->cur_proc_type = proc_type;
 
     if(is_top_level) {
-        global_scope_enter(proc_sym);
+        global_scope_enter(jp, proc_sym);
     } else {
         job_scope_enter(jp, proc_sym);
     }
@@ -3505,8 +3682,12 @@ void typecheck_vardecl(Job *jp) {
     if(infer_type) jp->step = TYPECHECK_STEP_VARDECL_INITIALIZE;
 
     if(jp->step == TYPECHECK_STEP_VARDECL_BIND_TYPE) {
-        if(arrlen(jp->expr) == 0)
+        if(arrlen(jp->expr) == 0) {
+            printf("linearizing expression!!!!!\n");
+            print_ast_expr(ast->type, 0);
             linearize_expr(jp, &ast->type);
+                                printf("finished linearizing expression!!!!!\n\n\n");
+        }
         typecheck_expr(jp);
 
         if(jp->state == JOB_STATE_WAIT)
@@ -3523,8 +3704,12 @@ void typecheck_vardecl(Job *jp) {
     if(!initialize) jp->step = TYPECHECK_STEP_VARDECL_END;
 
     if(jp->step == TYPECHECK_STEP_VARDECL_INITIALIZE) {
-        if(arrlen(jp->expr) == 0)
+        if(arrlen(jp->expr) == 0) {
+            printf("linearizing expression!!!!!\n");
+            print_ast_expr(ast->init, 0);
             linearize_expr(jp, &ast->init);
+                                printf("finished linearizing expression!!!!!\n\n\n");
+        }
         typecheck_expr(jp);
 
         if(jp->state == JOB_STATE_WAIT)
@@ -3593,7 +3778,7 @@ void typecheck_vardecl(Job *jp) {
         .initializer = ast->init,
     };
 
-    Sym *ptr = is_top_level ? global_scope_lookup(ast->name) : job_scope_lookup(jp, ast->name);
+    Sym *ptr = is_top_level ? global_scope_lookup(jp, ast->name) : job_scope_lookup(jp, ast->name);
 
     if(ptr) {
         job_assert(jp, 0, ast->base.loc,
@@ -3603,7 +3788,7 @@ void typecheck_vardecl(Job *jp) {
     }
 
     if(is_top_level) {
-        global_scope_enter(sym);
+        global_scope_enter(jp, sym);
     } else {
         job_scope_enter(jp, sym);
     }
@@ -3653,18 +3838,12 @@ void print_sym(Sym sym) {
 int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
-    pool_init(&global_type_allocator, sizeof(Type));
-    pool_init(&global_value_allocator, sizeof(Value));
 
     char *test_src_file = LoadFileText("test/main.jpl");
+    printf("%s\n\n",test_src_file);
 
     //job_runner(test_src[7], "not a file");
     job_runner(test_src_file, "test/main.jpl");
-    for(int i = 0; i < shlen(global_scope); ++i) {
-        if(global_scope[i].value) {
-            print_sym(global_scope[i].value[0]);
-            printf("\n");
-        }
-    }
+
     return 0;
 }

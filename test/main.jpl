@@ -16,7 +16,7 @@ proc test_proc(i: int, s: []char) bool {
         x -= one;
     }
 
-    test_array := .[1 + 4, 2, 3];
+    test_array := u64.[1 + 4, 2, 3];
 
     it := 0;
     for test_array {
@@ -29,7 +29,6 @@ proc test_proc(i: int, s: []char) bool {
     return cast(bool)2;
 }
 
-/*
 i: int = 12;
 x : y;
 TWO_PI := PI * 2;
@@ -38,5 +37,4 @@ A :: B;
 B :: C;
 C :: A;
 s := "hello sailor";
-proc test_proc(i: int, c: [3]*[..]char, f: float = 3.14) int, char;
-*/
+proc test_proc2(i: int, c: [3]*[..]char, f: float = 3.14) int, char;

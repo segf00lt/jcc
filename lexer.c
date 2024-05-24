@@ -1,4 +1,3 @@
-#include <raylib.h>
 #include <ctype.h>
 #include "basic.h"
 #include <string.h>
@@ -14,7 +13,12 @@
     X(DFLOATLIT,                          "")\
     X(STRINGLIT,                          "")\
     X(KEYWORD,                            "")\
-    X(INLINE,                       "inline")\
+    X(IMPORT_DIRECTIVE,            "#import")\
+    X(LOAD_DIRECTIVE,                "#load")\
+    X(RUN_DIRECTIVE,                  "#run")\
+    X(IF_DIRECTIVE,                    "#if")\
+    X(FOREIGN_DIRECTIVE,          "#foreign")\
+    X(INLINE_DIRECTIVE,            "#inline")\
     X(PROC,                           "proc")\
     X(FUNC,                           "func")\
     X(MACRO,                         "macro")\
@@ -56,8 +60,8 @@
     X(GREATEQUAL,                       ">=")\
     X(EXCLAMEQUAL,                      "!=")\
     X(EQUALEQUAL,                       "==")\
-    X(AND,                             "and")\
-    X(OR,                               "or")\
+    X(AND,                              "&&")\
+    X(OR,                               "||")\
     X(LONGDASH,                        "---")\
     X(TWODOT,                           "..")\
     X(MINUSMINUS,                       "--")\
@@ -442,50 +446,3 @@ INLINE Token lex(Lexer *l) {
 
     return (l->token = TOKEN_INVALID);
 }
-
-// TODO make tests
-/*
-char *test_lexer = 
-"int main(void) {\n"
-"   printf(\"hello world\\n\");\n"
-"   s64*[] i = 0;\n"
-"   if(i >= 4.2e-2) {\n"
-"       x += sin(0.6 / x) * 4e20;\n"
-"       printf(\"%f\\n\", cos(i));\n"
-"   }\n"
-"   return 0xff;\n"
-"}\n";
-
-int main(void) {
-    Lexer l = {0};
-    init_lexer(&l, test_lexer, "test_lexer");
-    while(true) {
-        if(lex(&l) == 0) break;
-        if(l.token > TOKEN_KEYWORD) {
-            printf("%s\n", TOKEN_TO_KEYWORD(l.token));
-        } else if(l.token < TOKEN_INVALID) {
-            printf("%c\n", l.token);
-        } else {
-            switch(l.token) {
-                case TOKEN_IDENT: case TOKEN_STRINGLIT:
-                    {
-                    char *tmp = strndup(l.text.s, l.text.e - l.text.s);
-                    printf("%s\n", tmp);
-                    free(tmp);
-                    }
-                    break;
-                case TOKEN_FLOATLIT:
-                    printf("%f\n", l.floating);
-                    break;
-                case TOKEN_BINLIT: case TOKEN_HEXLIT:
-                    printf("%u\n", l.uinteger);
-                    break;
-                case TOKEN_INTLIT:
-                    printf("%i\n", l.integer);
-                    break;
-            }
-        }
-    }
-    return 0;
-}
-*/
