@@ -568,7 +568,7 @@ Sym*    job_scope_lookup(Job *jp, char *name);
 void    job_scope_enter(Job *jp, Sym sym);
 void    job_report_all_messages(Job *jp);
 void    job_report_mutual_dependency(Job *jp1, Job *jp2);
-void    job_assert(Job *jp, bool condition, Loc_info loc, char *fmt, ...);
+void    job_error(Job *jp, Loc_info loc, char *fmt, ...);
 char*   job_type_to_str(Job *jp, Type *t);
 void    linearize_expr(Job *jp, AST **astpp);
 
@@ -846,9 +846,7 @@ void job_report_all_messages(Job *jp) {
     }
 }
 
-void job_assert(Job *jp, bool condition, Loc_info loc, char *fmt, ...) {
-    if(condition) return;
-
+void job_error(Job *jp, Loc_info loc, char *fmt, ...) {
     va_list args;
 
     va_start(args, fmt);
@@ -991,7 +989,7 @@ AST* parse_procdecl(Job *jp) {
     }
 
     t = lex(lexer);
-    job_assert(jp, t == TOKEN_IDENT, lexer->loc, "expected identifier after 'proc' keyword");
+    if(t != TOKEN_IDENT) job_error(jp, lexer->loc, "expected identifier after 'proc' keyword");
 
     Loc_info procdecl_loc = lexer->loc;
 
@@ -1000,7 +998,7 @@ AST* parse_procdecl(Job *jp) {
     node->base.loc = procdecl_loc;
 
     t = lex(lexer);
-    job_assert(jp, t == '(', lexer->loc, "expected '(' to begin parameter list");
+    if(t != '(') job_error(jp, lexer->loc, "expected '(' to begin parameter list");
 
     int n_params = 0;
     AST_paramdecl head;
@@ -1018,7 +1016,7 @@ AST* parse_procdecl(Job *jp) {
         }
 
         if(must_be_default && param_list->init == NULL) {
-            job_assert(jp, 0, param_list->base.loc, "once first default parameter is declared, all parameters must have default values");
+            job_error(jp, param_list->base.loc, "once first default parameter is declared, all parameters must have default values");
             return (AST*)node;
         }
         t = lex(lexer);
@@ -1026,12 +1024,11 @@ AST* parse_procdecl(Job *jp) {
         if(param_list) ++n_params;
 
         if(t != ',') {
-            job_assert(jp, t == ')', lexer->loc, "expected ',' or ')' in parameter list");
             break;
         }
     }
 
-    job_assert(jp, t == ')', lexer->loc, "expected ')' to end parameter list");
+    if(t != ')') job_error(jp, lexer->loc, "expected ')' to end parameter list");
 
     node->has_defaults = must_be_default;
     node->params = head.next;
@@ -1057,18 +1054,15 @@ AST* parse_procdecl(Job *jp) {
             if(ret_list->expr) ++n_rets;
 
             if(t != ',') {
-                job_assert(jp, t == '{' || t == ';', lexer->loc, "expected ',' or '{' or ';' in return type list");
                 break;
             }
         }
-
-        job_assert(jp, t == '{' || t == ';', lexer->loc, "expected '{' or ';' after return types");
 
         node->rets = head.next;
         node->n_rets = n_rets;
     }
 
-    job_assert(jp, t == '{' || t == ';', lexer->loc, "expected beginning of procedure body or ';'");
+    if(t != '{' && t != ';') job_error(jp, lexer->loc, "expected '{' or ';'");
     
     if(t == ';') return (AST*)node;
 
@@ -1107,7 +1101,7 @@ AST* parse_procblock(Job *jp) {
         if(t == '}') {
             break;
         } else if(t == 0) {
-            job_assert(jp, 0, lexer->loc, "unexpected end of source");
+            job_error(jp, lexer->loc, "unexpected end of source");
             break;
         }
         *lexer = unlex;
@@ -1142,7 +1136,7 @@ AST* parse_controlflow(Job *jp) {
                 t = lex(lexer);
                 if(t == ':') {
                     t = lex(lexer);
-                    job_assert(jp, t == TOKEN_IDENT, lexer->loc, "expected label");
+                    if(t != TOKEN_IDENT) job_error(jp, lexer->loc, "expected label");
                     node->label = job_alloc_text(jp, lexer->text.s, lexer->text.e);
                 } else {
                     *lexer = unlex;
@@ -1150,7 +1144,7 @@ AST* parse_controlflow(Job *jp) {
 
                 node->condition = parse_expr(jp);
 
-                job_assert(jp, node->condition, node->base.loc, "if statement missing condition");
+                if(node->condition == NULL) job_error(jp, node->base.loc, "if statement missing condition");
 
                 unlex = *lexer;
                 t = lex(lexer);
@@ -1178,14 +1172,13 @@ AST* parse_controlflow(Job *jp) {
                         branch->branch = job_alloc_ast(jp, AST_KIND_ifstatement);
                         branch = (AST_ifstatement*)branch->branch;
                         branch->condition = parse_expr(jp);
-                        job_assert(jp, branch->condition, node->base.loc, "else-if statement missing condition");
-                        branch->body = body_func(jp);
-                        if(multiline) job_assert(jp, node->body, node->base.loc, "expected multi line block");
+                        if(branch->condition == NULL) job_error(jp, node->base.loc, "else-if statement missing condition");
                     } else {
                         *lexer = unlex;
-                        branch->branch = body_func(jp);
-                        if(multiline) job_assert(jp, node->body, node->base.loc, "expected multi line block");
                     }
+
+                    branch->branch = body_func(jp);
+                    if(node->body == NULL) job_error(jp, node->base.loc, "missing body");
 
                     unlex = *lexer;
                     t = lex(lexer);
@@ -1208,7 +1201,7 @@ AST* parse_controlflow(Job *jp) {
                 t = lex(lexer);
                 if(t == ':') {
                     t = lex(lexer);
-                    job_assert(jp, t == TOKEN_IDENT, lexer->loc, "expected label");
+                    if(t != TOKEN_IDENT) job_error(jp, lexer->loc, "expected label");
                     node->label = job_alloc_text(jp, lexer->text.s, lexer->text.e);
                 } else {
                     *lexer = unlex;
@@ -1216,7 +1209,7 @@ AST* parse_controlflow(Job *jp) {
 
                 node->expr = parse_expr(jp);
 
-                job_assert(jp, node->expr, node->base.loc, "for statement missing expression");
+                if(node->expr == NULL) job_error(jp, node->base.loc, "for statement missing expression");
 
                 unlex = *lexer;
                 t = lex(lexer);
@@ -1238,7 +1231,7 @@ AST* parse_controlflow(Job *jp) {
                 t = lex(lexer);
                 if(t == ':') {
                     t = lex(lexer);
-                    job_assert(jp, t == TOKEN_IDENT, lexer->loc, "expected label");
+                    if(t != TOKEN_IDENT) job_error(jp, lexer->loc, "expected label");
                     node->label = job_alloc_text(jp, lexer->text.s, lexer->text.e);
                 } else {
                     *lexer = unlex;
@@ -1246,7 +1239,7 @@ AST* parse_controlflow(Job *jp) {
 
                 node->condition = parse_expr(jp);
 
-                job_assert(jp, node->condition, node->base.loc, "while statement missing condition");
+                if(node->condition == NULL) job_error(jp, node->base.loc, "while statement missing condition");
 
                 unlex = *lexer;
                 t = lex(lexer);
@@ -1292,13 +1285,13 @@ AST* parse_statement(Job *jp) {
             t = lex(lexer);
         }
 
-        job_assert(jp, t == ';', lexer->loc, "expected ';' at end of statement");
+        if(t != ';') job_error(jp, lexer->loc, "expected ';' at end of statement");
 
         return (AST*)node;
     }
 
     if(t < TOKEN_CONTINUE || t > TOKEN_RETURN) {
-        job_assert(jp, 0, lexer->loc, "expected 'continue', 'break' or 'return'");
+        job_error(jp, lexer->loc, "expected 'continue', 'break' or 'return'");
         return NULL;
     }
 
@@ -1312,7 +1305,7 @@ AST* parse_statement(Job *jp) {
                 if(t == TOKEN_IDENT) {
                     node->label = job_alloc_text(jp, lexer->text.s, lexer->text.e);
                 } else if(t != ';') {
-                    job_assert(jp, 0, lexer->loc, "expected label or ';' in continue statement");
+                    job_error(jp, lexer->loc, "expected label or ';' in continue statement");
                 }
 
                 return (AST*)node;
@@ -1325,7 +1318,7 @@ AST* parse_statement(Job *jp) {
                 if(t == TOKEN_IDENT) {
                     node->label = job_alloc_text(jp, lexer->text.s, lexer->text.e);
                 } else if(t != ';') {
-                    job_assert(jp, 0, lexer->loc, "expected label or ';' in break statement");
+                    job_error(jp, lexer->loc, "expected label or ';' in break statement");
                 }
 
                 return (AST*)node;
@@ -1348,7 +1341,7 @@ AST* parse_statement(Job *jp) {
                         t = lex(lexer);
                     }
 
-                    job_assert(jp, t == ';', lexer->loc, "expected ';' at end of return statement");
+                    if(t != ';') job_error(jp, lexer->loc, "expected ';' at end of return statement");
                     node->expr_list = head.next;
                 }
 
@@ -1394,7 +1387,7 @@ AST* parse_vardecl(Job *jp) {
         unlex = *lexer;
         t = lex(lexer);
         if(t == TOKEN_LONGDASH) {
-            job_assert(jp, node->constant == false, node->base.loc, "cannot make constant uninitialized");
+            if(node->constant) job_error(jp, node->base.loc, "cannot make constant uninitialized");
             node->uninitialized = true;
         } else {
             *lexer = unlex;
@@ -1406,7 +1399,7 @@ AST* parse_vardecl(Job *jp) {
         Loc_info type_loc = lexer->loc;
         node->type = parse_expr(jp);
 
-        job_assert(jp, node->type, type_loc, "expected type declarator");
+        if(node->type == NULL) job_error(jp, type_loc, "expected type declarator");
 
         t = lex(lexer);
         if(t == '=' || t == ':') {
@@ -1414,11 +1407,12 @@ AST* parse_vardecl(Job *jp) {
             node->init = parse_expr(jp);
             t = lex(lexer);
         } else if(t != ';' && t != ')' && t != ',' && t != '{') {
-            job_assert(jp, 0, lexer->loc, "expected '=', ':' or separator in declaration");
+            job_error(jp, lexer->loc, "expected '=', ':' or separator in declaration");
         }
     }
 
-    job_assert(jp, t==';' || t==')' || t==',' || t=='{', lexer->loc, "expected punctuation at end of variable declaration");
+    if(t != ';' && t != ')' && t != ',' && t != '{')
+        job_error(jp, lexer->loc, "expected punctuation at end of variable declaration");
 
     return (AST*)node;
 }
@@ -1453,7 +1447,7 @@ AST* parse_paramdecl(Job *jp) {
     Loc_info type_loc = lexer->loc;
     node->type = parse_expr(jp);
 
-    job_assert(jp, node->type, type_loc, "expected type declarator");
+    if(node->type == NULL) job_error(jp, type_loc, "expected type declarator");
 
     unlex = *lexer;
     t = lex(lexer);
@@ -1464,7 +1458,8 @@ AST* parse_paramdecl(Job *jp) {
         t = lex(lexer);
     }
 
-    job_assert(jp,  t == ')' || t == ',', lexer->loc, "expected punctuation at end of parameter declaration");
+    if(t != ')' && t != ',')
+        job_error(jp, lexer->loc, "expected punctuation at end of parameter declaration");
 
     *lexer = unlex;
 
@@ -1533,7 +1528,7 @@ AST* parse_prefix(Job *jp) {
             t = lex(lexer);
 
             if(t != '(') {
-                job_assert(jp, 0, lexer->loc, "expected '(' after 'cast' keyword");
+                job_error(jp, lexer->loc, "expected '(' after 'cast' keyword");
                 return NULL;
             }
 
@@ -1544,7 +1539,7 @@ AST* parse_prefix(Job *jp) {
             t = lex(lexer);
 
             if(t != ')') {
-                job_assert(jp, 0, lexer->loc, "unbalanced parenthesis");
+                job_error(jp, lexer->loc, "unbalanced parenthesis");
                 return NULL;
             }
 
@@ -1590,13 +1585,13 @@ AST* parse_postfix(Job *jp) {
             expr->right = parse_expr(jp);
             t = lex(lexer);
             if(t != ']') {
-                job_assert(jp, 0, lexer->loc, "unbalanced square bracket");
+                job_error(jp, lexer->loc, "unbalanced square bracket");
                 return NULL;
             }
         } else if(t == '.') {
             t = lex(lexer);
             if(t != TOKEN_IDENT) {
-                job_assert(jp, 0, lexer->loc, "identifier expected on right of '.' operator");
+                job_error(jp, lexer->loc, "identifier expected on right of '.' operator");
                 return NULL;
             }
             atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
@@ -1659,19 +1654,20 @@ AST* parse_term(Job *jp) {
                 array_type->right = parse_expr(jp);
             }
             t = lex(lexer);
-            job_assert(jp, t==']', lexer->loc, "unbalanced square bracket");
+            if(t != ']') job_error(jp, lexer->loc, "unbalanced square bracket");
             array_type->left = parse_term(jp);
             node = (AST*)array_type;
             break;
         case '(':
             expr = (AST_expr*)parse_expr(jp);
             t = lex(lexer);
-            job_assert(jp, t==')', lexer->loc, "unbalanced parenthesis");
+            if(t != ')') job_error(jp, lexer->loc, "unbalanced parenthesis");
             node = (AST*)expr;
             break;
         case '.':
             t = lex(lexer);
-            job_assert(jp, t=='[', lexer->loc, "expected '[' after '.' to mark beginning of array literal");
+            if(t != '[')
+                job_error(jp, lexer->loc, "expected '[' after '.' to mark beginning of array literal");
             if(jp->state == JOB_STATE_ERROR) return NULL;
             // NOTE copypasta
             {
@@ -1688,7 +1684,7 @@ AST* parse_term(Job *jp) {
                     if(t == ']') {
                         break;
                     } else if(t != ',') {
-                        job_assert(jp, 0, lexer->loc, "expected ',' separating elements in array literal");
+                        job_error(jp, lexer->loc, "expected ',' separating elements in array literal");
                         return NULL;
                     }
                 }
@@ -1763,7 +1759,7 @@ AST* parse_term(Job *jp) {
     if(t == '.') {
         t = lex(lexer);
         if(t != '[') {
-            job_assert(jp, 0, lexer->loc, "expected '[' after '.' to mark beginning of array literal");
+            job_error(jp, lexer->loc, "expected '[' after '.' to mark beginning of array literal");
             return NULL;
         }
         // NOTE copypasta
@@ -1782,7 +1778,7 @@ AST* parse_term(Job *jp) {
                 if(t == ']') {
                     break;
                 } else if(t != ',') {
-                    job_assert(jp, 0, lexer->loc, "expected ',' separating elements in array literal");
+                    job_error(jp, lexer->loc, "expected ',' separating elements in array literal");
                     return NULL;
                 }
             }
@@ -1807,7 +1803,7 @@ AST* parse_call(Job *jp) {
     Token t = lex(lexer);
 
     if(t != TOKEN_IDENT) {
-        job_assert(jp, 0, lexer->loc, "expected call");
+        job_error(jp, lexer->loc, "expected call");
         return NULL;
     }
 
@@ -1821,7 +1817,7 @@ AST* parse_call(Job *jp) {
     t = lex(lexer);
 
     if(t != '(') {
-        job_assert(jp, 0, lexer->loc, "expected beginning of parameter list");
+        job_error(jp, lexer->loc, "expected beginning of parameter list");
         return NULL;
     }
 
@@ -1859,14 +1855,16 @@ AST* parse_call(Job *jp) {
         }
 
         if(must_be_named) {
-            job_assert(jp, named_param, call_op->base.loc,
-                    "once a named parameter is passed, all subsequent parameters must be named");
+            if(!named_param)
+                job_error(jp, call_op->base.loc,
+                        "once a named parameter is passed, all subsequent parameters must be named");
         }
 
         AST_expr *expr = (AST_expr*)parse_expr(jp);
 
         if(expr == NULL) {
-            job_assert(jp, !named_param, param->base.loc, "named parameter has no initializer");
+            if(named_param)
+                job_error(jp, param->base.loc, "named parameter has no initializer");
             t = lex(lexer);
             assert("expected closing paren"&&(t == ')'));
             break;
@@ -1879,7 +1877,7 @@ AST* parse_call(Job *jp) {
         if(t == ',') {
             param->next = (AST_param*)job_alloc_ast(jp, AST_KIND_param);
         } else if(t != ')') {
-            job_assert(jp, 0, lexer->loc, "expected comma or end of parameter list");
+            job_error(jp, lexer->loc, "expected comma or end of parameter list");
         }
 
         param = param->next;
@@ -1899,10 +1897,10 @@ AST* parse_call(Job *jp) {
     call_op->has_named_params = must_be_named;
 
     if(must_be_named) {
-        job_assert(jp,
-                call_op->callee->kind == AST_KIND_atom && ((AST_atom*)call_op->callee)->token == TOKEN_IDENT,
-                call_op->base.loc,
-                "named parameters can only be passed to a named procedure");
+        if(call_op->callee->kind != AST_KIND_atom || ((AST_atom*)call_op->callee)->token != TOKEN_IDENT)
+            job_error(jp,
+                    call_op->base.loc,
+                    "named parameters can only be passed to a named procedure");
     }
 
     node = (AST*)call_op;
@@ -2239,11 +2237,10 @@ void job_runner(char *src, char *src_path) {
                             }
                             typecheck_expr(jp);
                             Type *for_expr_type = ((AST_expr*)(ast_for->expr))->type_annotation;
-                            job_assert(jp,
-                                    for_expr_type->kind >= TYPE_KIND_ARRAY && for_expr_type->kind <= TYPE_KIND_ARRAY_VIEW,
-                                    ast_for->expr->loc,
-                                    "for loop expression must evaluate to array type not '%s'",
-                                    job_type_to_str(jp, for_expr_type));
+                            if(for_expr_type->kind < TYPE_KIND_ARRAY || for_expr_type->kind > TYPE_KIND_ARRAY_VIEW)
+                                job_error(jp, ast_for->expr->loc,
+                                        "for loop expression must evaluate to array type not '%s'",
+                                        job_type_to_str(jp, for_expr_type));
 
                             if(jp->state == JOB_STATE_WAIT) {
                                 arrpush(job_queue_next, *jp);
@@ -2325,10 +2322,11 @@ void job_runner(char *src, char *src_path) {
 
                                 Type *t = typecheck_assign(jp, type_left, type_right, ast_statement->assign_op);
 
-                                job_assert(jp, t->kind != TYPE_KIND_VOID, ast_statement->base.loc,
-                                        "invalid assignment of '%s' to '%s'",
-                                        job_type_to_str(jp, type_right),
-                                        job_type_to_str(jp, type_left));
+                                if(t->kind == TYPE_KIND_VOID)
+                                    job_error(jp, ast_statement->base.loc,
+                                            "invalid assignment of '%s' to '%s'",
+                                            job_type_to_str(jp, type_right),
+                                            job_type_to_str(jp, type_left));
 
                                 jp->step = TYPECHECK_STEP_NONE;
 
@@ -2377,10 +2375,11 @@ void job_runner(char *src, char *src_path) {
                             Type *type_right = ((AST_expr*)(ast_statement->right))->type_annotation;
                             Type *t = typecheck_assign(jp, type_left, type_right, ast_statement->assign_op);
 
-                            job_assert(jp, t->kind != TYPE_KIND_VOID, ast_statement->base.loc,
-                                    "invalid assignment of '%s' to '%s'",
-                                    job_type_to_str(jp, type_right),
-                                    job_type_to_str(jp, type_left));
+                            if(t->kind == TYPE_KIND_VOID)
+                                job_error(jp, ast_statement->base.loc,
+                                        "invalid assignment of '%s' to '%s'",
+                                        job_type_to_str(jp, type_right),
+                                        job_type_to_str(jp, type_left));
 
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
@@ -2406,9 +2405,10 @@ void job_runner(char *src, char *src_path) {
                                 jp->expr_list_pos = 0;
                             }
 
-                            job_assert(jp, cur_proc_type->proc.ret.n == arrlen(jp->expr_list), ast_return->base.loc,
-                                    "mismatch in number of return values when returning from '%s', expected '%lu' got '%lu'",
-                                    cur_proc_type->proc.name, cur_proc_type->proc.ret.n, arrlen(jp->expr_list));
+                            if(cur_proc_type->proc.ret.n != arrlen(jp->expr_list)) 
+                                job_error(jp, ast_return->base.loc,
+                                        "mismatch in number of return values when returning from '%s', expected '%lu' got '%lu'",
+                                        cur_proc_type->proc.name, cur_proc_type->proc.ret.n, arrlen(jp->expr_list));
 
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
@@ -2445,11 +2445,12 @@ void job_runner(char *src, char *src_path) {
                                 Type *expect_type = cur_proc_type->proc.ret.types[expr_list_pos];
 
                                 Type *t = typecheck_assign(jp, expect_type, ret_expr_type, '=');
-                                job_assert(jp, t->kind != TYPE_KIND_VOID, ret_expr->base.loc,
-                                        "in return from '%s' expected type '%s', got '%s'",
-                                        cur_proc_type->proc.name,
-                                        job_type_to_str(jp, expect_type),
-                                        job_type_to_str(jp, ret_expr_type));
+                                if(t->kind == TYPE_KIND_VOID)
+                                    job_error(jp, ret_expr->base.loc,
+                                            "in return from '%s' expected type '%s', got '%s'",
+                                            cur_proc_type->proc.name,
+                                            job_type_to_str(jp, expect_type),
+                                            job_type_to_str(jp, ret_expr_type));
                             }
 
                             arrsetlen(jp->expr_list, 0);
@@ -2463,7 +2464,7 @@ void job_runner(char *src, char *src_path) {
                             }
 
                             if(ast_return->next) {
-                                job_assert(jp, 0, ast_return->next->loc,
+                                job_error(jp, ast_return->next->loc,
                                         "unreachable code after return from '%s'",
                                         cur_proc_type->proc.name);
                                 ++i;
@@ -2558,7 +2559,7 @@ void job_runner(char *src, char *src_path) {
                 //TODO better error printing
                 //     probably need a custom print function with more formats
                 Job *jp = shget(job_graph, save1);
-                job_assert(jp, 0, arrlast(jp->tree_pos_stack)->loc, "undeclared identifier '%s'", save2);
+                job_error(jp, arrlast(jp->tree_pos_stack)->loc, "undeclared identifier '%s'", save2);
                 job_report_all_messages(jp);
             }
         }
@@ -2864,37 +2865,37 @@ Type* typecheck_unary(Job *jp, Type *a, AST_expr *op_ast) {
             UNREACHABLE;
         case '[':
             if(a->kind != TYPE_KIND_TYPE) {
-                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to array declarator", job_type_to_str(jp, a));
+                job_error(jp, op_ast->base.loc, "invalid type %s to array declarator", job_type_to_str(jp, a));
                 return builtin_type+TYPE_KIND_VOID;
             }
             return builtin_type+TYPE_KIND_TYPE;
         case '+': case '-':
             if(a->kind < TYPE_KIND_BOOL || a->kind > TYPE_KIND_F64) {
-                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
+                job_error(jp, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             }
             return a;
         case '!':
             if(a->kind < TYPE_KIND_BOOL || a->kind > TYPE_KIND_INT) {
-                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
+                job_error(jp, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             }
             return builtin_type+TYPE_KIND_BOOL;
         case '~':
             if(a->kind < TYPE_KIND_BOOL || a->kind > TYPE_KIND_INT) {
-                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
+                job_error(jp, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             }
             return a;
         case '*':
             if(a->kind != TYPE_KIND_TYPE) {
-                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to pointer declarator", job_type_to_str(jp, a), (char)op);
+                job_error(jp, op_ast->base.loc, "invalid type %s to pointer declarator", job_type_to_str(jp, a), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             }
             return builtin_type+TYPE_KIND_TYPE;
         case '>':
             if(a->kind != TYPE_KIND_POINTER) {
-                job_assert(jp, 0, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
+                job_error(jp, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             }
             return a->pointer.to;
@@ -3050,27 +3051,28 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
                 if((b->kind > TYPE_KIND_VOID && b->kind < TYPE_KIND_TYPE) ||
                    (b->kind == TYPE_KIND_POINTER && b->pointer.to->kind == TYPE_KIND_VOID))
                     return a;
-                job_assert(jp, 0, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
+                job_error(jp, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
                 return builtin_type+TYPE_KIND_VOID;
             } else if(a->kind == TYPE_KIND_ARRAY_VIEW) {
                 if((b->kind >= TYPE_KIND_ARRAY && b->kind <= TYPE_KIND_ARRAY_VIEW && type_compare(a->array.of, b->array.of)) ||
                    (b->kind == TYPE_KIND_POINTER && b->pointer.to->kind == TYPE_KIND_VOID))
                     return a;
-                job_assert(jp, 0, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
+                job_error(jp, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
                 return builtin_type+TYPE_KIND_VOID;
             } else if(a->kind == TYPE_KIND_POINTER) {
                 if(a->pointer.to->kind == TYPE_KIND_VOID || b->pointer.to->kind == TYPE_KIND_VOID)
                     return a;
-                job_assert(jp, 0, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
+                job_error(jp, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
                 return builtin_type+TYPE_KIND_VOID;
             } else {
-                job_assert(jp, 0, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
+                job_error(jp, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
                 return builtin_type+TYPE_KIND_VOID;
             }
             break;
         case '[':
-            job_assert(jp, b->kind >= TYPE_KIND_BOOL && b->kind <= TYPE_KIND_INT, op_ast->base.loc,
-                    "expression in square brackets must coerce to 'int'");
+            if(b->kind < TYPE_KIND_BOOL || b->kind > TYPE_KIND_INT)
+                job_error(jp, op_ast->base.loc,
+                        "expression in square brackets must coerce to 'int'");
 
             if(a->kind == TYPE_KIND_TYPE) {
                 return builtin_type+TYPE_KIND_TYPE;
@@ -3100,13 +3102,13 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
                 if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
                     return a;
 
-                job_assert(jp, 0, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
+                job_error(jp, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
                         job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             } else if(a->kind == TYPE_KIND_TYPE && b->kind == TYPE_KIND_TYPE) {
                 return a;
             } else {
-                job_assert(jp, 0, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
+                job_error(jp, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
                         job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             }
@@ -3126,11 +3128,11 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
                 if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
                     return a;
 
-                job_assert(jp, 0, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
+                job_error(jp, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
                         job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             } else {
-                job_assert(jp, 0, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
+                job_error(jp, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
                         job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
                 return builtin_type+TYPE_KIND_VOID;
             }
@@ -3200,7 +3202,8 @@ void typecheck_expr(Job *jp) {
                 Value *a_value = arrpop(value_stack);
 
                 if(node->token == TOKEN_CAST) {
-                    job_assert(jp, a_type->kind == TYPE_KIND_TYPE, node->base.loc, "cast must be to type");
+                    if(a_type->kind != TYPE_KIND_TYPE)
+                        job_error(jp, node->base.loc, "cast must be to type");
                     if(jp->state == JOB_STATE_ERROR)
                         break;
                     a_type = a_value->val.type;
@@ -3241,9 +3244,10 @@ void typecheck_expr(Job *jp) {
             if(array_lit->type) {
                 Type *t = arrpop(type_stack);
                 Value *t_value = arrpop(value_stack);
-                job_assert(jp, t->kind == TYPE_KIND_TYPE, array_lit->type->loc,
-                        "expected type expression before array literal, not '%s'",
-                        job_type_to_str(jp, t));
+                if(t->kind != TYPE_KIND_TYPE)
+                    job_error(jp, array_lit->type->loc,
+                            "expected type expression before array literal, not '%s'",
+                            job_type_to_str(jp, t));
                 array_elem_type = t_value->val.type;
                 i = arrlen(type_stack) - array_lit->n;
             } else {
@@ -3253,9 +3257,10 @@ void typecheck_expr(Job *jp) {
 
             for(; i < arrlen(type_stack); ++i) {
                 Type *t = typecheck_assign(jp, array_elem_type, type_stack[i], '=');
-                job_assert(jp, t->kind != TYPE_KIND_VOID, array_lit->base.loc,
-                        "cannot have element of type '%s' in array literal with element type '%s'",
-                        job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
+                if(t->kind == TYPE_KIND_VOID)
+                    job_error(jp, array_lit->base.loc,
+                            "cannot have element of type '%s' in array literal with element type '%s'",
+                            job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
             }
             Value **elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n);
             i = arrlen(value_stack) - array_lit->n;
@@ -3297,13 +3302,13 @@ void typecheck_expr(Job *jp) {
             assert(arrlen(type_stack) == arrlen(value_stack));
 
             if(proc_type->proc.has_defaults && callp->n_params < proc_type->proc.first_default_param) {
-                job_assert(jp, 0, callp->base.loc, "not enough parameters in call");
+                job_error(jp, callp->base.loc, "not enough parameters in call");
                 return;
             } else if(!proc_type->proc.has_defaults && callp->n_params < proc_type->proc.param.n) {
-                job_assert(jp, 0, callp->base.loc, "not enough parameters in call");
+                job_error(jp, callp->base.loc, "not enough parameters in call");
                 return;
             } else if(!proc_type->proc.varargs && callp->n_params > proc_type->proc.param.n) {
-                job_assert(jp, 0, callp->base.loc, "too many parameters in call");
+                job_error(jp, callp->base.loc, "too many parameters in call");
                 return;
             }
             
@@ -3318,12 +3323,12 @@ void typecheck_expr(Job *jp) {
 
                 if(t->kind == TYPE_KIND_VOID) {
                     if(proc_type->proc.name == NULL) {
-                        job_assert(jp, 0, callp->base.loc,
+                        job_error(jp, callp->base.loc,
                                 "cannot pass type '%s' to parameter of type '%s'",
                                 job_type_to_str(jp, param_type),
                                 job_type_to_str(jp, expected_type));
                     } else {
-                        job_assert(jp, 0, callp->base.loc,
+                        job_error(jp, callp->base.loc,
                                 "cannot pass type '%s' to parameter '%s' of type '%s'",
                                 job_type_to_str(jp, param_type),
                                 proc_type->proc.param.names[i],
@@ -3354,13 +3359,13 @@ void typecheck_expr(Job *jp) {
 
                     if(expected_type == NULL) {
                         //TODO custom formatting for printing locations
-                        job_assert(jp, 0, callp->base.loc,
+                        job_error(jp, callp->base.loc,
                                 "procedure '%s' has no parameter named '%s'", proc_type->proc.name, param_name);
                     }
 
                     if(params_passed[param_index] == 1) {
                         //TODO custom formatting for printing locations
-                        job_assert(jp, 0, callp->base.loc,
+                        job_error(jp, callp->base.loc,
                                 "parameter '%s' was passed multiple times", param_name);
                     }
 
@@ -3368,19 +3373,20 @@ void typecheck_expr(Job *jp) {
 
                     Type *t = typecheck_assign(jp, expected_type, param_type, '=');
 
-                    job_assert(jp, t->kind != TYPE_KIND_VOID, callp->base.loc,
-                            "invalid type '%s' passed to parameter '%s' in call to '%s', expected type '%s'",
-                            job_type_to_str(jp, param_type),
-                            proc_type->proc.param.names[param_index],
-                            proc_type->proc.name,
-                            job_type_to_str(jp, expected_type));
+                    if(t->kind == TYPE_KIND_VOID)
+                        job_error(jp, callp->base.loc,
+                                "invalid type '%s' passed to parameter '%s' in call to '%s', expected type '%s'",
+                                job_type_to_str(jp, param_type),
+                                proc_type->proc.param.names[param_index],
+                                proc_type->proc.name,
+                                job_type_to_str(jp, expected_type));
                 }
             }
 
             for(int i = 0; i < proc_type->proc.param.n; ++i) {
                 if(params_passed[i] == 0) {
                     assert(proc_type->proc.name != NULL);
-                    job_assert(jp, 0, callp->base.loc,
+                    job_error(jp, callp->base.loc,
                             "missing parameter '%s' in call to '%s'",
                             proc_type->proc.param.names[i], proc_type->proc.name);
                     break;
@@ -3550,14 +3556,16 @@ void typecheck_procdecl(Job *jp) {
                 init_value = ((AST_expr*)(p->init))->value_annotation;
                 init_type = ((AST_expr*)(p->init))->type_annotation;
 
-                job_assert(jp, init_value->kind != VALUE_KIND_NIL, p->base.loc,
-                        "parameter default values must evaluate at compile time");
+                if(init_value->kind == VALUE_KIND_NIL)
+                    job_error(jp, p->base.loc,
+                            "parameter default values must evaluate at compile time");
 
                 Type *t = typecheck_assign(jp, bind_type, init_type, '=');
 
-                job_assert(jp, t->kind != TYPE_KIND_VOID, p->base.loc,
-                        "invalid assignment of '%s' to parameter of type '%s'",
-                        job_type_to_str(jp, init_type), job_type_to_str(jp, bind_type));
+                if(t->kind == TYPE_KIND_VOID)
+                    job_error(jp, p->base.loc,
+                            "invalid assignment of '%s' to parameter of type '%s'",
+                            job_type_to_str(jp, init_type), job_type_to_str(jp, bind_type));
 
                 if(jp->state == JOB_STATE_ERROR) return;
 
@@ -3575,7 +3583,7 @@ void typecheck_procdecl(Job *jp) {
             Sym *ptr = job_scope_lookup(jp, p->name);
 
             if(ptr) {
-                job_assert(jp, 0, ast->base.loc,
+                job_error(jp, ast->base.loc,
                         "multiple declaration of parameter '%s' in header of '%s'",
                         p->name, ast->name, ptr->loc.line);
                 return;
@@ -3652,7 +3660,7 @@ void typecheck_procdecl(Job *jp) {
     Sym *ptr = is_top_level ? global_scope_lookup(jp, ast->name) : job_scope_lookup(jp, ast->name);
 
     if(ptr) {
-        job_assert(jp, 0, ast->base.loc,
+        job_error(jp, ast->base.loc,
                 "multiple declaration of identifier '%s', previously declared at line %i",
                 ast->name, ptr->loc.line);
         return;
@@ -3731,8 +3739,9 @@ void typecheck_vardecl(Job *jp) {
     Type *init_type = NULL;
 
     if(!infer_type) {
-        job_assert(jp, ((AST_expr*)ast->type)->value_annotation->kind == VALUE_KIND_TYPE, ast->type->loc,
-                "expected type to bind to '%s'", name);
+        if(((AST_expr*)ast->type)->value_annotation->kind != VALUE_KIND_TYPE)
+            job_error(jp, ast->type->loc,
+                    "expected type to bind to '%s'", name);
         if(jp->state == JOB_STATE_ERROR) return;
         bind_type = ((AST_expr*)ast->type)->value_annotation->val.type;
     }
@@ -3748,9 +3757,10 @@ void typecheck_vardecl(Job *jp) {
 
         if(!infer_type) {
             Type *t = typecheck_assign(jp, bind_type, init_type, '=');
-            job_assert(jp, t->kind != TYPE_KIND_VOID, ast->base.loc,
-                    "invalid assignment of '%s' to %s of type '%s'",
-                    job_type_to_str(jp, init_type), ast->constant ? "constant" : "variable", job_type_to_str(jp, bind_type));
+            if(t->kind == TYPE_KIND_VOID)
+                job_error(jp, ast->base.loc,
+                        "invalid assignment of '%s' to %s of type '%s'",
+                        job_type_to_str(jp, init_type), ast->constant ? "constant" : "variable", job_type_to_str(jp, bind_type));
 
             if(jp->state == JOB_STATE_ERROR) return;
 
@@ -3781,7 +3791,7 @@ void typecheck_vardecl(Job *jp) {
     Sym *ptr = is_top_level ? global_scope_lookup(jp, ast->name) : job_scope_lookup(jp, ast->name);
 
     if(ptr) {
-        job_assert(jp, 0, ast->base.loc,
+        job_error(jp, ast->base.loc,
                 "multiple declaration of identifier '%s', previously declared at line %i",
                 name, ptr->loc.line);
         return;
