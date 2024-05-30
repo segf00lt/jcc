@@ -770,7 +770,8 @@ bool    is_lvalue(AST *ast);
 void    ir_linearize_expr(Job *jp, AST *ast);
 
 void    ir_gen(Job *jp);
-void    ir_gen_statements(Job *jp, AST *ast, u64 local_offset, s64 continue_label, s64 break_label);
+void    ir_gen_block(Job *jp, AST *ast, u64 local_offset, s64 continue_label, s64 break_label);
+void    ir_gen_statement(Job *jp, AST_statement *ast_statement);
 void    ir_gen_logical_expr(Job *jp, AST *ast);
 void    ir_gen_expr(Job *jp, AST *ast);
 
@@ -1664,7 +1665,7 @@ AST* parse_statement(Job *jp) {
 
         t = lex(lexer);
 
-        if(t == '=' || (t >= TOKEN_PLUSEQUAL && t <= TOKEN_TILDEEQUAL)) {
+        if(t == '=' || (t >= TOKEN_PLUSEQUAL && t <= TOKEN_XOREQUAL)) {
             node->assign_op = t;
             node->right = parse_expr(jp);
             t = lex(lexer);
@@ -2443,7 +2444,7 @@ void ir_gen(Job *jp) {
         }
 
         AST_block *body = (AST_block*)(ast_proc->body);
-        ir_gen_statements(jp, body->down, local_offset, -1, -1);
+        ir_gen_block(jp, body->down, local_offset, -1, -1);
 
     } else {
         printf("sorry I don't know how to do this yet\n");
@@ -2451,8 +2452,135 @@ void ir_gen(Job *jp) {
     }
 }
 
-void ir_gen_statements(Job *jp, AST *ast, u64 local_offset, s64 continue_label, s64 break_label) {
+INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
     IRinst inst;
+
+    if(ast_statement->right == NULL) {
+        ir_gen_expr(jp, ast_statement->left); //TODO check for statements that have no effect
+        arrsetlen(jp->ir_expr, 0);
+    } else {
+        ir_gen_expr(jp, ast_statement->right);
+        arrsetlen(jp->ir_expr, 0);
+
+        jp->reg_alloc--;
+        assert(jp->reg_alloc == 0);
+
+        if(ast_statement->left->kind != AST_KIND_atom) {
+            assert(ast_statement->left->kind == AST_KIND_expr);
+            UNIMPLEMENTED;
+        } else {
+            AST_atom *atom = (AST_atom*)ast_statement->left;
+            Sym *sym = atom->symbol_annotation;
+
+            assert(sym->type->kind != TYPE_KIND_VOID);
+
+            if(sym->type->kind < TYPE_KIND_TYPE) {
+                IRop opcode = IROP_SETLOCAL;
+                IRop opcode_read = IROP_GETLOCAL;
+
+                if(sym->is_global) {
+                    opcode = (sym->type->kind >= TYPE_KIND_FLOAT) ? IROP_SETGLOBALF : IROP_SETGLOBAL;
+                    opcode_read = (sym->type->kind >= TYPE_KIND_FLOAT) ? IROP_GETGLOBALF : IROP_GETGLOBAL;
+                } else if(sym->type->kind >= TYPE_KIND_FLOAT) {
+                    opcode = IROP_SETLOCALF;
+                    opcode_read = IROP_GETLOCALF;
+                }
+
+                if(ast_statement->assign_op != '=') {
+                    inst =
+                        (IRinst) {
+                            .opcode = opcode_read,
+                            .getvar = {
+                                .reg_dest = jp->reg_alloc + 1,
+                                .offset = sym->segment_offset,
+                                .bytes = sym->type->bytes,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+                    inst =
+                        (IRinst) {
+                            .arith = {
+                                .operand_bytes = { sym->type->bytes, sym->type->bytes, sym->type->bytes },
+                                .reg = { jp->reg_alloc, jp->reg_alloc + 1, jp->reg_alloc },
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+                }
+
+                switch(ast_statement->assign_op) {
+                    default:
+                        UNREACHABLE;
+                    case '=':
+                        break;
+                    case TOKEN_PLUSEQUAL:
+                        arrlast(jp->instructions).opcode =
+                            (sym->type->kind >= TYPE_KIND_FLOAT)
+                            ? IROP_FADD
+                            : IROP_ADD;
+                        break;   
+                    case TOKEN_MINUSEQUAL:
+                        arrlast(jp->instructions).opcode =
+                            (sym->type->kind >= TYPE_KIND_FLOAT)
+                            ? IROP_FSUB
+                            : IROP_SUB;
+                        break;  
+                    case TOKEN_TIMESEQUAL:
+                        arrlast(jp->instructions).opcode =
+                            (sym->type->kind >= TYPE_KIND_FLOAT)
+                            ? IROP_FMUL
+                            : IROP_MUL;
+                        break;  
+                    case TOKEN_DIVEQUAL:
+                        arrlast(jp->instructions).opcode =
+                            (sym->type->kind >= TYPE_KIND_FLOAT)
+                            ? IROP_FDIV
+                            : IROP_DIV;
+                        break;    
+                    case TOKEN_MODEQUAL:
+                        arrlast(jp->instructions).opcode = IROP_MOD;
+                        break;    
+                    case TOKEN_ANDEQUAL:
+                        arrlast(jp->instructions).opcode = IROP_AND;
+                        break;    
+                    case TOKEN_OREQUAL:
+                        arrlast(jp->instructions).opcode = IROP_OR;
+                        break;     
+                    case TOKEN_LSHIFTEQUAL:
+                        arrlast(jp->instructions).opcode = IROP_LSHIFT;
+                        break; 
+                    case TOKEN_RSHIFTEQUAL:
+                        arrlast(jp->instructions).opcode = IROP_RSHIFT;
+                        break; 
+                    case TOKEN_XOREQUAL:
+                        arrlast(jp->instructions).opcode = IROP_XOR;
+                        break;    
+                }
+
+                inst =
+                    (IRinst) {
+                        .opcode = opcode,
+                        .setvar = {
+                            .offset = sym->segment_offset,
+                            .reg_src = jp->reg_alloc,
+                            .bytes = sym->type->bytes,
+                        },
+                    };
+
+                arrpush(jp->instructions, inst);
+            } else {
+                UNIMPLEMENTED;
+            }
+        }
+    }
+
+    jp->reg_alloc = 0;
+}
+
+void ir_gen_block(Job *jp, AST *ast, u64 local_offset, s64 continue_label, s64 break_label) {
+    IRinst inst;
+
+    AST_statement defer_head = {0};
+    AST_statement *defer_list = &defer_head;
 
     while(ast != NULL) {
         switch(ast->kind) {
@@ -2467,6 +2595,14 @@ void ir_gen_statements(Job *jp, AST *ast, u64 local_offset, s64 continue_label, 
                 break;
             case AST_KIND_whilestatement:
                 UNIMPLEMENTED;
+                break;
+            case AST_KIND_block:
+                {
+                    AST_block *ast_block = (AST_block*)ast;
+                    ir_gen_block(jp, ast_block->down, local_offset, continue_label, break_label);
+                    assert(jp->reg_alloc == 0);
+                    ast = ast_block->next;
+                }
                 break;
             case AST_KIND_vardecl:
                 {
@@ -2483,7 +2619,11 @@ void ir_gen_statements(Job *jp, AST *ast, u64 local_offset, s64 continue_label, 
                     if(var_type->kind >= TYPE_KIND_TYPE) {
                         UNIMPLEMENTED;
                     } else {
-                        if(ast_vardecl->uninitialized) continue;
+                        if(ast_vardecl->uninitialized) {
+                            jp->reg_alloc = 0;
+                            ast = ast_vardecl->next;
+                            continue;
+                        }
 
                         if(ast_vardecl->init) {
                             ir_gen_expr(jp, ast_vardecl->init);
@@ -2516,6 +2656,7 @@ void ir_gen_statements(Job *jp, AST *ast, u64 local_offset, s64 continue_label, 
                         }
                     }
 
+                    jp->reg_alloc = 0;
                     ast = ast_vardecl->next;
                 }
                 break;
@@ -2523,51 +2664,16 @@ void ir_gen_statements(Job *jp, AST *ast, u64 local_offset, s64 continue_label, 
                 {
                     AST_statement *ast_statement = (AST_statement*)ast;
 
-                    if(ast_statement->right == NULL) {
-                        ir_gen_expr(jp, ast_statement->left); //TODO check for statements that have no effect
-                        arrsetlen(jp->ir_expr, 0);
+                    if(ast_statement->deferred) {
+                        defer_list->next = ast;
+                        defer_list = (AST_statement*)(defer_list->next);
+                        ast = ast_statement->next;
+                        defer_list->next = NULL;
                     } else {
-                        ir_gen_expr(jp, ast_statement->right);
-                        arrsetlen(jp->ir_expr, 0);
-
-                        jp->reg_alloc--;
-                        printf("%lu\n", jp->reg_alloc);
-                        assert(jp->reg_alloc == 0);
-
-                        if(ast_statement->left->kind != AST_KIND_atom) {
-                            assert(ast_statement->left->kind == AST_KIND_expr);
-                            UNIMPLEMENTED;
-                        } else {
-                            AST_atom *atom = (AST_atom*)ast_statement->left;
-                            Sym *sym = atom->symbol_annotation;
-
-                            if(sym->type->kind > TYPE_KIND_VOID && sym->type->kind < TYPE_KIND_TYPE) {
-                                IRop opcode = IROP_SETLOCAL;
-
-                                if(sym->is_global) {
-                                    opcode = (sym->type->kind >= TYPE_KIND_FLOAT) ? IROP_SETGLOBALF : IROP_SETGLOBAL;
-                                } else if(sym->type->kind >= TYPE_KIND_FLOAT) {
-                                    opcode = IROP_SETLOCALF;
-                                }
-
-                                inst =
-                                    (IRinst) {
-                                        .opcode = opcode,
-                                        .setvar = {
-                                            .offset = sym->segment_offset,
-                                            .reg_src = jp->reg_alloc,
-                                            .bytes = sym->type->bytes,
-                                        },
-                                    };
-
-                                arrpush(jp->instructions, inst);
-                            } else {
-                                UNIMPLEMENTED;
-                            }
-                        }
+                        ir_gen_statement(jp, ast_statement);
+                        ast = ast_statement->next;
                     }
 
-                    ast = ast_statement->next;
                 }
                 break;
             case AST_KIND_continuestatement:
@@ -2595,6 +2701,14 @@ void ir_gen_statements(Job *jp, AST *ast, u64 local_offset, s64 continue_label, 
                 }
                 break;
         }
+    }
+
+    defer_list = (AST_statement*)defer_head.next;
+
+    while(defer_list) {
+        assert(defer_list->base.kind == AST_KIND_statement);
+        ir_gen_statement(jp, defer_list);
+        defer_list = (AST_statement*)(defer_list->next);
     }
 }
 
@@ -3389,7 +3503,7 @@ void job_runner(char *src, char *src_path) {
 
                             assert(ast_statement->right != NULL);
                             assert(ast_statement->assign_op == '=' ||
-                                  (ast_statement->assign_op >= TOKEN_PLUSEQUAL && ast_statement->assign_op <= TOKEN_TILDEEQUAL));
+                                  (ast_statement->assign_op >= TOKEN_PLUSEQUAL && ast_statement->assign_op <= TOKEN_XOREQUAL));
 
                             if(jp->step == TYPECHECK_STEP_STATEMENT_RIGHT) {
                                 if(arrlen(jp->expr) == 0) {
@@ -4055,7 +4169,7 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
         case TOKEN_MODEQUAL: case TOKEN_ANDEQUAL: case TOKEN_OREQUAL:
         case TOKEN_LSHIFTEQUAL:
         case TOKEN_RSHIFTEQUAL:
-        case TOKEN_XOREQUAL: case TOKEN_TILDEEQUAL:
+        case TOKEN_XOREQUAL:
             if(a->kind < TYPE_KIND_FLOAT && b->kind < TYPE_KIND_FLOAT) {
                 if(b->kind >= TYPE_KIND_TYPE) return builtin_type+TYPE_KIND_VOID;
 

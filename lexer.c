@@ -54,8 +54,6 @@
     X(F32,                             "f32")\
     X(F64,                             "f64")\
     X(CAST,                           "cast")\
-    X(LSHIFT,                           "<<")\
-    X(RSHIFT,                           ">>")\
     X(LESSEQUAL,                        "<=")\
     X(GREATEQUAL,                       ">=")\
     X(EXCLAMEQUAL,                      "!=")\
@@ -76,7 +74,8 @@
     X(LSHIFTEQUAL,                     "<<=")\
     X(RSHIFTEQUAL,                     ">>=")\
     X(XOREQUAL,                         "^=")\
-    X(TILDEEQUAL,                       "~=")
+    X(LSHIFT,                           "<<")\
+    X(RSHIFT,                           ">>")
 
 #define TOKEN_IS_TYPE_KEYWORD(t) (t >= TOKEN_VOID && t <= TOKEN_F64)
 
