@@ -59,6 +59,10 @@ proc test_proc(i: int, x: int, c: char, f: float) {
     y = 2 / y;
 
     i = (x + 12 * 8 + 2*x) / y;
+
+    ptr: *s32 = cast(*void)123456;
+    >ptr = 4;
+    ptr[5*i] = ptr[4*x] + 65 + cast(s32)f;
 }
 
 TWO :: 2;
