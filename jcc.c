@@ -204,6 +204,7 @@
     X(GETARGF,       _)                 \
     X(GETRETF,       _)                 \
     X(ITOF,          _)                 \
+    X(FTOB,          _)                 \
     X(FTOI,          _)                 \
     X(ITOI,          _)                 \
 
@@ -485,7 +486,7 @@ struct Job {
     Arr(u64)             label_table;
 
     Arr(Message)         messages;
-    
+
     Job_memory allocator;
 };
 
@@ -810,6 +811,7 @@ Type*       atom_to_type(Job *jp, AST_atom *atom);
 Value*      evaluate_unary(Job *jp, Value *a, AST_expr *op_ast);
 Value*      evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast);
 
+//TODO typechecking should be done with a table of some kind, all this branching is a bit lazy
 bool        types_are_same(Type *a, Type *b);
 Type*       typecheck_unary(Job *jp, Type *a, AST_expr *op_ast);
 Type*       typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast);
@@ -1283,10 +1285,10 @@ INLINE void print_ir_inst(IRinst inst) {
             break;
 		case IROP_IF:
 		case IROP_IFZ:
-            printf("%s r_%lu %lu\n", opstr, inst.branch.cond_reg, inst.branch.label_id);
+            printf("%s r_%lu label %lu\n", opstr, inst.branch.cond_reg, inst.branch.label_id);
 			break;
 		case IROP_JMP:
-            printf("%s %lu\n", opstr, inst.branch.label_id);
+            printf("%s label %lu\n", opstr, inst.branch.label_id);
 			break;
 		case IROP_CALL:
             if(inst.call.immediate)
@@ -1421,6 +1423,7 @@ INLINE void print_ir_inst(IRinst inst) {
 		case IROP_ITOF:
 		case IROP_FTOI:
 		case IROP_ITOI:
+        case IROP_FTOB:
             printf("%s r_%lu %luB, r_%lu %luB\n",
                     opstr,
                     inst.typeconv.to_reg,
@@ -1527,7 +1530,7 @@ AST* parse_procdecl(Job *jp) {
     }
 
     if(t != '{' && t != ';') job_error(jp, lexer->loc, "expected '{' or ';'");
-    
+
     if(t == ';') return (AST*)node;
 
     *lexer = unlex;
@@ -1803,7 +1806,7 @@ AST* parse_statement(Job *jp) {
 
                 return (AST*)node;
             }
-            break;   
+            break;
         case TOKEN_RETURN:
             {
                 AST_returnstatement *node = (AST_returnstatement*)job_alloc_ast(jp, AST_KIND_returnstatement);
@@ -1827,7 +1830,7 @@ AST* parse_statement(Job *jp) {
 
                 return (AST*)node;
             }
-            break;  
+            break;
     }
 
 }
@@ -2242,11 +2245,11 @@ AST* parse_term(Job *jp) {
         case TOKEN_VOID:
         case TOKEN_INT:
         case TOKEN_FLOAT:
-        case TOKEN_CHAR: 
-        case TOKEN_BOOL: 
-        case TOKEN_U8:   case TOKEN_U16:  case TOKEN_U32:  case TOKEN_U64:  
-        case TOKEN_S8:   case TOKEN_S16:  case TOKEN_S32:  case TOKEN_S64:  
-        case TOKEN_F32:  case TOKEN_F64:  
+        case TOKEN_CHAR:
+        case TOKEN_BOOL:
+        case TOKEN_U8:   case TOKEN_U16:  case TOKEN_U32:  case TOKEN_U64:
+        case TOKEN_S8:   case TOKEN_S16:  case TOKEN_S32:  case TOKEN_S64:
+        case TOKEN_F32:  case TOKEN_F64:
             atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
             atom->token = t;
             node = (AST*)atom;
@@ -3048,40 +3051,89 @@ void ir_gen_logical_expr(Job *jp, AST *ast) {
                 break;
             case TOKEN_AND:
             case TOKEN_OR:
-                assert(expr->left && expr->right);
-                ir_gen_logical_expr(jp, expr->left);
-                jp->reg_alloc--;
-                inst =
-                    (IRinst) {
-                        .opcode = (expr->token == TOKEN_OR) ? IROP_IF : IROP_IFZ,
-                        .branch = {
-                            .cond_reg = jp->reg_alloc,
-                            .label_id = cur_label,
-                        },
-                    };
-                arrpush(jp->instructions, inst);
-                ir_gen_logical_expr(jp, expr->right);
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_LABEL,
-                        .label = { .id = cur_label, },
-                    };
-                arrpush(jp->instructions, inst);
+                {
+                    assert(expr->left && expr->right);
+                    ir_gen_logical_expr(jp, expr->left);
+
+                    jp->reg_alloc--;
+
+                    AST_expr *expr_left = (AST_expr*)(expr->left);
+                    Type *type_left = expr_left->type_annotation;
+
+                    if(type_left->kind >= TYPE_KIND_FLOAT && type_left->kind <= TYPE_KIND_F64) {
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_FTOB,
+                                .typeconv = {
+                                    .to_reg = jp->reg_alloc,
+                                    .from_reg = jp->reg_alloc,
+                                    .to_bytes = 1,
+                                    .from_bytes = type_left->bytes,
+                                },
+                            };
+                        arrpush(jp->instructions, inst);
+                    }
+
+                    inst =
+                        (IRinst) {
+                            .opcode = (expr->token == TOKEN_OR) ? IROP_IF : IROP_IFZ,
+                            .branch = {
+                                .cond_reg = jp->reg_alloc,
+                                .label_id = cur_label,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+                    ir_gen_logical_expr(jp, expr->right);
+
+                    jp->reg_alloc--;
+
+                    AST_expr *expr_right = (AST_expr*)(expr->right);
+                    Type *type_right = expr_right->type_annotation;
+
+                    if(type_right->kind >= TYPE_KIND_FLOAT && type_right->kind <= TYPE_KIND_F64) {
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_FTOB,
+                                .typeconv = {
+                                    .to_reg = jp->reg_alloc,
+                                    .from_reg = jp->reg_alloc,
+                                    .to_bytes = 1,
+                                    .from_bytes = type_right->bytes,
+                                },
+                            };
+                        arrpush(jp->instructions, inst);
+                    }
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_LABEL,
+                            .label = { .id = cur_label, },
+                        };
+                    arrpush(jp->instructions, inst);
+                    jp->reg_alloc++;
+                }
                 break;
             case '!':
-                assert(expr->right);
-                ir_gen_logical_expr(jp, expr->right);
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_EQ,
-                        .arith = {
-                            .operand_bytes = { 1, 1, 1 },
-                            .reg = { jp->reg_alloc, jp->reg_alloc },
-                            .imm.integer = 0,
-                            .immediate = true,
-                        },
-                    };
-                arrpush(jp->instructions, inst);
+                {
+                    assert(expr->right);
+                    ir_gen_logical_expr(jp, expr->right);
+                    jp->reg_alloc--;
+                    AST_expr *expr_right = (AST_expr*)(expr->right);
+                    Type *type_right = expr_right->type_annotation;
+                    inst =
+                        (IRinst) {
+                            .opcode = (type_right->kind >= TYPE_KIND_FLOAT && type_right->kind <= TYPE_KIND_F64)
+                                ? IROP_FEQ
+                                : IROP_EQ,
+                            .arith = {
+                                .operand_bytes = { 1, 1, 1 },
+                                .reg = { jp->reg_alloc, jp->reg_alloc },
+                                .immediate = true,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+                    jp->reg_alloc++;
+                }
                 break;
         }
     }
@@ -3111,7 +3163,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                     if(!TYPE_KIND_IS_SCALAR(sym->type->kind)) {
                         UNIMPLEMENTED;
                     } else {
-                        inst = 
+                        inst =
                             (IRinst) {
                                 .opcode = IROP_LOAD,
                                 .load = {
@@ -3179,7 +3231,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 if(!TYPE_KIND_IS_SCALAR(atom_type->kind)) {
                     UNIMPLEMENTED;
                 } else {
-                    inst = 
+                    inst =
                         (IRinst) {
                             .opcode = IROP_LOAD,
                             .load = {
@@ -3301,7 +3353,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         jp->reg_alloc++;
                         break;
                     case '-':
-                        inst = 
+                        inst =
                             (IRinst) {
                                 .opcode = (result_type->kind >= TYPE_KIND_FLOAT && result_type->kind <= TYPE_KIND_F64)
                                     ? IROP_FNEG
@@ -3316,7 +3368,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         jp->reg_alloc++;
                         break;
                     case '~':
-                        inst = 
+                        inst =
                             (IRinst) {
                                 .opcode = IROP_NOT,
                                 .arith = {
@@ -3329,7 +3381,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         jp->reg_alloc++;
                         break;
                     case '>':
-                        inst = 
+                        inst =
                             (IRinst) {
                                 .opcode = IROP_LOAD,
                                 .load = {
@@ -3376,7 +3428,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                     default:
                         UNREACHABLE;
                     case '@':
-                        inst = 
+                        inst =
                             (IRinst) {
                                 .opcode = IROP_CALCPTROFFSET,
                                 .calcptroffset = {
@@ -3390,7 +3442,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         jp->reg_alloc++;
                         break;
                     case '[':
-                        inst = 
+                        inst =
                             (IRinst) {
                                 .opcode = IROP_LOAD,
                                 .load = {
@@ -3530,7 +3582,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         inst.opcode = IROP_LSHIFT;
                         is_arith = true;
                         break;
-                    case TOKEN_RSHIFT: 
+                    case TOKEN_RSHIFT:
                         inst.opcode = IROP_RSHIFT;
                         is_arith = true;
                         break;
@@ -4057,7 +4109,7 @@ void job_runner(char *src, char *src_path) {
                                 jp->expr_list_pos = 0;
                             }
 
-                            if(cur_proc_type->proc.ret.n != arrlen(jp->expr_list)) 
+                            if(cur_proc_type->proc.ret.n != arrlen(jp->expr_list))
                                 job_error(jp, ast_return->base.loc,
                                         "mismatch in number of return values when returning from '%s', expected '%lu' got '%lu'",
                                         cur_proc_type->proc.name, cur_proc_type->proc.ret.n, arrlen(jp->expr_list));
@@ -4175,7 +4227,7 @@ void job_runner(char *src, char *src_path) {
         job_queue_next = tmp;
         arrsetlen(job_queue_next, 0);
     }
-    
+
     if(all_waiting) {
         Dict(char*) name_graph = NULL;
         Dict(Job*) job_graph = NULL;
@@ -4500,7 +4552,7 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
                 UNREACHABLE;
             }
             break;
-        case '%': case '&': case '|': case '^': case TOKEN_LSHIFT: case TOKEN_RSHIFT: 
+        case '%': case '&': case '|': case '^': case TOKEN_LSHIFT: case TOKEN_RSHIFT:
             if(a->kind == VALUE_KIND_NIL || b->kind == VALUE_KIND_NIL) {
                 result = builtin_value+VALUE_KIND_NIL;
             } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
@@ -4510,11 +4562,16 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
                 UNREACHABLE;
             }
             break;
+        case '>': case '<': case TOKEN_GREATEQUAL: case TOKEN_LESSEQUAL: case TOKEN_EXCLAMEQUAL: case TOKEN_EQUALEQUAL:
+            result = builtin_value+VALUE_KIND_NIL; //TODO evaluate
+            break;
         case TOKEN_AND:
-            UNIMPLEMENTED;
+            result = builtin_value+VALUE_KIND_NIL; //TODO evaluate
+            //UNIMPLEMENTED;
             break;
         case TOKEN_OR:
-            UNIMPLEMENTED;
+            result = builtin_value+VALUE_KIND_NIL; //TODO evaluate
+            //UNIMPLEMENTED;
             break;
     }
 
@@ -4803,7 +4860,7 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
                 return builtin_type+TYPE_KIND_VOID;
             }
             break;
-        case '%': case '&': case '|': case '^': case TOKEN_LSHIFT: case TOKEN_RSHIFT: 
+        case '%': case '&': case '|': case '^': case TOKEN_LSHIFT: case TOKEN_RSHIFT:
             if(a->kind < b->kind) { // commutative
                 Type *tmp = a;
                 a = b;
@@ -4828,13 +4885,64 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
             }
             break;
         case '>': case '<': case TOKEN_GREATEQUAL: case TOKEN_LESSEQUAL: case TOKEN_EXCLAMEQUAL: case TOKEN_EQUALEQUAL:
-            //TODO typecheck comparisons
-            UNIMPLEMENTED;
+            {
+                Type *result = NULL;
+                if(!TYPE_KIND_IS_SCALAR(a->kind) || !TYPE_KIND_IS_SCALAR(b->kind))
+                    result = builtin_type+TYPE_KIND_VOID;
+
+                if(op == '>')
+                    PASS;
+
+                if(a->kind < b->kind) { // commutative
+                    Type *tmp = a;
+                    a = b;
+                    b = tmp;
+                }
+
+                if(a->kind == TYPE_KIND_F64) {
+                    if(b->kind == TYPE_KIND_INT) //TODO generic number type
+                        result = builtin_type+TYPE_KIND_BOOL;
+                    else if(b->kind != a->kind)
+                        result = builtin_type+TYPE_KIND_VOID;
+                    else
+                        result = builtin_type+TYPE_KIND_BOOL;
+                } else if(a->kind >= TYPE_KIND_FLOAT) {
+                    if(b->kind == TYPE_KIND_INT) //TODO generic number type
+                        result = builtin_type+TYPE_KIND_BOOL;
+                    else if(b->kind != a->kind)
+                        result = builtin_type+TYPE_KIND_VOID;
+                    else
+                        result = builtin_type+TYPE_KIND_BOOL;
+                } else if(a->kind == TYPE_KIND_POINTER) {
+                    if(b->kind != TYPE_KIND_POINTER)
+                        result = builtin_type+TYPE_KIND_VOID;
+                    else
+                        result = builtin_type+TYPE_KIND_BOOL;
+                } else if(a->kind >= TYPE_KIND_S8 && a->kind <= TYPE_KIND_U64) {
+                    if(b->kind < TYPE_KIND_S8 || b->kind > TYPE_KIND_U64)
+                        result = builtin_type+TYPE_KIND_VOID;
+                    else
+                        result = builtin_type+TYPE_KIND_BOOL;
+                } else {
+                    assert(a->kind == TYPE_KIND_BOOL || a->kind == TYPE_KIND_CHAR || a->kind == TYPE_KIND_INT);
+                    if(b->kind == TYPE_KIND_BOOL || b->kind == TYPE_KIND_CHAR || b->kind == TYPE_KIND_INT)
+                        result = builtin_type+TYPE_KIND_BOOL;
+                    else
+                        result = builtin_type+TYPE_KIND_VOID;
+                }
+
+                if(result->kind == TYPE_KIND_VOID)
+                    job_error(jp, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
+                            job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
+
+                return result;
+            }
             break;
         case TOKEN_AND: case TOKEN_OR:
-            //TODO typecheck logical operators
-            UNIMPLEMENTED;
-            break;
+            if(!TYPE_KIND_IS_SCALAR(a->kind) || !TYPE_KIND_IS_SCALAR(b->kind)) {
+                UNIMPLEMENTED;
+            }
+            return builtin_type+TYPE_KIND_BOOL;
     }
 }
 
@@ -4855,7 +4963,7 @@ void typecheck_expr(Job *jp) {
 
                 if(!sym) sym = global_scope_lookup(jp, atom->text);
 
-                if(!sym) { 
+                if(!sym) {
                     jp->state = JOB_STATE_WAIT;
                     jp->waiting_on_name = atom->text;
                     break;
@@ -4900,7 +5008,7 @@ void typecheck_expr(Job *jp) {
 
                 node->type_annotation = result_type;
                 node->value_annotation = result_value;
-                
+
                 arrpush(type_stack, result_type);
                 arrpush(value_stack, result_value);
             } else {
@@ -5008,7 +5116,7 @@ void typecheck_expr(Job *jp) {
                 job_error(jp, callp->base.loc, "too many parameters in call");
                 return;
             }
-            
+
             int base_index = arrlen(type_stack) - callp->n_params;
             int n_positional_params = callp->has_named_params ? callp->first_named_param : callp->n_params;
 

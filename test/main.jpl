@@ -95,6 +95,12 @@ proc test_proc(i: int, x: int, c: char, f: float) {
     >ptr_f32--;
     //ptr_f32[i + cast(u64)ptr_u8[i * i + x] + x]--;
     ptr_f32[i + cast(u64)ptr_u8[i * i + x] + x] -= 1;
+
+    bb: bool = i < x;
+
+    bb = c && bb && f;
+    bb = >ptr_u8 > cast(u8)i;
+
     /*
 
     LOAD r_0, 1, 8B
@@ -114,13 +120,13 @@ proc test_proc(i: int, x: int, c: char, f: float) {
     FSUB r_0 4B, r_3 4B, r_0 4B
     STORF ptr_r_1, offset_r_2, r_0, 4B
 
-    */
-
     test_ptr_1: *int = cast(*void)6502;
     test_ptr_2: *int = cast(*void)5150;
     test_ptr_3: *int = cast(*void)8086;
     test_ptr_4: *int = cast(*void)2001;
     test_ptr_1[test_ptr_2[test_ptr_3[test_ptr_4[0] + i] + i] + i] = 150000000;
+    */
+
 }
 
 TWO :: 2;
