@@ -73,6 +73,54 @@ proc test_proc(i: int, x: int, c: char, f: float) {
     addr_addr_of_foo: **int = @addr_of_foo;
     other_addr_of_foo: *int = @>addr_of_foo;
     other_other_addr_of_foo: *int = @addr_of_foo[a + b];
+
+    ptr_u8: *u8 = cast(*u8)cast(*void)123;
+    c = >ptr_u8;
+    c = >(ptr_u8 + 69);
+    c = >(ptr_u8 - 42);
+
+    ptr_f32: *f32 = cast(*f32)cast(*void)4321;
+    f = >ptr_f32;
+    f = >(ptr_f32 + 7);
+    f = >(ptr_f32 - TWO);
+    ptr_f32 += 33;
+    ptr_f32 -= 4;
+    ptr_f32++;
+    ptr_f32--;
+
+    i++;
+    i--;
+
+    >ptr_f32++;
+    >ptr_f32--;
+    //ptr_f32[i + cast(u64)ptr_u8[i * i + x] + x]--;
+    ptr_f32[i + cast(u64)ptr_u8[i * i + x] + x] -= 1;
+    /*
+
+    LOAD r_0, 1, 8B
+    GETLOCAL r_1, addr 109, 8B
+    GETLOCAL r_2, addr 0, 8B
+    GETLOCAL r_3, addr 0, 8B
+    GETLOCAL r_4, addr 0, 8B
+    MUL r_3 8B, r_3 8B, r_4 8B
+    GETLOCAL r_4, addr 8, 8B
+    ADD r_3 8B, r_3 8B, r_4 8B
+    GETLOCAL r_4, addr 101, 8B
+    LOAD r_3, ptr_r_4, offset_r_3, 1B
+    ADD r_2 8B, r_2 8B, r_3 8B
+    GETLOCAL r_3, addr 8, 8B
+    ADD r_2 8B, r_2 8B, r_3 8B
+    LOADF r_3, ptr_r_1, offset_r_2, 4B
+    FSUB r_0 4B, r_3 4B, r_0 4B
+    STORF ptr_r_1, offset_r_2, r_0, 4B
+
+    */
+
+    test_ptr_1: *int = cast(*void)6502;
+    test_ptr_2: *int = cast(*void)5150;
+    test_ptr_3: *int = cast(*void)8086;
+    test_ptr_4: *int = cast(*void)2001;
+    test_ptr_1[test_ptr_2[test_ptr_3[test_ptr_4[0] + i] + i] + i] = 150000000;
 }
 
 TWO :: 2;

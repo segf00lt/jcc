@@ -820,6 +820,7 @@ void        typecheck_procdecl(Job *jp);
 
 int         getprec(Token t);
 
+//TODO better parser errors
 AST*        parse_procdecl(Job *jp);
 AST*        parse_procblock(Job *jp);
 AST*        parse_statement(Job *jp);
@@ -839,7 +840,7 @@ Sym*        global_scope_lookup(Job *jp, char *name);
 void        global_scope_enter(Job *jp, Sym *sym);
 
 void        print_sym(Sym sym);
-void        print_ir_inst(IRinst inst); // TODO
+void        print_ir_inst(IRinst inst);
 
 /* globals */
 
@@ -1076,7 +1077,7 @@ void job_report_all_messages(Job *jp) {
         Message msg = jp->messages[i];
         fprintf(stderr, "jcc:%i:%i:error: %s\n| %i    %.*s\n%*s^^^\n",
                 msg.loc.line, msg.loc.col, msg.text, msg.loc.line, (int)(msg.loc.text.e - msg.loc.text.s), msg.loc.text.s,
-                msg.loc.col + 6 + count_digits(msg.loc.line), "");
+                msg.loc.col + 1 + count_digits(msg.loc.line), "");
     }
 }
 
@@ -1208,6 +1209,7 @@ INLINE void* global_alloc_scratch(size_t bytes) {
 }
 
 INLINE bool is_lvalue(AST *ast) {
+    if(ast == NULL) return false;
     if(ast->kind == AST_KIND_atom) {
         AST_atom *atom = (AST_atom*)ast;
         return atom->token == TOKEN_IDENT;
@@ -1233,11 +1235,9 @@ INLINE void print_ir_inst(IRinst inst) {
     	case IROP_AND: case IROP_OR: case IROP_XOR:
     	case IROP_LSHIFT: case IROP_RSHIFT:
     	case IROP_EQ: case IROP_NE: case IROP_LE: case IROP_GT:
-    	case IROP_NOT: case IROP_NEG:
     	case IROP_FADD: case IROP_FSUB:
     	case IROP_FMUL: case IROP_FDIV:
     	case IROP_FEQ: case IROP_FNE: case IROP_FLE: case IROP_FGT:
-    	case IROP_FNEG:
             if(inst.arith.immediate) {
                 if(inst.opcode >= IROP_FADD) {
                     if(inst.arith.operand_bytes[2] == 8) {
@@ -1271,6 +1271,15 @@ INLINE void print_ir_inst(IRinst inst) {
                         inst.arith.reg[2], inst.arith.operand_bytes[2]
                         );
             }
+            break;
+        case IROP_NOT: case IROP_NEG:
+        case IROP_FNEG:
+            assert(inst.arith.immediate == false);
+            printf("%s r_%lu %luB, r_%lu %luB\n",
+                    opstr,
+                    inst.arith.reg[0], inst.arith.operand_bytes[0],
+                    inst.arith.reg[1], inst.arith.operand_bytes[1]
+                  );
             break;
 		case IROP_IF:
 		case IROP_IFZ:
@@ -1551,6 +1560,14 @@ AST* parse_procblock(Job *jp) {
         if(!statement_list->next) statement_list->next = parse_vardecl(jp);
         if(!statement_list->next) statement_list->next = parse_statement(jp);
 
+        if(!statement_list->next) {
+            return NULL;
+        }
+
+        if(jp->state == JOB_STATE_ERROR) {
+            return NULL;
+        }
+
         unlex = *lexer;
         t = lex(lexer);
         if(t == '}') {
@@ -1728,6 +1745,12 @@ AST* parse_statement(Job *jp) {
             *lexer = unlex;
 
         node->left = parse_expr(jp);
+
+        if(node->left == NULL) {
+            t = lex(lexer);
+            job_error(jp, lexer->loc, "empty statement");
+            return NULL;
+        }
 
         t = lex(lexer);
 
@@ -1943,6 +1966,10 @@ AST* parse_expr_increase_prec(Job *jp, AST *left, int min_prec) {
     op = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
     op->token = t;
     op->right = parse_expr_decrease_prec(jp, prec);
+    if(op->right == NULL) {
+        job_error(jp, lexer->loc, "expected operand on right of '%c'", (char)t);
+        return NULL;
+    }
     op->base.weight += op->right->weight;
 
     return (AST*)op;
@@ -1960,6 +1987,7 @@ AST* parse_expr_decrease_prec(Job *jp, int min_prec) {
     while(true) {
         node = parse_expr_increase_prec(jp, left, min_prec);
         if(node == left) break;
+        if(node == NULL) break;
         assert(node->kind == AST_KIND_expr);
         node->weight += left->weight;
         op = (AST_expr*)node;
@@ -2003,28 +2031,42 @@ AST* parse_prefix(Job *jp) {
             }
 
             expr->right = parse_prefix(jp);
+
             if(expr->right == NULL) {
+                job_error(jp, expr->base.loc, "expected operand for cast");
                 return NULL;
             }
+
             node = (AST*)expr;
+            node->weight += expr->right->weight;
             break;
         case '+': case '-': case '!': case '~': case '@': case '>':
             expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
             expr->token = t;
             expr->right = parse_prefix(jp);
 
+            /*
             if((t == '>' || t == '@') && expr->right && !is_lvalue(expr->right))
                 job_error(jp, expr->base.loc,
                         (t == '>')
                         ? "operand of pointer dereference '>' must be lvalue"
                         : "operand of address operator '@' must be lvalue"
                         );
+            */
+            if(expr->right == NULL) {
+                job_error(jp, expr->base.loc, "expected operand for '%c'", (char)t);
+                return NULL;
+            }
+
+            if(t == '@' && expr->right && !is_lvalue(expr->right)) {
+                job_error(jp, expr->base.loc, "operand of address operator '@' must be lvalue");
+                return NULL;
+            }
 
             node = (AST*)expr;
+            node->weight += expr->right->weight;
             break;
     }
-
-    if(node) node->weight += 1;
 
     return node;
 }
@@ -2052,6 +2094,9 @@ AST* parse_postfix(Job *jp) {
 
         if(t == '[') {
             expr->right = parse_expr(jp);
+            if(expr->right == NULL) {
+                return (AST*)expr;
+            }
             expr->base.weight += expr->right->weight;
             t = lex(lexer);
             if(t != ']') {
@@ -2059,8 +2104,8 @@ AST* parse_postfix(Job *jp) {
                 return NULL;
             }
 
-            if(!is_lvalue(expr->left))
-                job_error(jp, expr->base.loc, "operand of subscript operator must be lvalue");
+            //if(!is_lvalue(expr->left))
+            //    job_error(jp, expr->base.loc, "operand of subscript operator must be lvalue");
         } else if(t == '.') {
             t = lex(lexer);
             if(t != TOKEN_IDENT) {
@@ -2548,6 +2593,8 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
 
     if(ast_statement->right)
         ir_gen_expr(jp, ast_statement->right);
+    else
+        jp->reg_alloc++;
 
     if(ast_statement->left->kind != AST_KIND_atom) {
         assert(ast_statement->left->kind == AST_KIND_expr);
@@ -2567,6 +2614,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
             } else {
                 assert(left_expr->token == '>' && left_expr->left == NULL);
                 ir_gen_expr(jp, left_expr->right);
+                printf("%lu\n",jp->reg_alloc);
                 assert(jp->reg_alloc == 2);
             }
 
@@ -2685,16 +2733,53 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
         case '=':
             break;
         case TOKEN_PLUSEQUAL:
-            arrlast(jp->instructions).opcode =
-                (op_type->kind >= TYPE_KIND_FLOAT && op_type->kind <= TYPE_KIND_F64)
-                ? IROP_FADD
-                : IROP_ADD;
+            if(op_type->kind == TYPE_KIND_POINTER) {
+                assert(op_type->pointer.to->kind != TYPE_KIND_VOID);
+                arrlast(jp->instructions) =
+                    (IRinst) {
+                        .opcode = IROP_CALCPTROFFSET,
+                        .calcptroffset = {
+                            .reg_dest = 0,
+                            .reg_src_ptr = read_reg,
+                            .offset_reg = 0,
+                            .stride = op_type->pointer.to->bytes,
+                        },
+                    };
+            } else {
+                arrlast(jp->instructions).opcode =
+                    (op_type->kind >= TYPE_KIND_FLOAT && op_type->kind <= TYPE_KIND_F64)
+                    ? IROP_FADD
+                    : IROP_ADD;
+            }
             break;
         case TOKEN_MINUSEQUAL:
-            arrlast(jp->instructions).opcode =
-                (op_type->kind >= TYPE_KIND_FLOAT && op_type->kind <= TYPE_KIND_F64)
-                ? IROP_FSUB
-                : IROP_SUB;
+            if(op_type->kind == TYPE_KIND_POINTER) {
+                assert(op_type->pointer.to->kind != TYPE_KIND_VOID);
+                arrlast(jp->instructions) =
+                    (IRinst) {
+                        .opcode = IROP_NEG,
+                        .arith = {
+                            .operand_bytes = { op_bytes, op_bytes },
+                            .reg = { 0, 0 },
+                        },
+                    };
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_CALCPTROFFSET,
+                        .calcptroffset = {
+                            .reg_dest = 0,
+                            .reg_src_ptr = read_reg,
+                            .offset_reg = 0,
+                            .stride = op_type->pointer.to->bytes,
+                        },
+                    };
+                arrpush(jp->instructions, inst);
+            } else {
+                arrlast(jp->instructions).opcode =
+                    (op_type->kind >= TYPE_KIND_FLOAT && op_type->kind <= TYPE_KIND_F64)
+                    ? IROP_FSUB
+                    : IROP_SUB;
+            }
             break;
         case TOKEN_TIMESEQUAL:
             arrlast(jp->instructions).opcode =
@@ -2727,30 +2812,78 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
             arrlast(jp->instructions).opcode = IROP_XOR;
             break;
         case TOKEN_PLUSPLUS:
-            arrlast(jp->instructions).opcode =
-                (op_type->kind >= TYPE_KIND_FLOAT && op_type->kind <= TYPE_KIND_F64)
-                ? IROP_FADD
-                : IROP_ADD;
-            if(op_type->kind == TYPE_KIND_F64)
-                arrlast(jp->instructions).arith.imm.floating64 = 1.0;
-            else if(op_type->kind >= TYPE_KIND_FLOAT)
-                arrlast(jp->instructions).arith.imm.floating32 = 1.0;
-            else
-                arrlast(jp->instructions).arith.imm.integer = 1;
-            arrlast(jp->instructions).arith.immediate = true;
+            if(op_type->kind == TYPE_KIND_POINTER) {
+                assert(op_type->pointer.to->kind != TYPE_KIND_VOID);
+                arrlast(jp->instructions) =
+                    (IRinst) {
+                        .opcode = IROP_LOAD,
+                        .load = {
+                            .reg_dest = 0,
+                            .imm.integer = 1,
+                            .immediate = true,
+                        },
+                    };
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_CALCPTROFFSET,
+                        .calcptroffset = {
+                            .reg_dest = 0,
+                            .reg_src_ptr = read_reg,
+                            .offset_reg = 0,
+                            .stride = op_type->pointer.to->bytes,
+                        },
+                    };
+                arrpush(jp->instructions, inst);
+            } else {
+                arrlast(jp->instructions).opcode =
+                    (op_type->kind >= TYPE_KIND_FLOAT && op_type->kind <= TYPE_KIND_F64)
+                    ? IROP_FADD
+                    : IROP_ADD;
+                if(op_type->kind == TYPE_KIND_F64)
+                    arrlast(jp->instructions).arith.imm.floating64 = 1.0;
+                else if(op_type->kind >= TYPE_KIND_FLOAT)
+                    arrlast(jp->instructions).arith.imm.floating32 = 1.0;
+                else
+                    arrlast(jp->instructions).arith.imm.integer = 1;
+                arrlast(jp->instructions).arith.immediate = true;
+            }
             break;
         case TOKEN_MINUSMINUS:
-            arrlast(jp->instructions).opcode =
-                (op_type->kind >= TYPE_KIND_FLOAT && op_type->kind <= TYPE_KIND_F64)
-                ? IROP_FSUB
-                : IROP_SUB;
-            if(op_type->kind == TYPE_KIND_F64)
-                arrlast(jp->instructions).arith.imm.floating64 = 1.0;
-            else if(op_type->kind >= TYPE_KIND_FLOAT)
-                arrlast(jp->instructions).arith.imm.floating32 = 1.0;
-            else
-                arrlast(jp->instructions).arith.imm.integer = 1;
-            arrlast(jp->instructions).arith.immediate = true;
+            if(op_type->kind == TYPE_KIND_POINTER) {
+                assert(op_type->pointer.to->kind != TYPE_KIND_VOID);
+                arrlast(jp->instructions) =
+                    (IRinst) {
+                        .opcode = IROP_LOAD,
+                        .load = {
+                            .reg_dest = 0,
+                            .imm.integer = -1,
+                            .immediate = true,
+                        },
+                    };
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_CALCPTROFFSET,
+                        .calcptroffset = {
+                            .reg_dest = 0,
+                            .reg_src_ptr = read_reg,
+                            .offset_reg = 0,
+                            .stride = op_type->pointer.to->bytes,
+                        },
+                    };
+                arrpush(jp->instructions, inst);
+            } else {
+                arrlast(jp->instructions).opcode =
+                    (op_type->kind >= TYPE_KIND_FLOAT && op_type->kind <= TYPE_KIND_F64)
+                    ? IROP_FSUB
+                    : IROP_SUB;
+                if(op_type->kind == TYPE_KIND_F64)
+                    arrlast(jp->instructions).arith.imm.floating64 = 1.0;
+                else if(op_type->kind >= TYPE_KIND_FLOAT)
+                    arrlast(jp->instructions).arith.imm.floating32 = 1.0;
+                else
+                    arrlast(jp->instructions).arith.imm.integer = 1;
+                arrlast(jp->instructions).arith.immediate = true;
+            }
             break;
     }
 
@@ -3165,6 +3298,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         break;
                     case '+':
                         printf("schmuck\n");
+                        jp->reg_alloc++;
                         break;
                     case '-':
                         inst = 
@@ -3271,18 +3405,96 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         jp->reg_alloc++;
                         break;
                     case '+':
-                        inst.opcode =
-                            (result_type->kind >= TYPE_KIND_FLOAT && result_type->kind <= TYPE_KIND_F64)
-                            ? IROP_FADD
-                            : IROP_ADD;
-                        is_arith = true;
+                        if(a_type->kind == TYPE_KIND_POINTER) {
+                            assert(result_type->kind == TYPE_KIND_POINTER);
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_CALCPTROFFSET,
+                                    .calcptroffset = {
+                                        .reg_dest = result_reg,
+                                        .reg_src_ptr = a_reg,
+                                        .offset_reg = b_reg,
+                                        .stride = result_type->pointer.to->bytes,
+                                    },
+                                };
+                            arrpush(jp->instructions, inst);
+                            jp->reg_alloc++;
+                        } else if(b_type->kind == TYPE_KIND_POINTER) {
+                            assert(result_type->kind == TYPE_KIND_POINTER);
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_CALCPTROFFSET,
+                                    .calcptroffset = {
+                                        .reg_dest = result_reg,
+                                        .reg_src_ptr = b_reg,
+                                        .offset_reg = a_reg,
+                                        .stride = result_type->pointer.to->bytes,
+                                    },
+                                };
+                            arrpush(jp->instructions, inst);
+                            jp->reg_alloc++;
+                        } else {
+                            inst.opcode =
+                                (result_type->kind >= TYPE_KIND_FLOAT && result_type->kind <= TYPE_KIND_F64)
+                                ? IROP_FADD
+                                : IROP_ADD;
+                            is_arith = true;
+                        }
                         break;
                     case '-':
-                        inst.opcode =
-                            (result_type->kind >= TYPE_KIND_FLOAT && result_type->kind <= TYPE_KIND_F64)
-                            ? IROP_FSUB
-                            : IROP_SUB;
-                        is_arith = true;
+                        if(a_type->kind == TYPE_KIND_POINTER) {
+                            assert(result_type->kind == TYPE_KIND_POINTER);
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_NEG,
+                                    .arith = {
+                                        .operand_bytes = { b_bytes, b_bytes },
+                                        .reg = { b_reg, b_reg },
+                                    },
+                                };
+                            arrpush(jp->instructions, inst);
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_CALCPTROFFSET,
+                                    .calcptroffset = {
+                                        .reg_dest = result_reg,
+                                        .reg_src_ptr = a_reg,
+                                        .offset_reg = b_reg,
+                                        .stride = result_type->pointer.to->bytes,
+                                    },
+                                };
+                            arrpush(jp->instructions, inst);
+                            jp->reg_alloc++;
+                        } else if(b_type->kind == TYPE_KIND_POINTER) {
+                            assert(result_type->kind == TYPE_KIND_POINTER);
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_NEG,
+                                    .arith = {
+                                        .operand_bytes = { a_bytes, a_bytes },
+                                        .reg = { a_reg, a_reg },
+                                    },
+                                };
+                            arrpush(jp->instructions, inst);
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_CALCPTROFFSET,
+                                    .calcptroffset = {
+                                        .reg_dest = result_reg,
+                                        .reg_src_ptr = b_reg,
+                                        .offset_reg = a_reg,
+                                        .stride = result_type->pointer.to->bytes,
+                                    },
+                                };
+                            arrpush(jp->instructions, inst);
+                            jp->reg_alloc++;
+                        } else {
+                            inst.opcode =
+                                (result_type->kind >= TYPE_KIND_FLOAT && result_type->kind <= TYPE_KIND_F64)
+                                ? IROP_FSUB
+                                : IROP_SUB;
+                            is_arith = true;
+                        }
                         break;
                     case '*':
                         inst.opcode =
@@ -3427,7 +3639,7 @@ void job_runner(char *src, char *src_path) {
 
                         if(ast == NULL) {
                             Token t = lex(jp->lexer);
-                            assert(t == 0);
+                            assert(t == 0 || jp->state == JOB_STATE_ERROR);
 
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
@@ -3761,6 +3973,14 @@ void job_runner(char *src, char *src_path) {
                                 jp->step = TYPECHECK_STEP_NONE;
 
                                 arrlast(jp->tree_pos_stack) = ast_statement->next;
+
+                                if(type_error_in_statement) {
+                                    job_report_all_messages(jp);
+                                    job_die(jp);
+                                    ++i;
+                                    continue;
+                                }
+
                                 continue;
                             }
 
@@ -3801,7 +4021,6 @@ void job_runner(char *src, char *src_path) {
                                 continue;
                             }
 
-                            //TODO handle ++ and --
                             Type *type_left = ((AST_expr*)(ast_statement->left))->type_annotation;
                             Type *type_right = ast_statement->right
                                 ? ((AST_expr*)(ast_statement->right))->type_annotation
@@ -4089,6 +4308,7 @@ Type *atom_to_type(Job *jp, AST_atom *atom) {
         case TOKEN_INT:
         case TOKEN_S8: case TOKEN_S16: case TOKEN_S32: case TOKEN_S64:
         case TOKEN_U8: case TOKEN_U16: case TOKEN_U32: case TOKEN_U64:
+        case TOKEN_F32: case TOKEN_F64:
         case TOKEN_FLOAT:
         case TOKEN_CHAR:
             tp = job_alloc_type(jp, TYPE_KIND_TYPE);
@@ -4364,7 +4584,7 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
                 return builtin_type+TYPE_KIND_VOID;
             if(a->kind == TYPE_KIND_POINTER && a->pointer.to->kind == TYPE_KIND_VOID)
                 return builtin_type+TYPE_KIND_VOID;
-            break;
+            return a;
         case '=':
             if(a->kind < TYPE_KIND_TYPE) {
                 if(b->kind >= TYPE_KIND_TYPE) return builtin_type+TYPE_KIND_VOID;
@@ -4373,6 +4593,11 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
 
                 //TODO prevent int from casting to float, instead add a number type for intlit's
                 if(a->kind >= TYPE_KIND_INT || b->kind == TYPE_KIND_INT) /* integers are very flexible */
+                    return a;
+
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_U8)
+                    return a;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_CHAR)
                     return a;
 
                 if(b->kind > a->kind) return builtin_type+TYPE_KIND_VOID;
@@ -4417,6 +4642,11 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
                 if(a->kind >= TYPE_KIND_INT || b->kind == TYPE_KIND_INT) /* integers are very flexible */
                     return a;
 
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_U8)
+                    return a;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_CHAR)
+                    return a;
+
                 if(b->kind > a->kind) return builtin_type+TYPE_KIND_VOID;
                 if(b->kind == TYPE_KIND_CHAR) return builtin_type+TYPE_KIND_VOID;
                 if(b->kind == TYPE_KIND_BOOL) return builtin_type+TYPE_KIND_VOID;
@@ -4447,6 +4677,11 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
                 if(a->kind == b->kind) return a;
 
                 if(a->kind >= TYPE_KIND_INT || b->kind == TYPE_KIND_INT) /* integers are very flexible */
+                    return a;
+
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_U8)
+                    return a;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_CHAR)
                     return a;
 
                 if(b->kind > a->kind) return builtin_type+TYPE_KIND_VOID;
@@ -4593,9 +4828,11 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
             }
             break;
         case '>': case '<': case TOKEN_GREATEQUAL: case TOKEN_LESSEQUAL: case TOKEN_EXCLAMEQUAL: case TOKEN_EQUALEQUAL:
+            //TODO typecheck comparisons
             UNIMPLEMENTED;
             break;
         case TOKEN_AND: case TOKEN_OR:
+            //TODO typecheck logical operators
             UNIMPLEMENTED;
             break;
     }
