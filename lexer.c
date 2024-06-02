@@ -143,7 +143,7 @@ u64 token_keyword_lengths[] = {
 #undef X
 };
 
-char token_chars[] = "+-*&^%#!~'\";:?/.,<>=[]{}()";
+char token_chars[] = "+-*&^%#!~'\";:?/.,<>=[]{}()@";
 
 
 INLINE void lexer_init(Lexer *l, char *src, char *src_path) {

@@ -167,44 +167,45 @@
     X(FNEG, -)                          \
 
 #define IROPCODES                       \
-	X(NOOP,          _)                 \
+    X(NOOP,          _)                 \
     IR_INT_BINOPS                       \
     IR_INT_UNOPS                        \
     IR_FLOAT_BINOPS                     \
     IR_FLOAT_UNOPS                      \
-	X(IF,            _)                 \
-	X(IFZ,           _)                 \
-	X(JMP,           _)                 \
-	X(CALL,          _)                 \
-	X(RET,           _)                 \
+    X(IF,            _)                 \
+    X(IFZ,           _)                 \
+    X(JMP,           _)                 \
+    X(CALL,          _)                 \
+    X(RET,           _)                 \
     X(LABEL,         _)                 \
     X(PUSH,          _)                 \
     X(POP,           _)                 \
-	X(LOAD,          _)                 \
+    X(LOAD,          _)                 \
     X(STOR,          _)                 \
-	X(LOADF,         _)                 \
+    X(LOADF,         _)                 \
     X(STORF,         _)                 \
+    X(CALCPTROFFSET, _)                 \
     X(ADDRLOCAL,     _)                 \
     X(ADDRGLOBAL,    _)                 \
-	X(GETLOCAL,      _)                 \
-	X(SETLOCAL,      _)                 \
-	X(GETGLOBAL,     _)                 \
-	X(SETGLOBAL,     _)                 \
-	X(SETARG,        _)                 \
-	X(SETRET,        _)                 \
-	X(GETARG,        _)                 \
-	X(GETRET,        _)                 \
-	X(GETLOCALF,     _)                 \
-	X(SETLOCALF,     _)                 \
-	X(GETGLOBALF,    _)                 \
-	X(SETGLOBALF,    _)                 \
-	X(SETARGF,       _)                 \
-	X(SETRETF,       _)                 \
-	X(GETARGF,       _)                 \
-	X(GETRETF,       _)                 \
-	X(ITOF,          _)                 \
-	X(FTOI,          _)                 \
-	X(ITOI,          _)                 \
+    X(GETLOCAL,      _)                 \
+    X(SETLOCAL,      _)                 \
+    X(GETGLOBAL,     _)                 \
+    X(SETGLOBAL,     _)                 \
+    X(SETARG,        _)                 \
+    X(SETRET,        _)                 \
+    X(GETARG,        _)                 \
+    X(GETRET,        _)                 \
+    X(GETLOCALF,     _)                 \
+    X(SETLOCALF,     _)                 \
+    X(GETGLOBALF,    _)                 \
+    X(SETGLOBALF,    _)                 \
+    X(SETARGF,       _)                 \
+    X(SETRETF,       _)                 \
+    X(GETARGF,       _)                 \
+    X(GETRETF,       _)                 \
+    X(ITOF,          _)                 \
+    X(FTOI,          _)                 \
+    X(ITOI,          _)                 \
 
 #define TOKEN_TO_TYPEKIND(t) (Typekind)((t-TOKEN_VOID)+TYPE_KIND_VOID)
 
@@ -338,6 +339,18 @@ struct IRinst {
             u64 reg;
             u64 bytes;
         } stack;
+
+        struct {
+            u64 reg_dest;
+            u64 offset;
+        } addrvar;
+
+        struct {
+            u64 reg_dest;
+            u64 reg_src_ptr;
+            u64 offset_reg;
+            u64 stride;
+        } calcptroffset;
 
         struct {
             u64 reg_dest;
@@ -884,7 +897,7 @@ Job job_spawn(Jobid *id_alloc, Pipe_stage pipe_stage) {
 }
 
 void job_init_allocator_scratch(Job *jp) {
-    arena_init_full(&jp->allocator.scratch, true, JLIB_ARENA_INITIAL_BLOCK_BYTES);
+    arena_init_full(&jp->allocator.scratch, false, JLIB_ARENA_INITIAL_BLOCK_BYTES);
     jp->allocator.active.scratch = true;
 }
 
@@ -1210,6 +1223,8 @@ INLINE void print_ir_inst(IRinst inst) {
     char *opstr = IRop_debug[inst.opcode];
 
     switch(inst.opcode) {
+        default:
+            UNREACHABLE;
 		case IROP_NOOP:
             printf("%s\n", opstr);
             break;
@@ -1276,6 +1291,17 @@ INLINE void print_ir_inst(IRinst inst) {
     	case IROP_LABEL:
             printf("%s %lu\n", opstr, inst.label.id);
 			break;
+        case IROP_CALCPTROFFSET:
+            printf("%s r_%lu, ptr_r_%lu, offset_r_%lu, stride %luB\n",
+                    opstr,
+                    inst.calcptroffset.reg_dest,
+                    inst.calcptroffset.reg_src_ptr,
+                    inst.calcptroffset.offset_reg,
+                    inst.calcptroffset.stride);
+            break;
+        case IROP_ADDRLOCAL: case IROP_ADDRGLOBAL:
+            printf("%s r_%lu, segment offset %lu\n", opstr, inst.addrvar.reg_dest, inst.addrvar.offset);
+            break;
     	case IROP_PUSH: case IROP_POP:
             printf("%s r_%lu %luB\n", opstr, inst.stack.reg, inst.stack.bytes);
 			break;
@@ -1987,8 +2013,12 @@ AST* parse_prefix(Job *jp) {
             expr->token = t;
             expr->right = parse_prefix(jp);
 
-            if(t == '>' && expr->right && !is_lvalue(expr->right))
-                job_error(jp, expr->base.loc, "operand of pointer dereference '>' must be lvalue");
+            if((t == '>' || t == '@') && expr->right && !is_lvalue(expr->right))
+                job_error(jp, expr->base.loc,
+                        (t == '>')
+                        ? "operand of pointer dereference '>' must be lvalue"
+                        : "operand of address operator '@' must be lvalue"
+                        );
 
             node = (AST*)expr;
             break;
@@ -2993,7 +3023,22 @@ void ir_gen_expr(Job *jp, AST *ast) {
                             };
                     }
                 }
+            } else if(atom->token == '@') {
+                atom->token = TOKEN_IDENT;
 
+                Sym *sym = atom->symbol_annotation;
+                assert(sym->type->kind != TYPE_KIND_VOID);
+
+                arrpush(type_stack, sym->type);
+
+                inst =
+                    (IRinst) {
+                        .opcode = (sym->is_global) ? IROP_ADDRGLOBAL : IROP_ADDRLOCAL,
+                        .addrvar = {
+                            .reg_dest = jp->reg_alloc++,
+                            .offset = sym->segment_offset,
+                        },
+                    };
             } else {
                 Type *atom_type = atom->type_annotation;
                 arrpush(type_stack, atom_type);
@@ -3196,6 +3241,20 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 switch(node->token) {
                     default:
                         UNREACHABLE;
+                    case '@':
+                        inst = 
+                            (IRinst) {
+                                .opcode = IROP_CALCPTROFFSET,
+                                .calcptroffset = {
+                                    .reg_dest = result_reg,
+                                    .reg_src_ptr = a_reg,
+                                    .offset_reg = b_reg,
+                                    .stride = result_type->bytes,
+                                },
+                            };
+                        arrpush(jp->instructions, inst);
+                        jp->reg_alloc++;
+                        break;
                     case '[':
                         inst = 
                             (IRinst) {
@@ -4058,6 +4117,9 @@ Value* evaluate_unary(Job *jp, Value *a, AST_expr *op_ast) {
     switch(op) {
         default:
             UNREACHABLE;
+        case '>': case '@':
+            result = builtin_value+VALUE_KIND_NIL;
+            break;
         case '[':
             if(a->kind == VALUE_KIND_TYPE) {
                 result = job_alloc_value(jp, VALUE_KIND_TYPE);
@@ -4070,6 +4132,7 @@ Value* evaluate_unary(Job *jp, Value *a, AST_expr *op_ast) {
         case '+':
             result = a;
             break;
+        //TODO better evaluation
         case '-':
             if(a->kind >= VALUE_KIND_FLOAT) {
                 result = job_alloc_value(jp, VALUE_KIND_FLOAT);
@@ -4280,6 +4343,12 @@ Type* typecheck_unary(Job *jp, Type *a, AST_expr *op_ast) {
                 return builtin_type+TYPE_KIND_VOID;
             }
             return a->pointer.to;
+        case '@':
+            {
+                Type *addr_type = job_alloc_type(jp, TYPE_KIND_POINTER);
+                addr_type->pointer.to = a;
+                return addr_type;
+            }
     }
 }
 
@@ -4865,6 +4934,40 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
 
         if(expr->token == TOKEN_AND || expr->token == TOKEN_OR || expr->token == '!') {
             arrpush(ir_expr, ast);
+            return ir_expr;
+        }
+
+        if(expr->token == '@') {
+            assert(expr->right && !expr->left);
+
+            if(expr->right->kind == AST_KIND_atom) {
+                AST_atom *atom = (AST_atom*)(expr->right);
+                assert(atom->token == TOKEN_IDENT);
+                atom->token = '@';
+                arrpush(ir_expr, expr->right);
+                return ir_expr;
+            }
+
+            AST_expr *addr_operand = (AST_expr*)(expr->right);
+
+            if(addr_operand->token == '>') {
+                assert(addr_operand->right && !addr_operand->left);
+                return ir_linearize_expr(ir_expr, addr_operand->right);
+            }
+
+            assert(addr_operand->token == '[');
+
+            if(addr_operand->left && addr_operand->right && addr_operand->left->weight >= addr_operand->right->weight) {
+                ir_expr = ir_linearize_expr(ir_expr, addr_operand->left);
+                ir_expr = ir_linearize_expr(ir_expr, addr_operand->right);
+            } else {
+                ir_expr = ir_linearize_expr(ir_expr, addr_operand->right);
+                ir_expr = ir_linearize_expr(ir_expr, addr_operand->left);
+            }
+
+            addr_operand->token = '@';
+
+            arrpush(ir_expr, expr->right);
             return ir_expr;
         }
 

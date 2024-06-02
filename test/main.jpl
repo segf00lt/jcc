@@ -63,6 +63,16 @@ proc test_proc(i: int, x: int, c: char, f: float) {
     ptr: *s32 = cast(*void)123456;
     >ptr = 4;
     ptr[5*i] = ptr[4*x] + 65 + cast(s32)f;
+    f = cast(float)y;
+
+    a := 0;
+    b := 0;
+
+    foo: int = 3;
+    addr_of_foo: *int = @foo;
+    addr_addr_of_foo: **int = @addr_of_foo;
+    other_addr_of_foo: *int = @>addr_of_foo;
+    other_other_addr_of_foo: *int = @addr_of_foo[a + b];
 }
 
 TWO :: 2;
