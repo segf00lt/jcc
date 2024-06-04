@@ -101,6 +101,17 @@ proc test_proc(i: int, x: int, c: char, f: float) {
     bb = c && bb && f;
     bb = >ptr_u8 > cast(u8)i;
 
+    if i > 0 {
+        i = 9000;
+    } else if i < 756 {
+        test_var: u16;
+        i++;
+    } else if i <= x {
+        x = i;
+    } else {
+        i = x + 65;
+    }
+
     /*
 
     LOAD r_0, 1, 8B

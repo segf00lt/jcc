@@ -110,10 +110,12 @@ INLINE void arena_free(Arena *a) {
 }
 
 INLINE void arena_destroy(Arena *a) {
-    for(uint64_t i = 0; i <= a->cur_block; ++i)
-        free(a->blocks[i]);
-    free(a->blocks);
-    free(a->block_sizes);
+    if(a->blocks) {
+        for(uint64_t i = 0; i <= a->cur_block; ++i)
+            free(a->blocks[i]);
+        free(a->blocks);
+        free(a->block_sizes);
+    }
     *a = (Arena){0};
 }
 

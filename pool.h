@@ -80,9 +80,11 @@ void pool_free(Pool *p) {
 }
 
 void pool_destroy(Pool *p) {
-    for(uint32_t i = 0; i < p->chunks_available; ++i)
-        free(p->chunks[i]);
-    free(p->chunks);
+    if(p->chunks) {
+        for(uint32_t i = 0; i < p->chunks_available; ++i)
+            free(p->chunks[i]);
+        free(p->chunks);
+    }
     *p = (Pool){0};
 }
 

@@ -213,6 +213,8 @@
 #define TYPE_KIND_IS_SCALAR(kind) (kind < TYPE_KIND_TYPE || kind == TYPE_KIND_POINTER)
 
 
+typedef struct IRlabel IRlabel;
+typedef IRlabel* IRlabel_tab;
 typedef struct Scope_entry* Scope;
 typedef int    Jobid;
 typedef struct Value Value;
@@ -303,6 +305,13 @@ union IRvalue {
     u64 integer;
     f32 floating32;
     f64 floating64;
+};
+
+struct IRlabel {
+    char *key;
+    u64 continue_label;
+    u64 break_label;
+    Token keyword;
 };
 
 struct IRinst {
@@ -479,11 +488,14 @@ struct Job {
     Arr(AST**)           expr_list;
     u64                  expr_list_pos;
 
-    Arr(IRinst)          instructions;
-    u64                  local_segment_offset;
-    u64                  reg_alloc;
+    /* code generation */
+    Arr(u64)             local_offset;
+    Arr(IRlabel_tab)     label_table;
+    Arr(u64)             continue_label;
+    Arr(u64)             break_label;
     u64                  label_alloc;
-    Arr(u64)             label_table;
+    Arr(IRinst)          instructions;
+    u64                  reg_alloc;
 
     Arr(Message)         messages;
 
@@ -800,7 +812,7 @@ bool        is_lvalue(AST *ast);
 Arr(AST*)   ir_linearize_expr(Arr(AST*) ir_expr, AST *ast);
 
 void        ir_gen(Job *jp);
-void        ir_gen_block(Job *jp, AST *ast, u64 local_offset, s64 continue_label, s64 break_label);
+void        ir_gen_block(Job *jp, AST *ast);
 void        ir_gen_statement(Job *jp, AST_statement *ast_statement);
 void        ir_gen_logical_expr(Job *jp, AST *ast);
 void        ir_gen_expr(Job *jp, AST *ast);
@@ -930,25 +942,22 @@ void job_die(Job *jp) {
     jp->id = -1;
 
     for(int i = 0; i < arrlen(jp->scopes); ++i)
-        if(jp->scopes[i])
-            shfree(jp->scopes[i]);
+        shfree(jp->scopes[i]);
 
-    if(jp->scopes) arrfree(jp->scopes);
-    if(jp->tree_pos_stack) arrfree(jp->tree_pos_stack);
-    if(jp->value_stack) arrfree(jp->value_stack);
-    if(jp->type_stack) arrfree(jp->type_stack);
-    if(jp->expr) arrfree(jp->expr);
+    arrfree(jp->scopes);
+    arrfree(jp->tree_pos_stack);
+    arrfree(jp->value_stack);
+    arrfree(jp->type_stack);
+    arrfree(jp->expr);
 
-    if(jp->allocator.active.scratch) arena_destroy(&jp->allocator.scratch);
-    if(jp->allocator.active.value) pool_destroy(&jp->allocator.value);
-    if(jp->allocator.active.sym) pool_destroy(&jp->allocator.sym);
-    if(jp->allocator.active.type) pool_destroy(&(jp->allocator.type));
+    arena_destroy(&jp->allocator.scratch);
+    pool_destroy(&jp->allocator.value);
+    pool_destroy(&jp->allocator.sym);
+    pool_destroy(&(jp->allocator.type));
 
-    if(jp->allocator.active.ast) {
 #define X(x) pool_destroy(&(jp->allocator.ast_##x));
-        ASTKINDS;
+    ASTKINDS
 #undef X
-    }
 }
 
 Value* job_alloc_value(Job *jp, Valuekind kind) {
@@ -1571,17 +1580,19 @@ AST* parse_procblock(Job *jp) {
             return NULL;
         }
 
+        statement_list = (AST_statement*)(statement_list->next);
+
         unlex = *lexer;
         t = lex(lexer);
+
         if(t == '}') {
+            statement_list->next = NULL;
             break;
         } else if(t == 0) {
             job_error(jp, lexer->loc, "unexpected end of source");
             break;
         }
         *lexer = unlex;
-
-        statement_list = (AST_statement*)(statement_list->next);
     }
 
     block->down = head.next;
@@ -1647,12 +1658,15 @@ AST* parse_controlflow(Job *jp) {
                         branch->branch = job_alloc_ast(jp, AST_KIND_ifstatement);
                         branch = (AST_ifstatement*)branch->branch;
                         branch->condition = parse_expr(jp);
-                        if(branch->condition == NULL) job_error(jp, node->base.loc, "else-if statement missing condition");
+                        if(branch->condition == NULL) job_error(jp, branch->base.loc, "else-if statement missing condition");
+                        branch->body = body_func(jp);
                     } else {
+                        if(t != '{')
+                            job_error(jp, branch->base.loc, "expected beginning of else body");
                         *lexer = unlex;
+                        branch->branch = body_func(jp);
                     }
 
-                    branch->branch = body_func(jp);
                     if(node->body == NULL) job_error(jp, node->base.loc, "missing body");
 
                     unlex = *lexer;
@@ -2165,7 +2179,7 @@ AST* parse_term(Job *jp) {
             // putting the expr inside the [ ] on the right is a little weird
             // but it is done to be consistent with the other use of '[' for subscript
             // look at typecheck_binary where we check '[' if you don't remember
-            // 
+            //
             unlex = *lexer;
             t = lex(lexer);
             if(t == TOKEN_TWODOT) {
@@ -2569,8 +2583,11 @@ void ir_gen(Job *jp) {
             }
         }
 
+        jp->label_alloc = 1;
+        arrpush(jp->local_offset, 0);
         AST_block *body = (AST_block*)(ast_proc->body);
-        ir_gen_block(jp, body->down, local_offset, -1, -1);
+        arrsetlen(jp->local_offset, 0);
+        ir_gen_block(jp, body->down);
 
     } else {
         printf("sorry I don't know how to do this yet\n");
@@ -2895,7 +2912,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
     jp->reg_alloc = 0;
 }
 
-void ir_gen_block(Job *jp, AST *ast, u64 local_offset, s64 continue_label, s64 break_label) {
+void ir_gen_block(Job *jp, AST *ast) {
     IRinst inst;
 
     AST_statement defer_head = {0};
@@ -2910,7 +2927,127 @@ void ir_gen_block(Job *jp, AST *ast, u64 local_offset, s64 continue_label, s64 b
                 UNIMPLEMENTED;
                 break;
             case AST_KIND_ifstatement:
-                UNIMPLEMENTED;
+                //TODO labels and if statements are unimplemented
+                {
+                    AST_ifstatement *ast_if = (AST_ifstatement*)ast;
+
+                    u64 last_label = jp->label_alloc;
+                    jp->label_alloc++;
+                    u64 first_label = jp->label_alloc;
+
+                    arrpush(jp->break_label, last_label);
+
+                    ir_gen_expr(jp, ast_if->condition);
+
+                    assert(jp->reg_alloc == 1);
+                    jp->reg_alloc = 0;
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_IF,
+                            .branch = {
+                                .cond_reg = jp->reg_alloc,
+                                .label_id = first_label,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    Arr(u64) branch_labels = NULL;
+                    Arr(AST*) branches = NULL;
+                    arrpush(branches, ast_if->branch);
+
+                    while(arrlast(branches) && arrlast(branches)->kind == AST_KIND_ifstatement) {
+                        AST_ifstatement *ast_else_if = (AST_ifstatement*)arrlast(branches);
+
+                        jp->label_alloc++;
+
+                        ir_gen_expr(jp, ast_else_if->condition);
+
+                        assert(jp->reg_alloc == 1);
+                        jp->reg_alloc = 0;
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_IF,
+                                .branch = {
+                                    .cond_reg = jp->reg_alloc,
+                                    .label_id = jp->label_alloc,
+                                },
+                            };
+                        arrpush(jp->instructions, inst);
+                        arrpush(branch_labels, jp->label_alloc);
+                        arrpush(branches, ast_else_if->branch);
+                    }
+
+                    if(arrlast(branches) == NULL)
+                        arrsetlen(branches, arrlen(branches) - 1);
+
+                    if(arrlen(branches) > 0) {
+                        assert(arrlen(branches) == arrlen(branch_labels) || arrlen(branches) == arrlen(branch_labels) + 1);
+
+                        if(arrlast(branches)->kind != AST_KIND_ifstatement)
+                            ir_gen_block(jp, arrpop(branches));
+
+                        while(arrlen(branches) > 0) {
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_JMP,
+                                    .branch = {
+                                        .label_id = last_label,
+                                    },
+                                };
+                            arrpush(jp->instructions, inst);
+
+                            AST_ifstatement *ast_else_if = (AST_ifstatement*)arrpop(branches);
+
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_LABEL,
+                                    .label = {
+                                        .id = arrpop(branch_labels),
+                                    },
+                                };
+                            arrpush(jp->instructions, inst);
+
+                            ir_gen_block(jp, ast_else_if->body);
+                        }
+                    }
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_JMP,
+                            .branch = {
+                                .label_id = last_label,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_LABEL,
+                            .label = {
+                                .id = first_label,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    ir_gen_block(jp, ast_if->body);
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_LABEL,
+                            .label = {
+                                .id = last_label,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    arrsetlen(jp->break_label, arrlen(jp->break_label) - 1);
+
+                    arrfree(branch_labels);
+                    arrfree(branches);
+
+                    ast = ast_if->next;
+                }
                 break;
             case AST_KIND_whilestatement:
                 UNIMPLEMENTED;
@@ -2918,7 +3055,9 @@ void ir_gen_block(Job *jp, AST *ast, u64 local_offset, s64 continue_label, s64 b
             case AST_KIND_block:
                 {
                     AST_block *ast_block = (AST_block*)ast;
-                    ir_gen_block(jp, ast_block->down, local_offset, continue_label, break_label);
+                    arrpush(jp->local_offset, arrlast(jp->local_offset));
+                    ir_gen_block(jp, ast_block->down);
+                    arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
                     assert(jp->reg_alloc == 0);
                     ast = ast_block->next;
                 }
@@ -2930,8 +3069,8 @@ void ir_gen_block(Job *jp, AST *ast, u64 local_offset, s64 continue_label, s64 b
                     if(ast_vardecl->constant) continue;
 
                     Sym *sym = ast_vardecl->symbol_annotation;
-                    sym->segment_offset = local_offset;
-                    local_offset += sym->type->bytes;
+                    sym->segment_offset = arrlast(jp->local_offset);
+                    arrlast(jp->local_offset) += sym->type->bytes;
 
                     Type *var_type = sym->type;
 
@@ -3002,6 +3141,16 @@ void ir_gen_block(Job *jp, AST *ast, u64 local_offset, s64 continue_label, s64 b
             case AST_KIND_breakstatement:
                 {
                     UNIMPLEMENTED;
+
+                    if(jp->label_alloc == 0) {
+                        job_error(jp, ast->loc, "%s statement is not in control flow block",
+                                (ast->kind == AST_KIND_breakstatement) ? "'break'" : "'continue'");
+                    }
+
+                    if(ast->kind == AST_KIND_continuestatement && arrlen(jp->continue_label) <= 0) {
+                        job_error(jp, ast->loc, "cannot perform 'continue' statement within non 'for' of 'while' block");
+                    }
+
                     AST_breakstatement *ast_break = (AST_breakstatement*)ast;
 
                     if(ast_break->label) {
@@ -3013,8 +3162,8 @@ void ir_gen_block(Job *jp, AST *ast, u64 local_offset, s64 continue_label, s64 b
                                 .branch = {
                                     .label_id =
                                         (ast->kind == AST_KIND_breakstatement)
-                                        ? break_label
-                                        : continue_label,
+                                        ? arrlast(jp->break_label)
+                                        : arrlast(jp->continue_label),
                                 }
                             };
                     }
@@ -3830,6 +3979,7 @@ void job_runner(char *src, char *src_path) {
                                         printf("\n");
                                     }
                                 }
+                                ast_block->visited = false;
                                 shfree(s);
                                 arrlast(jp->tree_pos_stack) = ast_block->next;
                                 continue;
