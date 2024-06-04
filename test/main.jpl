@@ -112,6 +112,10 @@ proc test_proc(i: int, x: int, c: char, f: float) {
         i = x + 65;
     }
 
+    while x <= 0 {
+        x++;
+    }
+
     /*
 
     LOAD r_0, 1, 8B

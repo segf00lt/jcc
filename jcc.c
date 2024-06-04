@@ -2927,7 +2927,6 @@ void ir_gen_block(Job *jp, AST *ast) {
                 UNIMPLEMENTED;
                 break;
             case AST_KIND_ifstatement:
-                //TODO labels and if statements are unimplemented
                 {
                     AST_ifstatement *ast_if = (AST_ifstatement*)ast;
 
@@ -2935,9 +2934,9 @@ void ir_gen_block(Job *jp, AST *ast) {
                     jp->label_alloc++;
                     u64 first_label = jp->label_alloc;
 
-                    arrpush(jp->break_label, last_label);
-
                     ir_gen_expr(jp, ast_if->condition);
+
+                    arrpush(jp->break_label, last_label);
 
                     assert(jp->reg_alloc == 1);
                     jp->reg_alloc = 0;
@@ -3050,6 +3049,76 @@ void ir_gen_block(Job *jp, AST *ast) {
                 }
                 break;
             case AST_KIND_whilestatement:
+                {
+                    //TODO labels
+                    AST_whilestatement *ast_while = (AST_whilestatement*)ast;
+
+                    u64 last_label = jp->label_alloc;
+                    jp->label_alloc++;
+                    u64 cond_label = jp->label_alloc;
+                    jp->label_alloc++;
+                    u64 body_label = jp->label_alloc;
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_LABEL,
+                            .label = {
+                                .id = cond_label,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    ir_gen_expr(jp, ast_while->condition);
+
+                    assert(jp->reg_alloc == 1);
+                    jp->reg_alloc = 0;
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_IF,
+                            .branch = {
+                                .cond_reg = jp->reg_alloc,
+                                .label_id = body_label,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_JMP,
+                            .branch = {
+                                .label_id = last_label,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_LABEL,
+                            .label = {
+                                .id = body_label,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    arrpush(jp->break_label, last_label);
+                    arrpush(jp->continue_label, cond_label);
+
+                    ir_gen_block(jp, ast_while->body);
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_LABEL,
+                            .label = {
+                                .id = last_label,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    ast = ast_while->next;
+                }
+                break;
+            case AST_KIND_forstatement:
                 UNIMPLEMENTED;
                 break;
             case AST_KIND_block:
