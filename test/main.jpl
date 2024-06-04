@@ -113,7 +113,19 @@ proc test_proc(i: int, x: int, c: char, f: float) {
     }
 
     while x <= 0 {
+        if x == 4
+            break;
         x++;
+    }
+
+    row := 79;
+    col := 45;
+    while row < 10 {
+        while col < 10 {
+            i++;
+            if i == 20 break;
+        }
+        if i == 20 continue;
     }
 
     /*

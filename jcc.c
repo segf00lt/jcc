@@ -2928,15 +2928,15 @@ void ir_gen_block(Job *jp, AST *ast) {
                 break;
             case AST_KIND_ifstatement:
                 {
+                    //TODO labels
                     AST_ifstatement *ast_if = (AST_ifstatement*)ast;
 
                     u64 last_label = jp->label_alloc;
                     jp->label_alloc++;
                     u64 first_label = jp->label_alloc;
+                    jp->label_alloc++;
 
                     ir_gen_expr(jp, ast_if->condition);
-
-                    arrpush(jp->break_label, last_label);
 
                     assert(jp->reg_alloc == 1);
                     jp->reg_alloc = 0;
@@ -2958,8 +2958,6 @@ void ir_gen_block(Job *jp, AST *ast) {
                     while(arrlast(branches) && arrlast(branches)->kind == AST_KIND_ifstatement) {
                         AST_ifstatement *ast_else_if = (AST_ifstatement*)arrlast(branches);
 
-                        jp->label_alloc++;
-
                         ir_gen_expr(jp, ast_else_if->condition);
 
                         assert(jp->reg_alloc == 1);
@@ -2975,6 +2973,8 @@ void ir_gen_block(Job *jp, AST *ast) {
                         arrpush(jp->instructions, inst);
                         arrpush(branch_labels, jp->label_alloc);
                         arrpush(branches, ast_else_if->branch);
+
+                        jp->label_alloc++;
                     }
 
                     if(arrlast(branches) == NULL)
@@ -3040,8 +3040,6 @@ void ir_gen_block(Job *jp, AST *ast) {
                         };
                     arrpush(jp->instructions, inst);
 
-                    arrsetlen(jp->break_label, arrlen(jp->break_label) - 1);
-
                     arrfree(branch_labels);
                     arrfree(branches);
 
@@ -3058,6 +3056,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                     u64 cond_label = jp->label_alloc;
                     jp->label_alloc++;
                     u64 body_label = jp->label_alloc;
+                    jp->label_alloc++;
 
                     inst =
                         (IRinst) {
@@ -3105,6 +3104,18 @@ void ir_gen_block(Job *jp, AST *ast) {
                     arrpush(jp->continue_label, cond_label);
 
                     ir_gen_block(jp, ast_while->body);
+
+                    arrsetlen(jp->break_label, arrlen(jp->break_label) - 1);
+                    arrsetlen(jp->continue_label, arrlen(jp->continue_label) - 1);
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_JMP,
+                            .branch = {
+                                .label_id = cond_label,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
 
                     inst =
                         (IRinst) {
@@ -3209,8 +3220,6 @@ void ir_gen_block(Job *jp, AST *ast) {
             case AST_KIND_continuestatement:
             case AST_KIND_breakstatement:
                 {
-                    UNIMPLEMENTED;
-
                     if(jp->label_alloc == 0) {
                         job_error(jp, ast->loc, "%s statement is not in control flow block",
                                 (ast->kind == AST_KIND_breakstatement) ? "'break'" : "'continue'");
