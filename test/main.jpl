@@ -121,8 +121,8 @@ proc test_proc(i: int, x: int, c: char, f: float) {
 
     row := 79;
     col := 45;
-    while:outer        row < 10 {
-        while:inner    col < 10 {
+    while:outer row < 10 {
+        while:inner col < 10 {
             i++;
             if i == 20 break outer;
             else if i == 69 continue inner;
@@ -160,3 +160,12 @@ proc test_proc(i: int, x: int, c: char, f: float) {
 }
 
 TWO :: 2;
+
+proc other_proc(i: int) int {
+    if i < 8 {
+        i += 1;
+    } else {
+        return i - 1;
+    }
+
+}

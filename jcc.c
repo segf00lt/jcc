@@ -470,6 +470,8 @@ struct Job {
 
     Type                *cur_proc_type;
 
+    Loc_info             non_returning_path_loc;
+
     /* blocks */
     Arr(Scope)           scopes;
     Arr(AST*)            tree_pos_stack;
@@ -810,6 +812,7 @@ bool        job_label_create(Job *jp, IRlabel label);
 void        linearize_expr(Job *jp, AST **astpp);
 
 bool        is_lvalue(AST *ast);
+bool        all_paths_return(Job *jp, AST *ast);
 
 Arr(AST*)   ir_linearize_expr(Arr(AST*) ir_expr, AST *ast);
 
@@ -1245,6 +1248,91 @@ INLINE bool is_lvalue(AST *ast) {
     }
 }
 
+bool all_paths_return(Job *jp, AST *ast) {
+    if(ast->kind == AST_KIND_block) {
+        AST_block *block = (AST_block*)ast;
+        ast = block->down;
+    }
+
+    AST_statement *ast_statement = (AST_statement*)ast;
+
+    bool cannot_end_block;
+
+    AST *prev = NULL;
+
+    while(ast_statement) {
+        cannot_end_block = false;
+
+        switch(ast_statement->base.kind) {
+            default:
+                UNREACHABLE;
+            case AST_KIND_breakstatement:
+            case AST_KIND_continuestatement:
+            case AST_KIND_statement:
+                cannot_end_block = true;
+                break;
+            case AST_KIND_switchstatement:
+                UNIMPLEMENTED;
+            case AST_KIND_ifstatement:
+                {
+                    AST_ifstatement *ast_if = (AST_ifstatement*)ast_statement;
+                    if(!all_paths_return(jp, ast_if->body)) return false;
+
+                    AST *branch = ast_if->branch;
+                    while(branch && branch->kind == AST_KIND_ifstatement) {
+                        AST_ifstatement *ast_else_if = (AST_ifstatement*)branch;
+                        if(!all_paths_return(jp, ast_else_if->body)) return false;
+                        branch = ast_else_if->branch;
+                    }
+
+                    if(branch) {
+                        bool else_returns = all_paths_return(jp, branch);
+                        if(else_returns && ast_if->next == NULL) return true;
+                        if(!else_returns && ast_if->next == NULL) {
+                            return false;
+                        }
+                        if(!else_returns) jp->non_returning_path_loc = (Loc_info){0};
+                    }
+                }
+                break;
+            case AST_KIND_whilestatement:
+                {
+                    AST_whilestatement *ast_while = (AST_whilestatement*)ast_statement;
+                    if(!all_paths_return(jp, ast_while->body)) return false;
+                }
+                break;
+            case AST_KIND_forstatement:
+                {
+                    AST_forstatement *ast_for = (AST_forstatement*)ast_statement;
+                    if(!all_paths_return(jp, ast_for->body)) return false;
+                }
+                break;
+            case AST_KIND_returnstatement:
+                if(ast_statement->next != NULL) {
+                    job_error(jp, ast_statement->next->loc, "unreachable code");
+                    break;
+                }
+                break;
+            case AST_KIND_block:
+                {
+                    AST_block *ast_block = (AST_block*)ast_statement;
+                    if(!all_paths_return(jp, ast_block->down)) return false;
+                }
+                break;
+        }
+
+        prev = (AST*)ast_statement;
+        ast_statement = (AST_statement*)(ast_statement->next);
+    }
+
+    if(cannot_end_block) {
+        jp->non_returning_path_loc = prev->loc;
+        return false;
+    }
+
+    return true;
+}
+
 INLINE void print_ir_inst(IRinst inst) {
     char *opstr = IRop_debug[inst.opcode];
 
@@ -1467,6 +1555,9 @@ int getprec(Token t) {
 }
 
 AST* parse_procdecl(Job *jp) {
+    //TODO dont count void return type
+    //
+    // in fact maybe void should only be allowed next to * as in *void
     Lexer *lexer = jp->lexer;
     Lexer unlex = *lexer;
 
@@ -3213,6 +3304,11 @@ void ir_gen_block(Job *jp, AST *ast) {
                     assert(jp->reg_alloc == 0);
                     ast = ast_block->next;
                 }
+                break;
+            case AST_KIND_returnstatement:
+                //TODO c_call
+
+                UNIMPLEMENTED;
                 break;
             case AST_KIND_vardecl:
                 {
@@ -5729,11 +5825,7 @@ void typecheck_procdecl(Job *jp) {
 
             if(jp->step == TYPECHECK_STEP_PROCDECL_PARAMS_BIND_TYPE) {
                 if(arrlen(jp->expr) == 0) {
-                    //printf("linearizing expression!!!!!\n");
-                    //print_ast_expr(p->type, 0);
-
                     linearize_expr(jp, &p->type);
-                    //printf("finished linearizing expression!!!!!\n\n\n");
                 }
                 typecheck_expr(jp);
 
@@ -5878,6 +5970,13 @@ void typecheck_procdecl(Job *jp) {
             Type *ret_type = ((AST_expr*)(r->expr))->value_annotation->val.type;
             proc_type->proc.ret.types[r->index] = ret_type;
         }
+    }
+
+    if(ast->n_rets > 0 && !all_paths_return(jp, ast->body)) {
+        job_error(jp, jp->non_returning_path_loc,
+                "code path terminates with no return in procedure '%s'",
+                ast->name);
+        return;
     }
 
     proc_type->proc.first_default_param = ast->first_default_param;
