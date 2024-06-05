@@ -214,7 +214,6 @@
 
 
 typedef struct IRlabel IRlabel;
-typedef IRlabel* IRlabel_tab;
 typedef struct Scope_entry* Scope;
 typedef int    Jobid;
 typedef struct Value Value;
@@ -309,9 +308,10 @@ union IRvalue {
 
 struct IRlabel {
     char *key;
+    Token keyword;
     u64 continue_label;
     u64 break_label;
-    Token keyword;
+    Loc_info loc;
 };
 
 struct IRinst {
@@ -490,7 +490,7 @@ struct Job {
 
     /* code generation */
     Arr(u64)             local_offset;
-    Arr(IRlabel_tab)     label_table;
+    IRlabel*             label_table;
     Arr(u64)             continue_label;
     Arr(u64)             break_label;
     u64                  label_alloc;
@@ -805,6 +805,8 @@ void        job_report_all_messages(Job *jp);
 void        job_report_mutual_dependency(Job *jp1, Job *jp2);
 void        job_error(Job *jp, Loc_info loc, char *fmt, ...);
 char*       job_type_to_str(Job *jp, Type *t);
+IRlabel     job_label_lookup(Job *jp, char *name);
+bool        job_label_create(Job *jp, IRlabel label);
 void        linearize_expr(Job *jp, AST **astpp);
 
 bool        is_lvalue(AST *ast);
@@ -1072,6 +1074,17 @@ void global_scope_enter(Job *jp, Sym *sym) {
     jp->symbol = sym;
     sym->is_global = true;
     shput(*(jp->global_scope), sym->name, sym);
+}
+
+bool job_label_create(Job *jp, IRlabel label) {
+    int i = shgeti(jp->label_table, label.key);
+    if(i >= 0) return false;
+    shputs(jp->label_table, label);
+    return true;
+}
+
+IRlabel job_label_lookup(Job *jp, char *name) {
+    return shgets(jp->label_table, name);
 }
 
 INLINE int count_digits(int n) {
@@ -1621,6 +1634,7 @@ AST* parse_controlflow(Job *jp) {
                 unlex = *lexer;
                 t = lex(lexer);
                 if(t == ':') {
+                    unlex = *lexer;
                     t = lex(lexer);
                     if(t != TOKEN_IDENT) job_error(jp, lexer->loc, "expected label");
                     node->label = job_alloc_text(jp, lexer->text.s, lexer->text.e);
@@ -1661,8 +1675,7 @@ AST* parse_controlflow(Job *jp) {
                         if(branch->condition == NULL) job_error(jp, branch->base.loc, "else-if statement missing condition");
                         branch->body = body_func(jp);
                     } else {
-                        if(t != '{')
-                            job_error(jp, branch->base.loc, "expected beginning of else body");
+                        //TODO some error checking here for empty body
                         *lexer = unlex;
                         branch->branch = body_func(jp);
                     }
@@ -1801,7 +1814,10 @@ AST* parse_statement(Job *jp) {
                 t = lex(lexer);
                 if(t == TOKEN_IDENT) {
                     node->label = job_alloc_text(jp, lexer->text.s, lexer->text.e);
-                } else if(t != ';') {
+                    t = lex(lexer);
+                }
+
+                if(t != ';') {
                     job_error(jp, lexer->loc, "expected label or ';' in continue statement");
                 }
 
@@ -1814,7 +1830,10 @@ AST* parse_statement(Job *jp) {
                 t = lex(lexer);
                 if(t == TOKEN_IDENT) {
                     node->label = job_alloc_text(jp, lexer->text.s, lexer->text.e);
-                } else if(t != ';') {
+                    t = lex(lexer);
+                }
+
+                if(t != ';') {
                     job_error(jp, lexer->loc, "expected label or ';' in break statement");
                 }
 
@@ -2588,6 +2607,7 @@ void ir_gen(Job *jp) {
         AST_block *body = (AST_block*)(ast_proc->body);
         arrsetlen(jp->local_offset, 0);
         ir_gen_block(jp, body->down);
+        if(jp->state == JOB_STATE_ERROR) return;
 
     } else {
         printf("sorry I don't know how to do this yet\n");
@@ -2928,7 +2948,6 @@ void ir_gen_block(Job *jp, AST *ast) {
                 break;
             case AST_KIND_ifstatement:
                 {
-                    //TODO labels
                     AST_ifstatement *ast_if = (AST_ifstatement*)ast;
 
                     u64 last_label = jp->label_alloc;
@@ -2954,6 +2973,24 @@ void ir_gen_block(Job *jp, AST *ast) {
                     Arr(u64) branch_labels = NULL;
                     Arr(AST*) branches = NULL;
                     arrpush(branches, ast_if->branch);
+
+                    IRlabel if_label;
+
+                    if(ast_if->label) {
+                        if_label = (IRlabel) {
+                            .key = ast_if->label,
+                            .keyword = TOKEN_IF,
+                            .break_label = last_label,
+                            .loc = ast->loc,
+                        };
+
+                        if(!job_label_create(jp, if_label)) {
+                            if_label = job_label_lookup(jp, ast_if->label);
+                            job_error(jp, ast->loc, "label '%s' redeclared, originally declared on line '%i'",
+                                    ast_if->label, if_label.loc.line);
+                            return;
+                        }
+                    }
 
                     while(arrlast(branches) && arrlast(branches)->kind == AST_KIND_ifstatement) {
                         AST_ifstatement *ast_else_if = (AST_ifstatement*)arrlast(branches);
@@ -2983,8 +3020,11 @@ void ir_gen_block(Job *jp, AST *ast) {
                     if(arrlen(branches) > 0) {
                         assert(arrlen(branches) == arrlen(branch_labels) || arrlen(branches) == arrlen(branch_labels) + 1);
 
-                        if(arrlast(branches)->kind != AST_KIND_ifstatement)
+                        if(arrlast(branches)->kind != AST_KIND_ifstatement) {
                             ir_gen_block(jp, arrpop(branches));
+                            
+                            if(jp->state == JOB_STATE_ERROR) return;
+                        }
 
                         while(arrlen(branches) > 0) {
                             inst =
@@ -3008,6 +3048,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                             arrpush(jp->instructions, inst);
 
                             ir_gen_block(jp, ast_else_if->body);
+                            if(jp->state == JOB_STATE_ERROR) return;
                         }
                     }
 
@@ -3031,6 +3072,12 @@ void ir_gen_block(Job *jp, AST *ast) {
 
                     ir_gen_block(jp, ast_if->body);
 
+                    if(jp->state == JOB_STATE_ERROR) return;
+
+                    if(ast_if->label) {
+                        shdel(jp->label_table, if_label.key);
+                    }
+
                     inst =
                         (IRinst) {
                             .opcode = IROP_LABEL,
@@ -3048,7 +3095,6 @@ void ir_gen_block(Job *jp, AST *ast) {
                 break;
             case AST_KIND_whilestatement:
                 {
-                    //TODO labels
                     AST_whilestatement *ast_while = (AST_whilestatement*)ast;
 
                     u64 last_label = jp->label_alloc;
@@ -3100,13 +3146,38 @@ void ir_gen_block(Job *jp, AST *ast) {
                         };
                     arrpush(jp->instructions, inst);
 
+                    IRlabel while_label;
+
+                    if(ast_while->label) {
+                        while_label = (IRlabel) {
+                            .key = ast_while->label,
+                            .keyword = TOKEN_WHILE,
+                            .continue_label = cond_label,
+                            .break_label = last_label,
+                            .loc = ast->loc,
+                        };
+
+                        if(!job_label_create(jp, while_label)) {
+                            while_label = job_label_lookup(jp, ast_while->label);
+                            job_error(jp, ast->loc, "label '%s' redeclared, originally declared on line '%i'",
+                                    ast_while->label, while_label.loc.line);
+                            return;
+                        }
+                    }
+
                     arrpush(jp->break_label, last_label);
                     arrpush(jp->continue_label, cond_label);
 
                     ir_gen_block(jp, ast_while->body);
 
+                    if(jp->state == JOB_STATE_ERROR) return;
+
                     arrsetlen(jp->break_label, arrlen(jp->break_label) - 1);
                     arrsetlen(jp->continue_label, arrlen(jp->continue_label) - 1);
+
+                    if(ast_while->label) {
+                        shdel(jp->label_table, while_label.key);
+                    }
 
                     inst =
                         (IRinst) {
@@ -3137,6 +3208,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                     AST_block *ast_block = (AST_block*)ast;
                     arrpush(jp->local_offset, arrlast(jp->local_offset));
                     ir_gen_block(jp, ast_block->down);
+                    if(jp->state == JOB_STATE_ERROR) return;
                     arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
                     assert(jp->reg_alloc == 0);
                     ast = ast_block->next;
@@ -3223,28 +3295,50 @@ void ir_gen_block(Job *jp, AST *ast) {
                     if(jp->label_alloc == 0) {
                         job_error(jp, ast->loc, "%s statement is not in control flow block",
                                 (ast->kind == AST_KIND_breakstatement) ? "'break'" : "'continue'");
+                        return;
                     }
 
                     if(ast->kind == AST_KIND_continuestatement && arrlen(jp->continue_label) <= 0) {
                         job_error(jp, ast->loc, "cannot perform 'continue' statement within non 'for' of 'while' block");
+                        return;
                     }
 
                     AST_breakstatement *ast_break = (AST_breakstatement*)ast;
+                    u64 break_label = (arrlen(jp->break_label) > 0) ? arrlast(jp->break_label) : 0;
+                    u64 continue_label = (arrlen(jp->continue_label) > 0) ? arrlast(jp->continue_label) : 0;
+
+                    if(ast->kind == AST_KIND_breakstatement && ast_break->label == NULL && arrlen(jp->break_label) <= 0) {
+                        job_error(jp, ast->loc, "cannot perform generic 'break' statement within non 'for' of 'while' block");
+                        return;
+                    }
 
                     if(ast_break->label) {
-                        UNIMPLEMENTED;
-                    } else {
-                        inst =
-                            (IRinst) {
-                                .opcode = IROP_JMP,
-                                .branch = {
-                                    .label_id =
-                                        (ast->kind == AST_KIND_breakstatement)
-                                        ? arrlast(jp->break_label)
-                                        : arrlast(jp->continue_label),
-                                }
-                            };
+                        IRlabel label = job_label_lookup(jp, ast_break->label);
+
+                        if(label.key == NULL) {
+                            job_error(jp, ast->loc, "label '%s' does not exist", ast_break->label);
+                            return;
+                        }
+
+                        if(label.keyword == TOKEN_IF && ast->kind == AST_KIND_continuestatement) {
+                            job_error(jp, ast->loc, "cannot continue on 'if' label");
+                            return;
+                        }
+
+                        break_label = label.break_label;
+                        continue_label = label.continue_label;
                     }
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_JMP,
+                            .branch = {
+                                .label_id =
+                                    (ast->kind == AST_KIND_breakstatement)
+                                    ? break_label
+                                    : continue_label,
+                            }
+                        };
                     arrpush(jp->instructions, inst);
 
                     ast = ast_break->next;
@@ -4415,6 +4509,12 @@ void job_runner(char *src, char *src_path) {
                     {
                         printf("IR generation in progress\n");
                         ir_gen(jp);
+                        if(jp->state == JOB_STATE_ERROR) {
+                            job_report_all_messages(jp);
+                            job_die(jp);
+                            ++i;
+                            continue;
+                        }
                         printf("\n");
                         for(int inst_i = 0; inst_i < arrlen(jp->instructions); ++inst_i)
                             print_ir_inst(jp->instructions[inst_i]);

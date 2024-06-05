@@ -101,10 +101,11 @@ proc test_proc(i: int, x: int, c: char, f: float) {
     bb = c && bb && f;
     bb = >ptr_u8 > cast(u8)i;
 
-    if i > 0 {
+    if: what_if_huh i > 0 {
         i = 9000;
     } else if i < 756 {
         test_var: u16;
+        break what_if_huh;
         i++;
     } else if i <= x {
         x = i;
@@ -120,10 +121,12 @@ proc test_proc(i: int, x: int, c: char, f: float) {
 
     row := 79;
     col := 45;
-    while row < 10 {
-        while col < 10 {
+    while:outer        row < 10 {
+        while:inner    col < 10 {
             i++;
-            if i == 20 break;
+            if i == 20 break outer;
+            else if i == 69 continue inner;
+            else break;
         }
         if i == 20 continue;
     }
