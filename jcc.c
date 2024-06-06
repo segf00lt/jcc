@@ -3081,8 +3081,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
 void ir_gen_block(Job *jp, AST *ast) {
     IRinst inst;
 
-    AST_statement defer_head = {0};
-    AST_statement *defer_list = &defer_head;
+    AST_statement *defer_list = NULL;
 
     while(ast != NULL) {
         switch(ast->kind) {
@@ -3463,10 +3462,9 @@ void ir_gen_block(Job *jp, AST *ast) {
                     AST_statement *ast_statement = (AST_statement*)ast;
 
                     if(ast_statement->deferred) {
-                        defer_list->next = ast;
-                        defer_list = (AST_statement*)(defer_list->next);
                         ast = ast_statement->next;
-                        defer_list->next = NULL;
+                        ast_statement->next = (AST*)defer_list;
+                        defer_list = ast_statement;
                     } else {
                         ir_gen_statement(jp, ast_statement);
                         ast = ast_statement->next;
@@ -3531,8 +3529,6 @@ void ir_gen_block(Job *jp, AST *ast) {
                 break;
         }
     }
-
-    defer_list = (AST_statement*)defer_head.next;
 
     while(defer_list) {
         assert(defer_list->base.kind == AST_KIND_statement);
@@ -4725,6 +4721,9 @@ void job_runner(char *src, char *src_path) {
 
                             Type *type_left = ((AST_expr*)(ast_statement->left))->type_annotation;
                             Type *type_right;
+                            //TODO this is horrible
+                            //     maybe call should have a type_annotation and a type_annotation_list
+                            //     the list is only used in multi-assign
                             if(ast_statement->right->kind == AST_KIND_call) {
                                 type_right = ((AST_call*)(ast_statement->right))->type_annotation_list[0];
                             } else {
