@@ -131,6 +131,9 @@ proc test_proc(i: int, x: int, c: char, f: float) {
         if i == 20 continue;
     }
 
+    d: int;
+    defer d = other_proc(i=fib(12), multiplier=fib(n=i));
+
     /*
 
     LOAD r_0, 1, 8B
@@ -161,11 +164,11 @@ proc test_proc(i: int, x: int, c: char, f: float) {
 
 TWO :: 2;
 
-proc other_proc(i: int) int {
-    if i < 8 {
-        i += 1;
-    } else {
-        return i - 1;
-    }
+proc fib(n: int) int {
+    if n <= 1 return n;
+    return fib(n - 1) + fib(n - 2) + fib(n - 3);
+}
 
+proc other_proc(i: int, multiplier: int) int {
+    return i * multiplier;
 }

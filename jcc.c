@@ -470,7 +470,10 @@ struct Job {
 
     Type                *cur_proc_type;
 
-    Loc_info             non_returning_path_loc;
+    union {
+        Loc_info         non_returning_path_loc;
+        Loc_info         returning_path_loc;
+    };
 
     /* blocks */
     Arr(Scope)           scopes;
@@ -508,6 +511,7 @@ struct Sym {
     char *name;
     Loc_info loc;
     Jobid declared_by;
+    int proc_id;
     bool is_global;
     u64 segment_offset;
     bool constant;
@@ -527,8 +531,11 @@ struct AST {
 struct AST_param {
     AST base;
     AST_param *next;
+    Type *type_annotation;
+    Value *value_annotation;
     char *name;
     AST *value;
+    int index;
 };
 
 struct AST_call {
@@ -762,6 +769,7 @@ struct Type {
             char *name;
             bool varargs;
             bool has_defaults;
+            bool c_call;
             u64 first_default_param;
             struct {
                 Type  **types;
@@ -813,6 +821,7 @@ void        linearize_expr(Job *jp, AST **astpp);
 
 bool        is_lvalue(AST *ast);
 bool        all_paths_return(Job *jp, AST *ast);
+bool        has_nested_call(AST *ast);
 
 Arr(AST*)   ir_linearize_expr(Arr(AST*) ir_expr, AST *ast);
 
@@ -827,6 +836,8 @@ Type*       atom_to_type(Job *jp, AST_atom *atom);
 
 Value*      evaluate_unary(Job *jp, Value *a, AST_expr *op_ast);
 Value*      evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast);
+
+int         procedure_table_add(Arr(IRinst) proc);
 
 //TODO typechecking should be done with a table of some kind, all this branching is a bit lazy
 bool        types_are_same(Type *a, Type *b);
@@ -905,9 +916,10 @@ Value builtin_value[] = {
     { .kind = VALUE_KIND_NIL, },
 };
 
-Arena      global_scratch_allocator;
-Pool       global_sym_allocator;
-Scope      global_scope;
+Arena              global_scratch_allocator;
+Pool               global_sym_allocator;
+Scope              global_scope;
+Arr(IRinst*)       procedure_table;
 
 /* function declarations */
 Job job_spawn(Jobid *id_alloc, Pipe_stage pipe_stage) {
@@ -1248,6 +1260,36 @@ INLINE bool is_lvalue(AST *ast) {
     }
 }
 
+bool has_nested_call(AST *ast) {
+    if(!ast) return false;
+
+    switch(ast->kind) {
+        case AST_KIND_atom:
+            break;
+        case AST_KIND_expr:
+            {
+                AST_expr *ast_expr = (AST_expr*)ast;
+                if(has_nested_call(ast_expr->left)) return true;
+                if(has_nested_call(ast_expr->right)) return true;
+                break;
+            }
+            break;
+        case AST_KIND_array_literal:
+            {
+                AST_array_literal *ast_array = (AST_array_literal*)ast;
+                for(AST_expr_list *expr_list = ast_array->elements; expr_list; expr_list = expr_list->next) {
+                    if(has_nested_call(expr_list->expr))
+                        return true;
+                }
+            }
+            break;
+        case AST_KIND_call:
+            return true;
+    }
+
+    return false;
+}
+
 bool all_paths_return(Job *jp, AST *ast) {
     if(ast->kind == AST_KIND_block) {
         AST_block *block = (AST_block*)ast;
@@ -1543,6 +1585,11 @@ INLINE void print_ir_inst(IRinst inst) {
 			break;
     }
 
+}
+
+INLINE int procedure_table_add(Arr(IRinst) proc) {
+    arrpush(procedure_table, proc);
+    return arrlen(procedure_table);
 }
 
 int getprec(Token t) {
@@ -2465,6 +2512,7 @@ AST* parse_call(Job *jp) {
     }
 
     AST_atom *callee = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
+    callee->token = TOKEN_IDENT;
     callee->text = job_alloc_text(jp, lexer->text.s, lexer->text.e);
 
     AST_call *call_op = (AST_call*)job_alloc_ast(jp, AST_KIND_call);
@@ -2537,6 +2585,8 @@ AST* parse_call(Job *jp) {
             job_error(jp, lexer->loc, "expected comma or end of parameter list");
         }
 
+        param->index = n_params;
+        call_op->base.weight += param->value->weight;
         param = param->next;
 
         ++n_params;
@@ -2561,7 +2611,6 @@ AST* parse_call(Job *jp) {
     }
 
     node = (AST*)call_op;
-    node->weight = 1;
 
     return node;
 }
@@ -2697,12 +2746,18 @@ void ir_gen(Job *jp) {
         arrpush(jp->local_offset, 0);
         AST_block *body = (AST_block*)(ast_proc->body);
         arrsetlen(jp->local_offset, 0);
+        jp->cur_proc_type = type;
         ir_gen_block(jp, body->down);
+
         if(jp->state == JOB_STATE_ERROR) return;
 
-    } else {
+        sym->proc_id = procedure_table_add(jp->instructions);
+
+    } else if(node->kind == AST_KIND_vardecl) {
         printf("sorry I don't know how to do this yet\n");
         //UNIMPLEMENTED;
+    } else {
+        UNREACHABLE;
     }
 }
 
@@ -3306,9 +3361,43 @@ void ir_gen_block(Job *jp, AST *ast) {
                 }
                 break;
             case AST_KIND_returnstatement:
-                //TODO c_call
+                //TODO generate procedure calls and returns
+                {
+                    AST_returnstatement *ast_return = (AST_returnstatement*)ast;
+                    Type *proc_type = jp->cur_proc_type;
+                    u64 i = 0;
+                    for(AST_expr_list *expr_list = ast_return->expr_list; expr_list; expr_list = expr_list->next) {
+                        if(!TYPE_KIND_IS_SCALAR(proc_type->proc.ret.types[i]->kind)) {
+                            UNIMPLEMENTED;
+                        } else {
+                            ir_gen_expr(jp, expr_list->expr);
+                            assert(jp->reg_alloc == 1);
+                            jp->reg_alloc = 0;
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_SETRET,
+                                    .setport = {
+                                        .port = i,
+                                        .bytes = proc_type->proc.ret.types[i]->bytes,
+                                        .reg_src = 0,
+                                        .c_call = proc_type->proc.c_call,
+                                    },
+                                };
+                            arrpush(jp->instructions, inst);
+                        }
 
-                UNIMPLEMENTED;
+                        i++;
+                    }
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_RET,
+                            .ret.c_call = proc_type->proc.c_call,
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    ast = ast_return->next;
+                }
                 break;
             case AST_KIND_vardecl:
                 {
@@ -4062,10 +4151,153 @@ void ir_gen_expr(Job *jp, AST *ast) {
             }
         } else if(kind == AST_KIND_array_literal) {
             UNIMPLEMENTED;
-        } else if(kind == AST_KIND_param) {
-            UNIMPLEMENTED;
         } else if(kind == AST_KIND_call) {
-            UNIMPLEMENTED;
+            AST_call *ast_call = (AST_call*)cur_ast;
+
+            //TODO procedure pointers have to be differentiated from normal procedures
+
+            assert(ast_call->callee->kind == AST_KIND_atom);
+
+            AST_atom *callee = (AST_atom*)(ast_call->callee);
+            Sym *callee_symbol = callee->symbol_annotation;
+            Type *callee_type = callee_symbol->type;
+            assert(callee_type->kind == TYPE_KIND_PROC);
+            Type *return_type = callee_type->proc.ret.types[0];
+
+            IRinst inst = {0};
+
+            Arr(AST_param*) nested_call_params = NULL;
+            Arr(AST_param*) non_call_params = NULL;
+
+            arrsetcap(nested_call_params, ast_call->n_params >> 1);
+            arrsetcap(non_call_params, ast_call->n_params);
+
+            for(AST_param *p = ast_call->params; p; p = p->next) {
+                //TODO named and default arguments
+                if(!has_nested_call(p->value)) {
+                    arrpush(non_call_params, p);
+                    continue;
+                }
+
+                if(!TYPE_KIND_IS_SCALAR(p->type_annotation->kind)) {
+                    UNIMPLEMENTED;
+                } else {
+                    ir_gen_expr(jp, p->value);
+                    assert(jp->reg_alloc == 1);
+                    jp->reg_alloc--;
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_PUSH,
+                            .stack = {
+                                .reg = jp->reg_alloc,
+                                .bytes = p->type_annotation->bytes,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+                }
+                arrpush(nested_call_params, p);
+            }
+
+            while(arrlen(nested_call_params) > 0) {
+                AST_param *p = arrpop(nested_call_params);
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_POP,
+                        .stack = {
+                            .reg = jp->reg_alloc,
+                            .bytes = p->type_annotation->bytes,
+                        },
+                    };
+                arrpush(jp->instructions, inst);
+
+                u64 port = p->index;
+
+                if(p->name) {
+                    for(u64 i = 0; i < callee_type->proc.param.n; ++i) {
+                        if(!strcmp(p->name, callee_type->proc.param.names[i])) {
+                            port = i;
+                            break;
+                        }
+                    }
+                }
+
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_SETARG,
+                        .setport = {
+                            .port = port,
+                            .bytes = p->type_annotation->bytes,
+                            .reg_src = jp->reg_alloc,
+                            .c_call = false, //TODO c_call
+                        },
+                    };
+                arrpush(jp->instructions, inst);
+            }
+
+            arrfree(nested_call_params);
+
+            for(int i = 0; i < arrlen(non_call_params); ++i) {
+                AST_param *p = non_call_params[i];
+
+                ir_gen_expr(jp, p->value);
+                //TODO why does this fail? assert(jp->reg_alloc == 1);
+                jp->reg_alloc--;
+
+                u64 port = p->index;
+
+                if(p->name) {
+                    for(u64 i = 0; i < callee_type->proc.param.n; ++i) {
+                        if(!strcmp(p->name, callee_type->proc.param.names[i])) {
+                            port = i;
+                            break;
+                        }
+                    }
+                }
+
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_SETARG,
+                        .setport = {
+                            .port = port,
+                            .bytes = p->type_annotation->bytes,
+                            .reg_src = jp->reg_alloc,
+                            .c_call = false, //TODO c_call
+                        },
+                    };
+                arrpush(jp->instructions, inst);
+            }
+
+            arrfree(non_call_params);
+
+            inst =
+                (IRinst) {
+                    .opcode = IROP_CALL,
+                    .call = {
+                        .name = callee_symbol->name,
+                        .id_imm = callee_symbol->proc_id,
+                        .immediate = true, //TODO indirect calls
+                    },
+                };
+            arrpush(jp->instructions, inst);
+
+            if(!TYPE_KIND_IS_SCALAR(return_type->kind)) {
+                UNIMPLEMENTED;
+            } else {
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_GETRET,
+                        .getport = {
+                            .reg_dest = jp->reg_alloc,
+                            .bytes = return_type->bytes,
+                            .port = 0,
+                            .c_call = false, //TODO c_call
+                        },
+                    };
+                arrpush(jp->instructions, inst);
+            }
+
+            jp->reg_alloc++;
+            arrpush(type_stack, return_type);
         } else {
             UNIMPLEMENTED;
         }
@@ -4492,9 +4724,14 @@ void job_runner(char *src, char *src_path) {
                             }
 
                             Type *type_left = ((AST_expr*)(ast_statement->left))->type_annotation;
-                            Type *type_right = ast_statement->right
-                                ? ((AST_expr*)(ast_statement->right))->type_annotation
-                                : NULL;
+                            Type *type_right;
+                            if(ast_statement->right->kind == AST_KIND_call) {
+                                type_right = ((AST_call*)(ast_statement->right))->type_annotation_list[0];
+                            } else {
+                                type_right = ast_statement->right
+                                    ? ((AST_expr*)(ast_statement->right))->type_annotation
+                                    : NULL;
+                            }
                             Type *t = typecheck_assign(jp, type_left, type_right, ast_statement->assign_op);
 
                             if(t->kind == TYPE_KIND_VOID)
@@ -5515,7 +5752,12 @@ void typecheck_expr(Job *jp) {
             arrpush(value_stack, array_val);
         } else if(kind == AST_KIND_param) {
             AST_param *paramp = (AST_param*)expr[pos][0];
-            arrlast(value_stack)->name = paramp->name;
+            Value *v = arrpop(value_stack);
+            v = job_alloc_value(jp, v->kind);
+            v->name = paramp->name;
+            arrpush(value_stack, v);
+            paramp->type_annotation = arrlast(type_stack);
+            paramp->value_annotation = arrlast(value_stack);
         } else if(kind == AST_KIND_call) {
             assert(arrlast(type_stack)->kind == TYPE_KIND_PROC);
 
@@ -5751,35 +5993,8 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
     } else if(ast->kind == AST_KIND_atom) {
         arrpush(ir_expr, ast);
     } else if(ast->kind == AST_KIND_array_literal) {
-        AST_array_literal *array_lit = (AST_array_literal*)ast;
-
-        if(array_lit->value_annotation && array_lit->value_annotation->kind != VALUE_KIND_NIL) {
-            arrpush(ir_expr, ast);
-            return ir_expr;
-        }
-
-        for(AST_expr_list *list = array_lit->elements; list; list = list->next) {
-            ir_expr = ir_linearize_expr(ir_expr, list->expr);
-        }
-
-        ir_expr = ir_linearize_expr(ir_expr, array_lit->type);
-
         arrpush(ir_expr, ast);
-    } else if(ast->kind == AST_KIND_param) {
-        for(AST_param *p = (AST_param*)ast; p; p = p->next) {
-            ir_expr = ir_linearize_expr(ir_expr, p->value);
-            arrpush(ir_expr, (AST*)p);
-        }
     } else if(ast->kind == AST_KIND_call) {
-        AST_call *callp = (AST_call*)ast;
-
-        if(callp->value_annotation_list && callp->value_annotation_list[0]->kind != VALUE_KIND_NIL) {
-            arrpush(ir_expr, ast);
-            return ir_expr;
-        }
-
-        ir_expr = ir_linearize_expr(ir_expr, (AST*)(callp->params));
-        ir_expr = ir_linearize_expr(ir_expr, callp->callee);
         arrpush(ir_expr, ast);
     } else {
         UNIMPLEMENTED;
