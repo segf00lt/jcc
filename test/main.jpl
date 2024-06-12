@@ -44,6 +44,7 @@ proc test_proc2(i: int, c: [3]*[..]char, f: float = 3.14) int, char;
 
 
 proc test_proc(i: int, x: int, c: char, f: float) {
+    /*
     y := 15 - x << TWO;
 
     defer y += x / 7;
@@ -131,10 +132,9 @@ proc test_proc(i: int, x: int, c: char, f: float) {
         if i == 20 continue;
     }
 
-    d: int;
+    d: int = 134;
     defer d = other_proc(i=fib(12), multiplier=fib(n=i));
 
-    /*
 
     LOAD r_0, 1, 8B
     GETLOCAL r_1, addr 109, 8B
@@ -160,6 +160,10 @@ proc test_proc(i: int, x: int, c: char, f: float) {
     test_ptr_1[test_ptr_2[test_ptr_3[test_ptr_4[0] + i] + i] + i] = 150000000;
     */
 
+    test_array: [5][4][4]u16 = ---;
+    number: int = ---;
+    number = 1234 + test_array[3][3][3];
+    test_array[1][2][3] = 7812;
 }
 
 TWO :: 2;

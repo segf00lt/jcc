@@ -210,7 +210,7 @@
 
 #define TOKEN_TO_TYPEKIND(t) (Typekind)((t-TOKEN_VOID)+TYPE_KIND_VOID)
 
-#define TYPE_KIND_IS_SCALAR(kind) (kind < TYPE_KIND_TYPE || kind == TYPE_KIND_POINTER)
+#define TYPE_KIND_IS_NOT_SCALAR(kind) (kind >= TYPE_KIND_TYPE && kind != TYPE_KIND_POINTER)
 
 
 typedef struct IRlabel IRlabel;
@@ -513,6 +513,7 @@ struct Sym {
     Jobid declared_by;
     int proc_id;
     bool is_global;
+    bool is_argument;
     u64 segment_offset;
     bool constant;
     Type *type;
@@ -786,6 +787,8 @@ struct Type {
 
         struct { /* static array, dynamic or slice */
             u64 n; /* used for capacity of static array */
+            u64 element_stride;
+            u64 count;
             Type *of;
         } array;
 
@@ -830,6 +833,7 @@ void        ir_gen_block(Job *jp, AST *ast);
 void        ir_gen_statement(Job *jp, AST_statement *ast_statement);
 void        ir_gen_logical_expr(Job *jp, AST *ast);
 void        ir_gen_expr(Job *jp, AST *ast);
+void        ir_gen_array_literal(Job *jp, AST_array_literal *ast_array);
 
 Value*      atom_to_value(Job *jp, AST_atom *atom);
 Type*       atom_to_type(Job *jp, AST_atom *atom);
@@ -1001,9 +1005,9 @@ Type* job_alloc_type(Job *jp, Typekind kind) {
         case TYPE_KIND_DYNAMIC_ARRAY:
             ptr->bytes = 24;
             break;
-        case TYPE_KIND_ARRAY:
         case TYPE_KIND_ARRAY_VIEW:
-            ptr->bytes = 16;
+        case TYPE_KIND_ARRAY:
+            ptr->bytes = 8;
             break;
     }
 
@@ -2046,8 +2050,8 @@ AST* parse_vardecl(Job *jp) {
         } else {
             *lexer = unlex;
             node->init = parse_expr(jp);
-            t = lex(lexer);
         }
+        t = lex(lexer);
     } else {
         *lexer = unlex;
         Loc_info type_loc = lexer->loc;
@@ -2058,12 +2062,23 @@ AST* parse_vardecl(Job *jp) {
         t = lex(lexer);
         if(t == '=' || t == ':') {
             node->constant = (t == ':');
-            node->init = parse_expr(jp);
+            //node->init = parse_expr(jp);
+            //t = lex(lexer);
+            unlex = *lexer;
+            t = lex(lexer);
+            if(t == TOKEN_LONGDASH) {
+                if(node->constant) job_error(jp, node->base.loc, "cannot make constant uninitialized");
+                node->uninitialized = true;
+            } else {
+                *lexer = unlex;
+                node->init = parse_expr(jp);
+            }
             t = lex(lexer);
         } else if(t != ';' && t != ')' && t != ',' && t != '{') {
             job_error(jp, lexer->loc, "expected '=', ':' or separator in declaration");
         }
     }
+
 
     if(t != ';' && t != ')' && t != ',' && t != '{')
         job_error(jp, lexer->loc, "expected punctuation at end of variable declaration");
@@ -2712,10 +2727,9 @@ void ir_gen(Job *jp) {
             u64 p_bytes = p_sym->type->bytes;
             local_offset += p_bytes;
 
-            bool not_scalar = (p_sym->type->kind >= TYPE_KIND_TYPE && p_sym->type->kind != TYPE_KIND_POINTER);
             bool is_float = (p_sym->type->kind >= TYPE_KIND_FLOAT && p_sym->type->kind <= TYPE_KIND_F64);
 
-            if(not_scalar) {
+            if(TYPE_KIND_IS_NOT_SCALAR(p_sym->type->kind)) {
                 UNIMPLEMENTED;
             } else {
                 IRinst inst_read = {
@@ -2743,11 +2757,12 @@ void ir_gen(Job *jp) {
         }
 
         jp->label_alloc = 1;
-        arrpush(jp->local_offset, 0);
+        assert(arrlen(jp->local_offset) == 0);
+        arrpush(jp->local_offset, local_offset);
         AST_block *body = (AST_block*)(ast_proc->body);
-        arrsetlen(jp->local_offset, 0);
         jp->cur_proc_type = type;
         ir_gen_block(jp, body->down);
+        arrsetlen(jp->local_offset, 0);
 
         if(jp->state == JOB_STATE_ERROR) return;
 
@@ -2760,6 +2775,89 @@ void ir_gen(Job *jp) {
         UNREACHABLE;
     }
 }
+
+//TODO
+/*
+ * we need more information than what is available to this procedure
+ * assignment of array literals to arrays is more complicated when we consider
+ * arrays of arbitrary dimension. You need to know about both sides of
+ * the assignment
+void ir_gen_array_literal(Job *jp, AST_array_literal *ast_array) {
+    IRinst inst = {0};
+    Type *tp = ast_array->type_annotation;
+
+    u64 last_dim = 0;
+
+    u64 bytes_to_alloc = 1;
+
+    while(tp->kind == TYPE_KIND_ARRAY) {
+        last_dim = tp->array.n;
+        bytes_to_alloc *= tp->array.n;
+        tp = tp->array.of;
+    }
+
+    bytes_to_alloc *= tp->bytes;
+    u64 element_bytes = tp->bytes;
+    u64 offset = arrlast(jp->local_offset);
+    jp->local_offset += bytes_to_alloc;
+
+    Arr(AST_array_literal*) ast_array_stack = NULL;
+    arrpush(ast_array_stack, ast_array);
+
+    if(TYPE_KIND_IS_NOT_SCALAR(tp->kind)) {
+        UNIMPLEMENTED;
+    } else {
+        while(arrlen(ast_array_stack) > 0) {
+            AST_array_literal *cur_ast = arrlast(ast_array_stack);
+
+            AST_expr_list *elements = cur_ast->elements;
+            int i = 0;
+            for(; i < cur_ast->n; ++i) {
+                if(elements == NULL) {
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_SETLOCAL,
+                            .setvar = {
+                                .offset = offset,
+                                .bytes = element_bytes,
+                                .immediate = true,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+                    continue;
+                }
+
+                if(elements->expr->kind == AST_KIND_array_literal) {
+                    arrpush(ast_array_stack, (AST_array_literal*)(elements->expr));
+                    break;
+                }
+
+                ir_gen_expr(jp, elements->expr);
+                printf("jp->reg_alloc = %lu in generation of array literal\n", jp->reg_alloc);
+
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_SETLOCAL,
+                        .setvar = {
+                            .offset = offset,
+                            .reg_src = jp->reg_alloc,
+                            .bytes = element_bytes,
+                        },
+                    };
+
+                if(tp->kind >= TYPE_KIND_FLOAT && tp->kind <= TYPE_KIND_F64)
+                    inst.opcode = IROP_SETLOCALF;
+
+                arrpush(jp->instructions, inst);
+                elements = elements->next;
+            }
+
+            if(i == cur_ast->n)
+                arrsetlen(ast_array_stack, arrlen(ast_array_stack) - 1);
+        }
+    }
+}
+*/
 
 INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
     IRinst inst = {0};
@@ -2777,10 +2875,14 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
         return;
     }
 
-    if(ast_statement->right)
+    if(ast_statement->right && ast_statement->right->kind == AST_KIND_array_literal) {
+        UNIMPLEMENTED;
+        //ir_gen_array_literal(jp, (AST_array_literal*)(ast_statement->right));
+    } else if(ast_statement->right) {
         ir_gen_expr(jp, ast_statement->right);
-    else
+    } else {
         jp->reg_alloc++;
+    }
 
     if(ast_statement->left->kind != AST_KIND_atom) {
         assert(ast_statement->left->kind == AST_KIND_expr);
@@ -2788,7 +2890,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
 
         AST_expr *left_expr = (AST_expr*)ast_statement->left;
 
-        if(!TYPE_KIND_IS_SCALAR(left_expr->type_annotation->kind)) {
+        if(TYPE_KIND_IS_NOT_SCALAR(left_expr->type_annotation->kind)) {
             UNIMPLEMENTED;
         } else {
             bool strided_access = false;
@@ -2800,7 +2902,6 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
             } else {
                 assert(left_expr->token == '>' && left_expr->left == NULL);
                 ir_gen_expr(jp, left_expr->right);
-                printf("%lu\n",jp->reg_alloc);
                 assert(jp->reg_alloc == 2);
             }
 
@@ -2852,7 +2953,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
 
         assert(sym->type->kind != TYPE_KIND_VOID);
 
-        if(!TYPE_KIND_IS_SCALAR(sym->type->kind)) {
+        if(TYPE_KIND_IS_NOT_SCALAR(sym->type->kind)) {
             UNIMPLEMENTED;
         } else {
             if(sym->is_global) {
@@ -3366,7 +3467,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                     Type *proc_type = jp->cur_proc_type;
                     u64 i = 0;
                     for(AST_expr_list *expr_list = ast_return->expr_list; expr_list; expr_list = expr_list->next) {
-                        if(!TYPE_KIND_IS_SCALAR(proc_type->proc.ret.types[i]->kind)) {
+                        if(TYPE_KIND_IS_NOT_SCALAR(proc_type->proc.ret.types[i]->kind)) {
                             UNIMPLEMENTED;
                         } else {
                             ir_gen_expr(jp, expr_list->expr);
@@ -3406,13 +3507,65 @@ void ir_gen_block(Job *jp, AST *ast) {
 
                     Sym *sym = ast_vardecl->symbol_annotation;
                     sym->segment_offset = arrlast(jp->local_offset);
-                    arrlast(jp->local_offset) += sym->type->bytes;
 
                     Type *var_type = sym->type;
 
-                    if(var_type->kind >= TYPE_KIND_TYPE && var_type->kind != TYPE_KIND_POINTER) {
-                        UNIMPLEMENTED;
+                    if(TYPE_KIND_IS_NOT_SCALAR(var_type->kind)) {
+                        if(var_type->kind == TYPE_KIND_ARRAY) {
+                            // traverse the type till you hit something that isn't an array
+                            // to find the full dimension
+                            // write zeros contiguously or do nothing if it's uninitialized
+                            u64 total_bytes = 1;
+
+                            Type *t = var_type;
+                            while(t->kind == TYPE_KIND_ARRAY) {
+                                total_bytes *= t->array.n;
+                                t = t->array.of;
+                            }
+                            total_bytes *= t->bytes;
+
+                            assert(var_type->bytes == 8);
+
+                            arrlast(jp->local_offset) += var_type->bytes + total_bytes;
+                            u64 len_field_offset = sym->segment_offset;
+                            u64 array_data_offset = sym->segment_offset + var_type->bytes;
+
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_SETLOCAL,
+                                    .setvar = {
+                                        .offset = len_field_offset,
+                                        .bytes = 8,
+                                        .immediate = true,
+                                    },
+                                };
+                            arrpush(jp->instructions, inst);
+
+                            if(ast_vardecl->uninitialized) {
+                                jp->reg_alloc = 0;
+                                ast = ast_vardecl->next;
+                                continue;
+                            }
+
+                            //TODO generate varying sizes of SETLOCAL instructions for effieciency
+                            for(u64 b = 0; b < total_bytes; ++b) {
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_SETLOCAL,
+                                        .setvar = {
+                                            .offset = array_data_offset + b,
+                                            .bytes = 1,
+                                            .immediate = true,
+                                        },
+                                    };
+                                arrpush(jp->instructions, inst);
+                            }
+                        } else {
+                            UNIMPLEMENTED;
+                        }
                     } else {
+                        arrlast(jp->local_offset) += sym->type->bytes;
+
                         if(ast_vardecl->uninitialized) {
                             jp->reg_alloc = 0;
                             ast = ast_vardecl->next;
@@ -3469,7 +3622,6 @@ void ir_gen_block(Job *jp, AST *ast) {
                         ir_gen_statement(jp, ast_statement);
                         ast = ast_statement->next;
                     }
-
                 }
                 break;
             case AST_KIND_continuestatement:
@@ -3662,7 +3814,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 arrpush(type_stack, sym->type);
 
                 if(sym->constant) {
-                    if(!TYPE_KIND_IS_SCALAR(sym->type->kind)) {
+                    if(TYPE_KIND_IS_NOT_SCALAR(sym->type->kind)) {
                         UNIMPLEMENTED;
                     } else {
                         inst =
@@ -3688,8 +3840,19 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 } else {
                     IRop opcode = IROP_GETLOCAL;
 
-                    if(!TYPE_KIND_IS_SCALAR(sym->type->kind)) {
-                        UNIMPLEMENTED;
+                    if(TYPE_KIND_IS_NOT_SCALAR(sym->type->kind)) {
+                        if(sym->type->kind == TYPE_KIND_ARRAY) {
+                            inst =
+                                (IRinst) {
+                                    .opcode = sym->is_global ? IROP_ADDRGLOBAL : IROP_ADDRLOCAL,
+                                    .addrvar = {
+                                        .reg_dest = jp->reg_alloc++,
+                                        .offset = sym->segment_offset + 8, // array data offset is 8 bytes in front of length field
+                                    },
+                                };
+                        } else {
+                            UNIMPLEMENTED;
+                        }
                     } else {
                         if(sym->is_global) {
                             opcode = (sym->type->kind >= TYPE_KIND_FLOAT && sym->type->kind <= TYPE_KIND_F64)
@@ -3730,7 +3893,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 Type *atom_type = atom->type_annotation;
                 arrpush(type_stack, atom_type);
 
-                if(!TYPE_KIND_IS_SCALAR(atom_type->kind)) {
+                if(TYPE_KIND_IS_NOT_SCALAR(atom_type->kind)) {
                     UNIMPLEMENTED;
                 } else {
                     inst =
@@ -3775,7 +3938,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         },
                     };
 
-                if(!TYPE_KIND_IS_SCALAR(result_type->kind)) {
+                if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind)) {
                     printf("result_type = %s\n", job_type_to_str(jp, result_type));
                     UNIMPLEMENTED;
                 } else if(result_type->kind == TYPE_KIND_F64) {
@@ -3806,7 +3969,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                     default:
                         UNREACHABLE;
                     case TOKEN_CAST:
-                        if(!TYPE_KIND_IS_SCALAR(result_type->kind) || !TYPE_KIND_IS_SCALAR(operand_type->kind)) {
+                        if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind) || TYPE_KIND_IS_NOT_SCALAR(operand_type->kind)) {
                             UNIMPLEMENTED;
                         } else {
                             inst =
@@ -3944,18 +4107,41 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         jp->reg_alloc++;
                         break;
                     case '[':
-                        inst =
-                            (IRinst) {
-                                .opcode = IROP_LOAD,
-                                .load = {
-                                    .reg_dest = result_reg,
-                                    .reg_src_ptr = a_reg,
-                                    .offset_reg = b_reg,
-                                    .bytes = result_type->bytes,
-                                    .has_offset = true,
-                                },
-                            };
-                        arrpush(jp->instructions, inst);
+                        if(a_type->kind == TYPE_KIND_ARRAY && result_type->kind == TYPE_KIND_ARRAY) {
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_MUL,
+                                    .arith = {
+                                        .operand_bytes = { 8, b_bytes, 8 },
+                                        .reg = { b_reg, b_reg },
+                                        .imm.integer = a_type->array.element_stride,
+                                        .immediate = true,
+                                    },
+                                };
+                            arrpush(jp->instructions, inst);
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_ADD,
+                                    .arith = {
+                                        .operand_bytes = { 8, 8, 8 },
+                                        .reg = { result_reg, a_reg, b_reg },
+                                    },
+                                };
+                            arrpush(jp->instructions, inst);
+                        } else {
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_LOAD,
+                                    .load = {
+                                        .reg_dest = result_reg,
+                                        .reg_src_ptr = a_reg,
+                                        .offset_reg = b_reg,
+                                        .bytes = result_type->bytes,
+                                        .has_offset = true,
+                                    },
+                                };
+                            arrpush(jp->instructions, inst);
+                        }
                         jp->reg_alloc++;
                         break;
                     case '+':
@@ -4175,7 +4361,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                     continue;
                 }
 
-                if(!TYPE_KIND_IS_SCALAR(p->type_annotation->kind)) {
+                if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
                     UNIMPLEMENTED;
                 } else {
                     ir_gen_expr(jp, p->value);
@@ -4276,7 +4462,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 };
             arrpush(jp->instructions, inst);
 
-            if(!TYPE_KIND_IS_SCALAR(return_type->kind)) {
+            if(TYPE_KIND_IS_NOT_SCALAR(return_type->kind)) {
                 UNIMPLEMENTED;
             } else {
                 inst =
@@ -5118,7 +5304,14 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
                     result->val.type = job_alloc_type(jp, TYPE_KIND_ARRAY);
                     result->val.type->array.of = a->val.type;
                     result->val.type->array.n = b->val.integer;
-                    result->val.type->bytes += a->val.type->bytes * b->val.integer;
+                    if(a->val.type->kind == TYPE_KIND_ARRAY) {
+                        result->val.type->array.element_stride =
+                            a->val.type->array.element_stride * a->val.type->array.n;
+                    } else {
+                        result->val.type->array.element_stride = a->val.type->bytes;
+                    }
+                    //TODO can we compute the allocated size here somehow?
+                    //result->val.type->bytes += a->val.type->bytes * b->val.integer;
                 }
             } else {
                 result = builtin_value+VALUE_KIND_NIL;
@@ -5339,6 +5532,11 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
                 if(a->array.of != b->array.of) return builtin_type+TYPE_KIND_VOID;
                 if(a->kind == TYPE_KIND_ARRAY && a->array.n < b->array.n) return builtin_type+TYPE_KIND_VOID;
 
+                if(a->kind == TYPE_KIND_ARRAY && a->array.n > b->array.n) {
+                    b->array.n = a->array.n;
+                    a->array.count = b->array.count;
+                }
+
                 return a;
             } else if(a->kind == TYPE_KIND_POINTER) {
                 if(b->kind != TYPE_KIND_POINTER)
@@ -5547,7 +5745,7 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
         case '>': case '<': case TOKEN_GREATEQUAL: case TOKEN_LESSEQUAL: case TOKEN_EXCLAMEQUAL: case TOKEN_EQUALEQUAL:
             {
                 Type *result = NULL;
-                if(!TYPE_KIND_IS_SCALAR(a->kind) || !TYPE_KIND_IS_SCALAR(b->kind))
+                if(TYPE_KIND_IS_NOT_SCALAR(a->kind) || TYPE_KIND_IS_NOT_SCALAR(b->kind))
                     result = builtin_type+TYPE_KIND_VOID;
 
                 if(op == '>')
@@ -5599,7 +5797,7 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
             }
             break;
         case TOKEN_AND: case TOKEN_OR:
-            if(!TYPE_KIND_IS_SCALAR(a->kind) || !TYPE_KIND_IS_SCALAR(b->kind)) {
+            if(TYPE_KIND_IS_NOT_SCALAR(a->kind) || TYPE_KIND_IS_NOT_SCALAR(b->kind)) {
                 UNIMPLEMENTED;
             }
             return builtin_type+TYPE_KIND_BOOL;
@@ -5702,6 +5900,9 @@ void typecheck_expr(Job *jp) {
             if(jp->state == JOB_STATE_ERROR)
                 break;
         } else if(kind == AST_KIND_array_literal) {
+            if(arrlast(expr)[0]->kind != AST_KIND_array_literal)
+                job_error(jp, arrlast(expr)[0]->loc, "array literal must be alone in right hand side of expression");
+
             AST_array_literal *array_lit = (AST_array_literal*)(expr[pos][0]);
             Type *array_elem_type = NULL;
             u64 i = 0;
@@ -5742,6 +5943,7 @@ void typecheck_expr(Job *jp) {
 
             Type *array_type = job_alloc_type(jp, TYPE_KIND_ARRAY);
             array_type->array.of = array_elem_type;
+            array_type->array.count = array_lit->n;
             array_type->array.n = array_lit->n;
 
             array_lit->type_annotation = array_type;
@@ -5764,7 +5966,7 @@ void typecheck_expr(Job *jp) {
             Type *proc_type = arrpop(type_stack);
             arrsetlen(value_stack, arrlen(value_stack) - 1);
 
-            u8 params_passed[proc_type->proc.param.n]; //TODO the language should have variable capacity stack arrays
+            u8 params_passed[proc_type->proc.param.n];
             memset(params_passed, 0, proc_type->proc.param.n);
             for(int i = proc_type->proc.first_default_param; i < proc_type->proc.param.n; ++i)
                 params_passed[i] = 2;
@@ -5992,7 +6194,7 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
     } else if(ast->kind == AST_KIND_atom) {
         arrpush(ir_expr, ast);
     } else if(ast->kind == AST_KIND_array_literal) {
-        arrpush(ir_expr, ast);
+        UNREACHABLE;
     } else if(ast->kind == AST_KIND_call) {
         arrpush(ir_expr, ast);
     } else {
@@ -6130,6 +6332,7 @@ void typecheck_procdecl(Job *jp) {
                 .name = p->name,
                 .loc = p->base.loc,
                 .declared_by = jp->id,
+                .is_argument = true,
                 .type = bind_type,
                 .value = init_value,
                 .initializer = p->init,
