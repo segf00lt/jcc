@@ -44,7 +44,6 @@ proc test_proc2(i: int, c: [3]*[..]char, f: float = 3.14) int, char;
 
 
 proc test_proc(i: int, x: int, c: char, f: float) {
-    /*
     y := 15 - x << TWO;
 
     defer y += x / 7;
@@ -94,7 +93,7 @@ proc test_proc(i: int, x: int, c: char, f: float) {
 
     >ptr_f32++;
     >ptr_f32--;
-    //ptr_f32[i + cast(u64)ptr_u8[i * i + x] + x]--;
+    ptr_f32[i + cast(u64)ptr_u8[i * i + x] + x]--;
     ptr_f32[i + cast(u64)ptr_u8[i * i + x] + x] -= 1;
 
     bb: bool = i < x;
@@ -102,7 +101,7 @@ proc test_proc(i: int, x: int, c: char, f: float) {
     bb = c && bb && f;
     bb = >ptr_u8 > cast(u8)i;
 
-    if: what_if_huh i > 0 {
+    if:what_if_huh i > 0 {
         i = 9000;
     } else if i < 756 {
         test_var: u16;
@@ -136,34 +135,17 @@ proc test_proc(i: int, x: int, c: char, f: float) {
     defer d = other_proc(i=fib(12), multiplier=fib(n=i));
 
 
-    LOAD r_0, 1, 8B
-    GETLOCAL r_1, addr 109, 8B
-    GETLOCAL r_2, addr 0, 8B
-    GETLOCAL r_3, addr 0, 8B
-    GETLOCAL r_4, addr 0, 8B
-    MUL r_3 8B, r_3 8B, r_4 8B
-    GETLOCAL r_4, addr 8, 8B
-    ADD r_3 8B, r_3 8B, r_4 8B
-    GETLOCAL r_4, addr 101, 8B
-    LOAD r_3, ptr_r_4, offset_r_3, 1B
-    ADD r_2 8B, r_2 8B, r_3 8B
-    GETLOCAL r_3, addr 8, 8B
-    ADD r_2 8B, r_2 8B, r_3 8B
-    LOADF r_3, ptr_r_1, offset_r_2, 4B
-    FSUB r_0 4B, r_3 4B, r_0 4B
-    STORF ptr_r_1, offset_r_2, r_0, 4B
-
     test_ptr_1: *int = cast(*void)6502;
     test_ptr_2: *int = cast(*void)5150;
     test_ptr_3: *int = cast(*void)8086;
     test_ptr_4: *int = cast(*void)2001;
     test_ptr_1[test_ptr_2[test_ptr_3[test_ptr_4[0] + i] + i] + i] = 150000000;
-    */
 
-    test_array: [5][4][4]u16 = ---;
     number: int = ---;
-    number = 1234 + test_array[3][3][3];
+    test_array: [5][3][3]u16;
+    number = 1234 + test_array[3][1][2];
     test_array[1][2][3] = 7812;
+    test_array_len := test_array[0].count;
 }
 
 TWO :: 2;
@@ -176,3 +158,4 @@ proc fib(n: int) int {
 proc other_proc(i: int, multiplier: int) int {
     return i * multiplier;
 }
+
