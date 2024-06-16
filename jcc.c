@@ -217,8 +217,10 @@
     X(GETRETF,       _)                 \
     X(ITOF,          _)                 \
     X(FTOB,          _)                 \
+    X(ITOB,          _)                 \
     X(FTOI,          _)                 \
     X(ITOI,          _)                 \
+    X(FTOF,          _)                 \
 
 #define TOKEN_TO_TYPEKIND(t) (Typekind)((t-TOKEN_VOID)+TYPE_KIND_VOID)
 
@@ -227,14 +229,15 @@
 #define TYPE_KIND_IS_FLOAT(kind) (kind >= TYPE_KIND_FLOAT && kind <= TYPE_KIND_F64)
 
 
-typedef struct IRlabel IRlabel;
 typedef struct Scope_entry* Scope;
 typedef int    Jobid;
 typedef struct Value Value;
 typedef struct Sym Sym;
 typedef struct Type Type;
+typedef struct IRlabel IRlabel;
 typedef struct IRinst IRinst;
 typedef union  IRvalue IRvalue;
+typedef struct IRmachine IRmachine;
 typedef struct Job Job;
 typedef struct Job_memory Job_memory;
 typedef struct Message Message;
@@ -326,6 +329,22 @@ struct IRlabel {
     u64 continue_label;
     u64 break_label;
     Loc_info loc;
+};
+
+struct IRmachine {
+    Arr(u64) pc_stack;
+    Arr(int) procid_stack;
+    Arr(u8*) local_base_stack;
+    Arr(IRvalue) tmp_stack;
+
+    u8 *global_segment;
+    u8 *local_segment;
+
+    u64 iregs[8];
+    f32 f32regs[8];
+    f64 f64regs[8];
+
+    Arr(IRvalue) ports;
 };
 
 struct IRinst {
@@ -512,6 +531,7 @@ struct Job {
     u64                  expr_list_pos;
 
     /* code generation */
+    u64                  max_local_offset;
     Arr(u64)             local_offset;
     IRlabel*             label_table;
     Arr(u64)             continue_label;
@@ -520,6 +540,8 @@ struct Job {
     Arr(IRinst)          instructions;
     u64                  reg_alloc;
     u64                  float_reg_alloc;
+
+    IRmachine            interp;
 
     Arr(Message)         messages;
 
@@ -893,6 +915,7 @@ void        ir_gen_statement(Job *jp, AST_statement *ast_statement);
 void        ir_gen_logical_expr(Job *jp, AST *ast);
 void        ir_gen_expr(Job *jp, AST *ast);
 void        ir_gen_array_literal(Job *jp, AST_array_literal *ast_array);
+void        ir_run(Job *jp, int procid);
 
 Value*      atom_to_value(Job *jp, AST_atom *atom);
 Type*       atom_to_type(Job *jp, AST_atom *atom);
@@ -900,7 +923,7 @@ Type*       atom_to_type(Job *jp, AST_atom *atom);
 Value*      evaluate_unary(Job *jp, Value *a, AST_expr *op_ast);
 Value*      evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast);
 
-int         procedure_table_add(Arr(IRinst) proc);
+int         procedure_table_add(IRinst *proc, u64 local_segment_size, u64 *jump_table);
 
 //TODO typechecking should be done with a table of some kind, all this branching is a bit lazy
 bool        types_are_same(Type *a, Type *b);
@@ -988,6 +1011,9 @@ Arena              global_scratch_allocator;
 Pool               global_sym_allocator;
 Scope              global_scope;
 Arr(IRinst*)       procedure_table;
+Arr(u64)           local_segment_size_table;
+Arr(u64*)          procedure_local_jump_table;
+
 
 /* function declarations */
 
@@ -1657,8 +1683,10 @@ INLINE void print_ir_inst(IRinst inst) {
 
 }
 
-INLINE int procedure_table_add(Arr(IRinst) proc) {
+INLINE int procedure_table_add(IRinst *proc, u64 local_segment_size, u64 *jump_table) {
     arrpush(procedure_table, proc);
+    arrpush(local_segment_size_table, local_segment_size);
+    arrpush(procedure_local_jump_table, jump_table);
     return arrlen(procedure_table);
 }
 
@@ -2983,12 +3011,20 @@ void ir_gen(Job *jp) {
             }
         }
 
+        jp->cur_proc_type = type;
+
         jp->label_alloc = 1;
+
         assert(arrlen(jp->local_offset) == 0);
         arrpush(jp->local_offset, local_offset);
+
         AST_block *body = (AST_block*)(ast_proc->body);
-        jp->cur_proc_type = type;
+
         ir_gen_block(jp, body->down);
+
+        if(jp->max_local_offset < arrlast(jp->local_offset))
+            jp->max_local_offset = arrlast(jp->local_offset);
+
         arrsetlen(jp->local_offset, 0);
 
         if(jp->state == JOB_STATE_ERROR) return;
@@ -2998,13 +3034,383 @@ void ir_gen(Job *jp) {
             arrpush(jp->instructions, end);
         }
 
-        sym->proc_id = procedure_table_add(jp->instructions);
+        u64 *jump_table = malloc(sizeof(u64) * jp->label_alloc);
+
+        for(int i = 0; i < arrlen(jp->instructions); ++i) {
+            IRinst *inst = jp->instructions + i;
+            if(inst->opcode == IROP_LABEL)
+                jump_table[inst->label.id] = i + 1;
+        }
+        jp->label_alloc = 0;
+
+        u64 n = sizeof(IRinst) * arrlen(jp->instructions);
+        IRinst *proc = malloc(n);
+        memcpy(proc, jp->instructions, n);
+        arrsetlen(jp->instructions, 0);
+
+        sym->proc_id = procedure_table_add(proc, jp->max_local_offset, jump_table);
 
     } else if(node->kind == AST_KIND_vardecl) {
         printf("sorry I don't know how to do this yet\n");
         //UNIMPLEMENTED;
     } else {
         UNREACHABLE;
+    }
+}
+
+void ir_run(Job *jp, int procid) {
+    IRmachine interp = jp->interp;
+
+    // NOTE
+    // we assume the necessary setup to run has already been done
+    // data is put in and extracted from the IRmachine elsewhere
+
+    IRinst *procedure = procedure_table[procid];
+    u64 pc = 0;
+
+    assert(interp.local_segment && interp.global_segment && arrlen(interp.ports) > 0);
+    UNIMPLEMENTED;
+
+    while(true) {
+        IRinst inst = procedure[pc];
+        u64 imask = 0x0;
+
+        switch(inst.opcode) {
+            default:
+                printf("bad instruction\n");
+                UNREACHABLE;
+            case IROP_LABEL:
+                UNREACHABLE;
+            case IROP_NOOP:
+                break;
+#define X(opcode, opsym) \
+            case IROP_##opcode: \
+                                imask = (inst.arith.operand_bytes[0] < 8) \
+                ? ((1 << (inst.arith.operand_bytes[0] << 3)) - 1) \
+                : (u64)(-1); \
+                interp.iregs[inst.arith.reg[0]] = \
+                imask & (interp.iregs[inst.arith.reg[1]] opsym interp.iregs[inst.arith.reg[2]]); \
+                break;
+                IR_INT_BINOPS;
+#undef X
+#define X(opcode, opsym) \
+            case IROP_##opcode: \
+                                imask = (inst.arith.operand_bytes[0] < 8) \
+                ? ((1 << (inst.arith.operand_bytes[0] << 3)) - 1) \
+                : (u64)(-1); \
+                interp.iregs[inst.arith.reg[0]] = imask & (opsym interp.iregs[inst.arith.reg[1]]); \
+                break;
+                IR_INT_UNOPS;
+#undef X
+#define X(opcode, opsym) \
+            case IROP_##opcode: \
+                                if(inst.arith.operand_bytes[0] == 8) { \
+                                    interp.f64regs[inst.arith.reg[0]] = \
+                                    interp.f64regs[inst.arith.reg[1]] opsym interp.f64regs[inst.arith.reg[2]]; \
+                                } else { \
+                                    interp.f32regs[inst.arith.reg[0]] = \
+                                    interp.f32regs[inst.arith.reg[1]] opsym interp.f32regs[inst.arith.reg[2]]; \
+                                }
+                break;
+                IR_FLOAT_BINOPS;
+#undef X
+#define X(opcode, opsym) \
+            case IROP_##opcode: \
+                                if(inst.arith.operand_bytes[0] == 8) { \
+                                    interp.f64regs[inst.arith.reg[0]] = opsym interp.f64regs[inst.arith.reg[1]]; \
+                                } else { \
+                                    interp.f32regs[inst.arith.reg[0]] = opsym interp.f32regs[inst.arith.reg[1]]; \
+                                }
+                break;
+                IR_FLOAT_UNOPS;
+#undef X
+
+            case IROP_IF:
+                if(interp.iregs[inst.branch.cond_reg] > 0)
+                    pc = procedure_local_jump_table[procid][inst.branch.label_id];
+                break;
+            case IROP_IFZ:
+                if(interp.iregs[inst.branch.cond_reg] == 0)
+                    pc = procedure_local_jump_table[procid][inst.branch.label_id];
+                break;
+            case IROP_JMP:
+                pc = procedure_local_jump_table[procid][inst.branch.label_id];
+                break;
+            case IROP_CALL:
+                UNIMPLEMENTED;
+                break;
+            case IROP_RET:
+                UNIMPLEMENTED;
+                break;
+            case IROP_PUSH:
+                UNIMPLEMENTED;
+                break;
+            case IROP_POP:
+                UNIMPLEMENTED;
+                break;
+            case IROP_PUSHF:
+                UNIMPLEMENTED;
+                break;
+            case IROP_POPF:
+                UNIMPLEMENTED;
+                break;
+            case IROP_LOAD:
+                if(inst.load.immediate) {
+                    imask = (inst.load.bytes < 8)
+                        ? ((1 << (inst.load.bytes << 3)) - 1)
+                        : (u64)(-1);
+                    interp.iregs[inst.load.reg_dest] = imask & inst.load.imm.integer;
+                } else {
+                    u8 *ptr = (u8*)(interp.iregs[inst.load.reg_src_ptr]);
+                    u64 offset = (inst.load.has_offset) ? interp.iregs[inst.load.offset_reg] : 0;
+                    switch(inst.load.bytes) {
+                        case 1:
+                            interp.iregs[inst.load.reg_dest] = ptr[offset];
+                            break;
+                        case 2:
+                            interp.iregs[inst.load.reg_dest] = ((u16*)ptr)[offset];
+                            break;
+                        case 4:
+                            interp.iregs[inst.load.reg_dest] = ((u32*)ptr)[offset];
+                            break;
+                        case 8:
+                            interp.iregs[inst.load.reg_dest] = ((u64*)ptr)[offset];
+                            break;
+                    }
+                }
+                break;
+            case IROP_STOR:
+                {
+                    u64 src_value = inst.stor.immediate ? inst.stor.imm.integer : interp.iregs[inst.stor.reg_src];
+                    u8 *ptr = (u8*)(interp.iregs[inst.stor.reg_dest_ptr]);
+                    u64 offset = (inst.stor.has_offset) ? interp.iregs[inst.stor.offset_reg] : 0;
+                    switch(inst.stor.bytes) {
+                        case 1:
+                            ptr[offset] = (u8)src_value;
+                            break;
+                        case 2:
+                            ((u16*)ptr)[offset] = (u16)src_value;
+                            break;
+                        case 4:
+                            ((u32*)ptr)[offset] = (u32)src_value;
+                            break;
+                        case 8:
+                            ((u64*)ptr)[offset] = (u64)src_value;
+                            break;
+                    }
+                }
+                break;
+            case IROP_LOADF:
+                if(inst.load.bytes == 8) {
+                    if(inst.load.immediate) {
+                        interp.f64regs[inst.load.reg_dest] = inst.load.imm.floating64;
+                    } else {
+                        f64 *ptr = (f64*)(interp.iregs[inst.load.reg_src_ptr]);
+                        u64 offset = (inst.load.has_offset) ? interp.iregs[inst.load.offset_reg] : 0;
+                        interp.iregs[inst.load.reg_dest] = ptr[offset];
+                    }
+                } else {
+                    if(inst.load.immediate) {
+                        interp.f32regs[inst.load.reg_dest] = inst.load.imm.floating32;
+                    } else {
+                        f32 *ptr = (f32*)(interp.iregs[inst.load.reg_src_ptr]);
+                        u64 offset = (inst.load.has_offset) ? interp.iregs[inst.load.offset_reg] : 0;
+                        interp.iregs[inst.load.reg_dest] = ptr[offset];
+                    }
+                }
+                break;
+            case IROP_STORF:
+                if(inst.stor.bytes == 8) {
+                    f64 src_value = inst.stor.immediate ? inst.stor.imm.floating64 : interp.f64regs[inst.stor.reg_src];
+                    f64 *ptr = (f64*)(interp.iregs[inst.stor.reg_dest_ptr]);
+                    u64 offset = (inst.stor.has_offset) ? interp.iregs[inst.stor.offset_reg] : 0;
+                    ptr[offset] = src_value;
+                } else {
+                    f32 src_value = inst.stor.immediate ? inst.stor.imm.floating32 : interp.f32regs[inst.stor.reg_src];
+                    f32 *ptr = (f32*)(interp.iregs[inst.stor.reg_dest_ptr]);
+                    u64 offset = (inst.stor.has_offset) ? interp.iregs[inst.stor.offset_reg] : 0;
+                    ptr[offset] = src_value;
+                }
+                break;
+            case IROP_CALCPTROFFSET:
+                interp.iregs[inst.calcptroffset.reg_dest] =
+                    (u64)(((u8*)(interp.iregs[inst.calcptroffset.reg_src_ptr])) + 
+                    interp.iregs[inst.calcptroffset.offset_reg] * inst.calcptroffset.stride);
+                break;
+            case IROP_ADDRLOCAL:
+                interp.iregs[inst.addrvar.reg_dest] = (u64)(arrlast(interp.local_base_stack) + inst.addrvar.offset);
+                break;
+            case IROP_ADDRGLOBAL:
+                interp.iregs[inst.addrvar.reg_dest] = (u64)(interp.global_segment + inst.addrvar.offset);
+                break;
+            case IROP_GETLOCAL:
+                switch(inst.getvar.bytes) {
+                    case 1:
+                        interp.iregs[inst.getvar.reg_dest] = arrlast(interp.local_base_stack)[inst.getvar.offset];
+                        break;
+                    case 2:
+                        interp.iregs[inst.getvar.reg_dest] = *(u16*)(arrlast(interp.local_base_stack) + inst.getvar.offset);
+                        break;
+                    case 4:
+                        interp.iregs[inst.getvar.reg_dest] = *(u32*)(arrlast(interp.local_base_stack) + inst.getvar.offset);
+                        break;
+                    case 8:
+                        interp.iregs[inst.getvar.reg_dest] = *(u64*)(arrlast(interp.local_base_stack) + inst.getvar.offset);
+                        break;
+                }
+                break;
+            case IROP_SETLOCAL:
+                switch(inst.getvar.bytes) {
+                    case 1:
+                        arrlast(interp.local_base_stack)[inst.getvar.offset] = (u8)(interp.iregs[inst.getvar.reg_dest]);
+                        break;
+                    case 2:
+                        *(u16*)(arrlast(interp.local_base_stack) + inst.getvar.offset) = (u16)(interp.iregs[inst.getvar.reg_dest]);
+                        break;
+                    case 4:
+                        *(u32*)(arrlast(interp.local_base_stack) + inst.getvar.offset) = (u32)(interp.iregs[inst.getvar.reg_dest]);
+                        break;
+                    case 8:
+                        *(u64*)(arrlast(interp.local_base_stack) + inst.getvar.offset) = (u64)(interp.iregs[inst.getvar.reg_dest]);
+                        break;
+                }
+                break;
+            case IROP_GETGLOBAL:
+                switch(inst.getvar.bytes) {
+                    case 1:
+                        interp.iregs[inst.getvar.reg_dest] = interp.global_segment[inst.getvar.offset];
+                        break;
+                    case 2:
+                        interp.iregs[inst.getvar.reg_dest] = *(u16*)(interp.global_segment + inst.getvar.offset);
+                        break;
+                    case 4:
+                        interp.iregs[inst.getvar.reg_dest] = *(u32*)(interp.global_segment + inst.getvar.offset);
+                        break;
+                    case 8:
+                        interp.iregs[inst.getvar.reg_dest] = *(u64*)(interp.global_segment + inst.getvar.offset);
+                        break;
+                }
+                break;
+            case IROP_SETGLOBAL:
+                switch(inst.getvar.bytes) {
+                    case 1:
+                        interp.global_segment[inst.getvar.offset] = (u8)(interp.iregs[inst.getvar.reg_dest]);
+                        break;
+                    case 2:
+                        *(u16*)(interp.global_segment + inst.getvar.offset) = (u16)(interp.iregs[inst.getvar.reg_dest]);
+                        break;
+                    case 4:
+                        *(u32*)(interp.global_segment + inst.getvar.offset) = (u32)(interp.iregs[inst.getvar.reg_dest]);
+                        break;
+                    case 8:
+                        *(u64*)(interp.global_segment + inst.getvar.offset) = (u64)(interp.iregs[inst.getvar.reg_dest]);
+                        break;
+                }
+                break;
+            //TODO force arguments and return values to be passed in order
+            //TODO hint instructions to indicate beginning and end of argument expressions
+            //TODO calls need to be more abstract
+            case IROP_SETARG:
+                if(inst.setport.port >= arrlen(interp.ports))
+                    arrsetlen(interp.ports, inst.setport.port + 1);
+                UNIMPLEMENTED;
+                break;
+            case IROP_SETRET:
+                if(inst.setport.port >= arrlen(interp.ports))
+                    arrsetlen(interp.ports, inst.setport.port + 1);
+                UNIMPLEMENTED;
+                break;
+            case IROP_GETARG:
+                assert(inst.getport.port < arrlen(interp.ports));
+                UNIMPLEMENTED;
+                break;
+            case IROP_GETRET:
+                assert(inst.getport.port < arrlen(interp.ports));
+                UNIMPLEMENTED;
+                break;
+            case IROP_GETLOCALF:
+                if(inst.getvar.bytes == 8)
+                    interp.f64regs[inst.getvar.reg_dest] = *(f64*)(arrlast(interp.local_base_stack) + inst.getvar.offset);
+                else
+                    interp.f32regs[inst.getvar.reg_dest] = *(f32*)(arrlast(interp.local_base_stack) + inst.getvar.offset);
+                break;
+            case IROP_SETLOCALF:
+                if(inst.getvar.bytes == 8)
+                    *(f64*)(arrlast(interp.local_base_stack) + inst.getvar.offset) = interp.f64regs[inst.getvar.reg_dest];
+                else
+                    *(f32*)(arrlast(interp.local_base_stack) + inst.getvar.offset) = interp.f32regs[inst.getvar.reg_dest];
+                break;
+            case IROP_GETGLOBALF:
+                if(inst.getvar.bytes == 8)
+                    interp.f64regs[inst.getvar.reg_dest] = *(f64*)(interp.global_segment + inst.getvar.offset);
+                else
+                    interp.f32regs[inst.getvar.reg_dest] = *(f32*)(interp.global_segment + inst.getvar.offset);
+                break;
+            case IROP_SETGLOBALF:
+                if(inst.getvar.bytes == 8)
+                    *(f64*)(interp.global_segment + inst.getvar.offset) = interp.f64regs[inst.getvar.reg_dest];
+                else
+                    *(f32*)(interp.global_segment + inst.getvar.offset) = interp.f32regs[inst.getvar.reg_dest];
+                break;
+            case IROP_SETARGF:
+                break;
+            case IROP_SETRETF:
+                break;
+            case IROP_GETARGF:
+                break;
+            case IROP_GETRETF:
+                break;
+            case IROP_ITOF:
+                if(inst.typeconv.to_bytes == 8) {
+                    imask = (inst.typeconv.from_bytes < 8)
+                        ? ((1 << (inst.typeconv.from_bytes << 3)) - 1)
+                        : (u64)(-1);
+                    interp.f64regs[inst.typeconv.to_reg] = (f64)(imask & interp.iregs[inst.typeconv.from_reg]);
+                } else {
+                    imask = (inst.typeconv.from_bytes < 8)
+                        ? ((1 << (inst.typeconv.from_bytes << 3)) - 1)
+                        : (u64)(-1);
+                    interp.f32regs[inst.typeconv.to_reg] = (f32)(imask & interp.iregs[inst.typeconv.from_reg]);
+                }
+                break;
+            case IROP_FTOB:
+                if(inst.typeconv.from_bytes == 8)
+                    interp.iregs[inst.typeconv.to_reg] = (bool)((f64)0.0 != interp.f64regs[inst.typeconv.from_reg]);
+                else
+                    interp.iregs[inst.typeconv.to_reg] = (bool)((f32)0.0 != interp.f32regs[inst.typeconv.from_reg]);
+                break;
+            case IROP_ITOB:
+                interp.iregs[inst.typeconv.to_reg] = (bool)(interp.iregs[inst.typeconv.from_reg]);
+                break;
+            case IROP_FTOI:
+                if(inst.typeconv.from_bytes == 8) {
+                    imask = (inst.typeconv.to_bytes < 8)
+                        ? ((1 << (inst.typeconv.to_bytes << 3)) - 1)
+                        : (u64)(-1);
+                    interp.iregs[inst.typeconv.to_reg] = imask & (u64)(interp.f64regs[inst.typeconv.from_reg]);
+                } else {
+                    imask = (inst.typeconv.to_bytes < 8)
+                        ? ((1 << (inst.typeconv.to_bytes << 3)) - 1)
+                        : (u64)(-1);
+                    interp.iregs[inst.typeconv.to_reg] = imask & (u64)(interp.f32regs[inst.typeconv.from_reg]);
+                }
+                break;
+            case IROP_ITOI:
+                {
+                    imask = (inst.typeconv.to_bytes < 8)
+                        ? ((1 << (inst.typeconv.to_bytes << 3)) - 1)
+                        : (u64)(-1);
+                    interp.iregs[inst.typeconv.to_reg] = imask & interp.iregs[inst.typeconv.from_reg];
+                }
+                break;
+            case IROP_FTOF:
+                if(inst.typeconv.to_bytes == 8 && inst.typeconv.from_bytes == 4) {
+                    interp.f64regs[inst.typeconv.to_reg] = (f64)(interp.f32regs[inst.typeconv.from_reg]);
+                } else if(inst.typeconv.to_bytes == 4 && inst.typeconv.from_bytes == 8) {
+                    interp.f32regs[inst.typeconv.to_reg] = (f32)(interp.f64regs[inst.typeconv.from_reg]);
+                }
+                break;
+        }
     }
 }
 
@@ -3433,6 +3839,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                     u64 first_label = jp->label_alloc;
                     jp->label_alloc++;
 
+                    //TODO cast non bool values to bool
                     ir_gen_expr(jp, ast_if->condition);
 
                     assert(jp->reg_alloc == 1);
@@ -3591,6 +3998,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                         };
                     arrpush(jp->instructions, inst);
 
+                    //TODO cast non bool values to bool
                     ir_gen_expr(jp, ast_while->condition);
 
                     assert(jp->reg_alloc == 1);
@@ -3684,12 +4092,21 @@ void ir_gen_block(Job *jp, AST *ast) {
             case AST_KIND_block:
                 {
                     AST_block *ast_block = (AST_block*)ast;
+
                     arrpush(jp->local_offset, arrlast(jp->local_offset));
+
                     ir_gen_block(jp, ast_block->down);
+
+                    if(jp->max_local_offset < arrlast(jp->local_offset))
+                        jp->max_local_offset = arrlast(jp->local_offset);
+
                     if(jp->state == JOB_STATE_ERROR) return;
+
                     arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
+
                     assert(jp->reg_alloc == 0);
                     assert(jp->float_reg_alloc == 0);
+
                     ast = ast_block->next;
                 }
                 break;
