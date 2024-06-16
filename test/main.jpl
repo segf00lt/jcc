@@ -139,7 +139,7 @@ proc test_proc(i: int, x: int, c: char, f: float) {
     test_ptr_2: *int = cast(*void)5150;
     test_ptr_3: *int = cast(*void)8086;
     test_ptr_4: *int = cast(*void)2001;
-    test_ptr_1[test_ptr_2[test_ptr_3[test_ptr_4[0] + i] + i] + i] = 150000000;
+    test_ptr_1[test_ptr_2[test_ptr_3[test_ptr_4[0]+i]+i]+i]=150000000;
 
     number: int = ---;
     test_array: [5][3][3]u16;
@@ -159,3 +159,22 @@ proc other_proc(i: int, multiplier: int) int {
     return i * multiplier;
 }
 
+proc test_floats(f: float) float {
+    a: float = 4.5;
+    b: float = 6.23;
+    i: int = 25 + cast(int)a;
+    return f * a / b;
+}
+
+
+/*
+struct Vec3 {
+    x: float;
+    y: float;
+    z: float;
+
+    struct {
+        extra: u16;
+    }
+}
+*/
