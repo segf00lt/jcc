@@ -155,9 +155,9 @@
     X(LSHIFT, <<)                       \
     X(RSHIFT, >>)                       \
     X(EQ,     ==)                       \
-	X(NE,     !=)                       \
-	X(LE,     <=)                       \
-	X(GT,      >)                       \
+    X(NE,     !=)                       \
+    X(LE,     <=)                       \
+    X(GT,      >)                       \
 
 #define IR_INT_UNOPS                    \
     X(NOT, ~)                           \
@@ -169,9 +169,9 @@
     X(FMUL,     *)                      \
     X(FDIV,     /)                      \
     X(FEQ,     ==)                      \
-	X(FNE,     !=)                      \
-	X(FLE,     <=)                      \
-	X(FGT,      >)                      \
+    X(FNE,     !=)                      \
+    X(FLE,     <=)                      \
+    X(FGT,      >)                      \
 
 #define IR_FLOAT_UNOPS                  \
     X(FNEG, -)                          \
@@ -188,10 +188,6 @@
     X(CALL,          _)                 \
     X(RET,           _)                 \
     X(LABEL,         _)                 \
-    X(PUSH,          _)                 \
-    X(POP,           _)                 \
-    X(PUSHF,         _)                 \
-    X(POPF,          _)                 \
     X(LOAD,          _)                 \
     X(STOR,          _)                 \
     X(LOADF,         _)                 \
@@ -335,7 +331,6 @@ struct IRmachine {
     Arr(u64) pc_stack;
     Arr(int) procid_stack;
     Arr(u8*) local_base_stack;
-    Arr(IRvalue) tmp_stack;
 
     u8 *global_segment;
     u8 *local_segment;
@@ -378,10 +373,12 @@ struct IRinst {
             u64 id;
         } label;
 
+        /*
         struct {
             u64 reg;
             u64 bytes;
         } stack;
+        */
 
         struct {
             u64 reg_dest;
@@ -579,6 +576,7 @@ struct AST_param {
     char *name;
     AST *value;
     int index;
+    bool has_nested_call;
 };
 
 struct AST_call {
@@ -923,7 +921,7 @@ Type*       atom_to_type(Job *jp, AST_atom *atom);
 Value*      evaluate_unary(Job *jp, Value *a, AST_expr *op_ast);
 Value*      evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast);
 
-int         procedure_table_add(IRinst *proc, u64 local_segment_size, u64 *jump_table);
+int         procedure_table_add(IRinst *proc, u64 length, u64 local_segment_size, u64 *jump_table);
 
 //TODO typechecking should be done with a table of some kind, all this branching is a bit lazy
 bool        types_are_same(Type *a, Type *b);
@@ -1011,6 +1009,7 @@ Arena              global_scratch_allocator;
 Pool               global_sym_allocator;
 Scope              global_scope;
 Arr(IRinst*)       procedure_table;
+Arr(u64)           procedure_length;
 Arr(u64)           local_segment_size_table;
 Arr(u64*)          procedure_local_jump_table;
 
@@ -1561,9 +1560,6 @@ INLINE void print_ir_inst(IRinst inst) {
         case IROP_ADDRLOCAL: case IROP_ADDRGLOBAL:
             printf("%s r_%lu, segment offset %lu\n", opstr, inst.addrvar.reg_dest, inst.addrvar.offset);
             break;
-    	case IROP_PUSH: case IROP_POP:
-            printf("%s r_%lu %luB\n", opstr, inst.stack.reg, inst.stack.bytes);
-			break;
 		case IROP_LOAD:
 		case IROP_LOADF:
             if(inst.load.immediate) {
@@ -1683,11 +1679,12 @@ INLINE void print_ir_inst(IRinst inst) {
 
 }
 
-INLINE int procedure_table_add(IRinst *proc, u64 local_segment_size, u64 *jump_table) {
+INLINE int procedure_table_add(IRinst *proc, u64 length, u64 local_segment_size, u64 *jump_table) {
     arrpush(procedure_table, proc);
+    arrpush(procedure_length, length);
     arrpush(local_segment_size_table, local_segment_size);
     arrpush(procedure_local_jump_table, jump_table);
-    return arrlen(procedure_table);
+    return arrlen(procedure_table) - 1;
 }
 
 int getprec(Token t) {
@@ -3046,9 +3043,10 @@ void ir_gen(Job *jp) {
         u64 n = sizeof(IRinst) * arrlen(jp->instructions);
         IRinst *proc = malloc(n);
         memcpy(proc, jp->instructions, n);
+        u64 length = arrlen(jp->instructions);
         arrsetlen(jp->instructions, 0);
 
-        sym->proc_id = procedure_table_add(proc, jp->max_local_offset, jump_table);
+        sym->proc_id = procedure_table_add(proc, length, jp->max_local_offset, jump_table);
 
     } else if(node->kind == AST_KIND_vardecl) {
         printf("sorry I don't know how to do this yet\n");
@@ -3067,6 +3065,7 @@ void ir_run(Job *jp, int procid) {
 
     IRinst *procedure = procedure_table[procid];
     u64 pc = 0;
+    u8 *local_base = interp.local_segment;
 
     assert(interp.local_segment && interp.global_segment && arrlen(interp.ports) > 0);
     UNIMPLEMENTED;
@@ -3137,22 +3136,29 @@ void ir_run(Job *jp, int procid) {
                 pc = procedure_local_jump_table[procid][inst.branch.label_id];
                 break;
             case IROP_CALL:
-                UNIMPLEMENTED;
+                if(inst.call.c_call) {
+                    UNIMPLEMENTED;
+                } else {
+                    u64 new_procid = inst.call.id_imm;
+                    if(!inst.call.immediate) new_procid = interp.iregs[inst.call.id_reg];
+                    arrpush(interp.local_base_stack, local_base);
+                    arrpush(interp.procid_stack, procid);
+                    arrpush(interp.pc_stack, pc + 1);
+                    local_base += local_segment_size_table[procid];
+                    procid = new_procid;
+                    procedure = procedure_table[procid];
+                    pc = 0;
+                }
                 break;
             case IROP_RET:
-                UNIMPLEMENTED;
-                break;
-            case IROP_PUSH:
-                UNIMPLEMENTED;
-                break;
-            case IROP_POP:
-                UNIMPLEMENTED;
-                break;
-            case IROP_PUSHF:
-                UNIMPLEMENTED;
-                break;
-            case IROP_POPF:
-                UNIMPLEMENTED;
+                if(inst.call.c_call) {
+                    UNIMPLEMENTED;
+                } else {
+                    local_base = arrpop(interp.local_base_stack);
+                    procid = arrpop(interp.procid_stack);
+                    pc = arrpop(interp.pc_stack);
+                    procedure = procedure_table[procid];
+                }
                 break;
             case IROP_LOAD:
                 if(inst.load.immediate) {
@@ -3307,26 +3313,27 @@ void ir_run(Job *jp, int procid) {
                         break;
                 }
                 break;
-            //TODO force arguments and return values to be passed in order
-            //TODO hint instructions to indicate beginning and end of argument expressions
-            //TODO calls need to be more abstract
             case IROP_SETARG:
-                if(inst.setport.port >= arrlen(interp.ports))
-                    arrsetlen(interp.ports, inst.setport.port + 1);
-                UNIMPLEMENTED;
-                break;
             case IROP_SETRET:
-                if(inst.setport.port >= arrlen(interp.ports))
-                    arrsetlen(interp.ports, inst.setport.port + 1);
-                UNIMPLEMENTED;
+                {
+                    if(inst.setport.port >= arrlen(interp.ports))
+                        arrsetlen(interp.ports, inst.setport.port + 1);
+                    imask = (inst.setport.bytes < 8)
+                        ? ((1 << (inst.setport.bytes << 3)) - 1)
+                        : (u64)(-1);
+                    interp.ports[inst.setport.port].integer = imask & interp.iregs[inst.setport.reg_src];
+                }
                 break;
             case IROP_GETARG:
-                assert(inst.getport.port < arrlen(interp.ports));
-                UNIMPLEMENTED;
-                break;
             case IROP_GETRET:
-                assert(inst.getport.port < arrlen(interp.ports));
-                UNIMPLEMENTED;
+                {
+                    if(inst.getport.port >= arrlen(interp.ports))
+                        arrsetlen(interp.ports, inst.getport.port + 1);
+                    imask = (inst.getport.bytes < 8)
+                        ? ((1 << (inst.getport.bytes << 3)) - 1)
+                        : (u64)(-1);
+                    interp.iregs[inst.getport.reg_dest] = imask & interp.ports[inst.getport.port].integer;
+                }
                 break;
             case IROP_GETLOCALF:
                 if(inst.getvar.bytes == 8)
@@ -3353,12 +3360,22 @@ void ir_run(Job *jp, int procid) {
                     *(f32*)(interp.global_segment + inst.getvar.offset) = interp.f32regs[inst.getvar.reg_dest];
                 break;
             case IROP_SETARGF:
-                break;
             case IROP_SETRETF:
+                if(inst.setport.port >= arrlen(interp.ports))
+                    arrsetlen(interp.ports, inst.setport.port + 1);
+                if(inst.setport.bytes == 8)
+                    interp.ports[inst.setport.port].floating64 = interp.f64regs[inst.setport.reg_src];
+                else
+                    interp.ports[inst.setport.port].floating32 = interp.f32regs[inst.setport.reg_src];
                 break;
             case IROP_GETARGF:
-                break;
             case IROP_GETRETF:
+                if(inst.getport.port >= arrlen(interp.ports))
+                    arrsetlen(interp.ports, inst.getport.port + 1);
+                if(inst.getport.bytes == 8)
+                    interp.f64regs[inst.getport.reg_dest] = interp.ports[inst.getport.port].floating64;
+                else
+                    interp.f32regs[inst.getport.reg_dest] = interp.ports[inst.getport.port].floating32;
                 break;
             case IROP_ITOF:
                 if(inst.typeconv.to_bytes == 8) {
@@ -4463,6 +4480,9 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
     Arr(Type*) type_stack = NULL;
 
+    //NOTE expressions may need to allocate local data for structs
+    arrpush(jp->local_offset, arrlast(jp->local_offset));
+
     for(u64 pos = 0; pos < arrlen(ir_expr); ++pos) {
         AST *cur_ast = ir_expr[pos];
         ASTkind kind = cur_ast->kind;
@@ -5066,8 +5086,27 @@ void ir_gen_expr(Job *jp, AST *ast) {
             UNIMPLEMENTED;
         } else if(kind == AST_KIND_call) {
             AST_call *ast_call = (AST_call*)cur_ast;
+            //TODO if there are nested calls evaluate, save in local memory, and then move local memory to registers
+            //     it will be easier to turn in to assembly
 
             //TODO procedure pointers have to be differentiated from normal procedures
+
+
+            // NOTE
+            // If the argument is a struct, or something that isn't register sized,
+            // we allocate local space and put the struct there, then push the address
+            // on to the stack. Need to think of how we do this for calling C functions
+            //
+            // According to the amd64 ABI 8byte arguments are passed in registers until these
+            // registers are exhausted, any remaining 8byte arguments are pushed on the stack.
+            // only then are non 8byte or unaligned arguments (structs and arrays) copied on
+            // to the stack. Arguments are placed on the stack in reverse order because it makes
+            // varargs functions easier to implement.
+            //
+            // Returning a struct in the amd64 ABI involves allocating local space and passing a pointer
+            // to this memory in the first argument register %rdi. Upon returning the function places
+            // this same address in %rax
+
 
             assert(ast_call->callee->kind == AST_KIND_atom);
 
@@ -5079,25 +5118,42 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
             IRinst inst = {0};
 
-            Arr(AST_param*) nested_call_params = NULL;
-            Arr(AST_param*) non_nested_call_params = NULL;
+            Arr(AST_param*) params = NULL;
+            Arr(u64) nested_call_param_offsets = NULL;
 
-            arrsetcap(nested_call_params, ast_call->n_params >> 1);
-            arrsetcap(non_nested_call_params, ast_call->n_params);
+            arrsetcap(params, ast_call->n_params);
+            arrsetcap(nested_call_param_offsets, ast_call->n_params);
 
             for(AST_param *p = ast_call->params; p; p = p->next) {
-                //TODO named and default arguments
-                if(!has_nested_call(p->value)) {
-                    arrpush(non_nested_call_params, p);
-                    continue;
+                p->has_nested_call = has_nested_call(p->value);
+                if(p->name) {
+                    for(u64 i = 0; i < callee_type->proc.param.n; ++i) {
+                        if(!strcmp(p->name, callee_type->proc.param.names[i])) {
+                            p->index = i;
+                            break;
+                        }
+                    }
                 }
+                arrins(params, p->index, p);
+            }
+
+            //TODO allocate space for non scalar (struct, array) return values here
+
+            /* NOTE
+             * here we allocate local data for the return values of nested procedure calls
+             * and varargs arrays
+             */
+            arrpush(jp->local_offset, arrlast(jp->local_offset));
+
+            for(int i = 0; i < arrlen(params); ++i) {
+                AST_param *p = params[i];
+
+                if(!p->has_nested_call) continue;
+
+                arrpush(nested_call_param_offsets, arrlast(jp->local_offset));
 
                 if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
                     UNIMPLEMENTED;
-                    // NOTE
-                    // if the argument is a struct, or something that isn't register sized,
-                    // we allocate local space and put the struct there, then push the address
-                    // on to the stack. need to think of how we do this for calling C functions
                 } else {
                     ir_gen_expr(jp, p->value);
 
@@ -5105,131 +5161,115 @@ void ir_gen_expr(Job *jp, AST *ast) {
                     u64 reg;
 
                     if(TYPE_KIND_IS_FLOAT(p->type_annotation->kind)) {
-                        assert(jp->float_reg_alloc == 1);
+                        //assert(jp->float_reg_alloc == 1);
                         jp->float_reg_alloc--;
-                        opcode = IROP_PUSHF;
+                        opcode = IROP_SETLOCALF;
                         reg = jp->float_reg_alloc;
                     } else {
-                        assert(jp->reg_alloc == 1);
+                        //assert(jp->reg_alloc == 1);
                         jp->reg_alloc--;
-                        opcode = IROP_PUSH;
+                        opcode = IROP_SETLOCAL;
                         reg = jp->reg_alloc;
                     }
 
                     inst =
                         (IRinst) {
                             .opcode = opcode,
-                            .stack = {
-                                .reg = reg,
-                                .bytes = p->type_annotation->bytes,
-                            },
-                        };
-                    arrpush(jp->instructions, inst);
-                }
-                arrpush(nested_call_params, p);
-            }
-
-            while(arrlen(nested_call_params) > 0) {
-                AST_param *p = arrpop(nested_call_params);
-
-                if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
-                    UNIMPLEMENTED;
-                } else {
-                    IRop opcode1 = IROP_POP;
-                    IRop opcode2 = IROP_SETARG;
-                    u64 reg = jp->reg_alloc;
-
-                    if(TYPE_KIND_IS_FLOAT(p->type_annotation->kind)) {
-                        opcode1 = IROP_POPF;
-                        opcode2 = IROP_SETARGF;
-                        reg = jp->float_reg_alloc;
-                    }
-
-                    inst =
-                        (IRinst) {
-                            .opcode = opcode1,
-                            .stack = {
-                                .reg = reg,
-                                .bytes = p->type_annotation->bytes,
-                            },
-                        };
-                    arrpush(jp->instructions, inst);
-
-                    u64 port = p->index;
-
-                    if(p->name) {
-                        for(u64 i = 0; i < callee_type->proc.param.n; ++i) {
-                            if(!strcmp(p->name, callee_type->proc.param.names[i])) {
-                                port = i;
-                                break;
-                            }
-                        }
-                    }
-
-                    inst =
-                        (IRinst) {
-                            .opcode = opcode2,
-                            .setport = {
-                                .port = port,
-                                .bytes = p->type_annotation->bytes,
+                            .setvar = {
+                                .offset = arrlast(jp->local_offset),
                                 .reg_src = reg,
-                                .c_call = false, //TODO c_call
-                            },
-                        };
-                    arrpush(jp->instructions, inst);
-                }
-            }
-
-            arrfree(nested_call_params);
-
-            for(int i = 0; i < arrlen(non_nested_call_params); ++i) {
-                AST_param *p = non_nested_call_params[i];
-
-                if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
-                    UNIMPLEMENTED;
-                } else {
-                    ir_gen_expr(jp, p->value);
-
-                    IRop opcode;
-                    u64 reg_src;
-
-                    if(TYPE_KIND_IS_FLOAT(p->type_annotation->kind)) {
-                        opcode = IROP_SETARGF;
-                        jp->float_reg_alloc--;
-                        reg_src = jp->float_reg_alloc;
-                    } else {
-                        //TODO why does this fail? assert(jp->reg_alloc == 1);
-                        opcode = IROP_SETARG;
-                        jp->reg_alloc--;
-                        reg_src = jp->reg_alloc;
-                    }
-
-                    u64 port = p->index;
-
-                    if(p->name) {
-                        for(u64 i = 0; i < callee_type->proc.param.n; ++i) {
-                            if(!strcmp(p->name, callee_type->proc.param.names[i])) {
-                                port = i;
-                                break;
-                            }
-                        }
-                    }
-
-                    inst =
-                        (IRinst) {
-                            .opcode = opcode,
-                            .setport = {
-                                .port = port,
                                 .bytes = p->type_annotation->bytes,
-                                .reg_src = reg_src,
-                                .c_call = false, //TODO c_call
                             },
                         };
                     arrpush(jp->instructions, inst);
+                    arrlast(jp->local_offset) += p->type_annotation->bytes;
                 }
             }
 
-            arrfree(non_nested_call_params);
+            // TODO
+            // varargs need to be processed before the rest of the arguments
+            //
+            // allocate local data for an array of 'Any' structs then allocate a view
+            // struct for the array and pass the pointer to the procedure as the
+            // last argument
+            if(callee_type->proc.varargs) {
+                UNIMPLEMENTED;
+                while(arrlen(params) >= callee_type->proc.param.n) {
+                    //AST_param *p = arrpop(params);
+                    PASS;
+                }
+            }
+            
+            while(arrlen(params) > 0) {
+                AST_param *p = arrpop(params);
+
+                if(p->has_nested_call) {
+                    if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
+                        UNIMPLEMENTED;
+                    } else {
+                        IRop opcode1 = IROP_GETLOCAL;
+                        IRop opcode2 = IROP_SETARG;
+                        u64 reg = jp->reg_alloc;
+
+                        if(TYPE_KIND_IS_FLOAT(p->type_annotation->kind)) {
+                            opcode1 = IROP_GETLOCALF;
+                            opcode2 = IROP_SETARGF;
+                            reg = jp->float_reg_alloc;
+                        }
+
+                        inst =
+                            (IRinst) {
+                                .opcode = opcode1,
+                                .getvar = {
+                                    .reg_dest = reg,
+                                    .offset = arrpop(nested_call_param_offsets),
+                                    .bytes = p->type_annotation->bytes,
+                                },
+                            };
+                        arrpush(jp->instructions, inst);
+                        inst =
+                            (IRinst) {
+                                .opcode = opcode2,
+                                .setport = {
+                                    .port = p->index,
+                                    .bytes = p->type_annotation->bytes,
+                                    .reg_src = reg,
+                                },
+                            };
+                        arrpush(jp->instructions, inst);
+                    }
+                } else {
+                    if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
+                        UNIMPLEMENTED;
+                    } else {
+                        ir_gen_expr(jp, p->value);
+
+                        IRop opcode;
+                        u64 reg;
+
+                        if(TYPE_KIND_IS_FLOAT(p->type_annotation->kind)) {
+                            jp->float_reg_alloc--;
+                            opcode = IROP_SETARGF;
+                            reg = jp->float_reg_alloc;
+                        } else {
+                            jp->reg_alloc--;
+                            opcode = IROP_SETARG;
+                            reg = jp->reg_alloc;
+                        }
+
+                        inst =
+                            (IRinst) {
+                                .opcode = opcode,
+                                .setport = {
+                                    .port = p->index,
+                                    .bytes = p->type_annotation->bytes,
+                                    .reg_src = reg,
+                                },
+                            };
+                        arrpush(jp->instructions, inst);
+                    }
+                }
+            }
 
             inst =
                 (IRinst) {
@@ -5241,6 +5281,14 @@ void ir_gen_expr(Job *jp, AST *ast) {
                     },
                 };
             arrpush(jp->instructions, inst);
+
+            /* NOTE
+             * here we allocate local data for the return values of nested procedure calls
+             * and varargs arrays
+             */
+            if(arrlast(jp->local_offset) > jp->max_local_offset) jp->max_local_offset = arrlast(jp->local_offset);
+            arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
+
 
             if(TYPE_KIND_IS_NOT_SCALAR(return_type->kind)) {
                 UNIMPLEMENTED;
@@ -5271,10 +5319,17 @@ void ir_gen_expr(Job *jp, AST *ast) {
             }
 
             arrpush(type_stack, return_type);
+
+            arrfree(params);
+            arrfree(nested_call_param_offsets);
         } else {
             UNIMPLEMENTED;
         }
     }
+
+    //NOTE expressions may need to allocate local data for structs
+    if(arrlast(jp->local_offset) > jp->max_local_offset) jp->max_local_offset = arrlast(jp->local_offset);
+    arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
 
     arrfree(ir_expr);
 }
@@ -5866,10 +5921,13 @@ void job_runner(char *src, char *src_path) {
                             ++i;
                             continue;
                         }
-                        printf("\n");
-                        for(int inst_i = 0; inst_i < arrlen(jp->instructions); ++inst_i)
-                            print_ir_inst(jp->instructions[inst_i]);
-                        printf("\n");
+                        if(jp->symbol->type->kind == TYPE_KIND_PROC) {
+                            IRinst *instructions = procedure_table[jp->symbol->proc_id];
+                            printf("\n");
+                            for(int inst_i = 0; inst_i < procedure_length[jp->symbol->proc_id]; ++inst_i)
+                                print_ir_inst(instructions[inst_i]);
+                            printf("\n");
+                        }
                         ++i;
                         break;
                     }

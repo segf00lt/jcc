@@ -46,7 +46,7 @@ proc test_proc2(i: int, c: [3]*[..]char, f: float = 3.14) int, char;
 proc test_proc(i: int, x: int, c: char, f: float) {
     y := 15 - x << TWO;
 
-    defer y += x / 7;
+    //defer y += x / 7;
 
     {
         jane := 24;

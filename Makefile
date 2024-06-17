@@ -4,6 +4,7 @@ TARGET = jcc.c
 LDFLAGS = -L'/usr/local/lib/' -lraylib -lm
 
 all:
+	ctags *.c *.h
 	$(CC) $(FLAGS) $(TARGET) -o jcc $(LDFLAGS)
 
 #test: all
