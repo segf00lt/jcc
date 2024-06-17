@@ -1,4 +1,5 @@
 *.exrc
+test.s
 thing.c
 types.c
 util.h

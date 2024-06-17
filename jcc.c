@@ -3070,13 +3070,13 @@ void ir_run(Job *jp, int procid) {
     assert(interp.local_segment && interp.global_segment && arrlen(interp.ports) > 0);
     UNIMPLEMENTED;
 
-    while(true) {
+    for(bool go = true; go; ++pc) {
         IRinst inst = procedure[pc];
         u64 imask = 0x0;
 
         switch(inst.opcode) {
             default:
-                printf("bad instruction\n");
+                printf("jcc: error: bad instruction\n");
                 UNREACHABLE;
             case IROP_LABEL:
                 UNREACHABLE;
@@ -3154,6 +3154,11 @@ void ir_run(Job *jp, int procid) {
                 if(inst.call.c_call) {
                     UNIMPLEMENTED;
                 } else {
+                    if(arrlen(interp.pc_stack) == 0) {
+                        assert(arrlen(interp.local_base_stack) == 0 && arrlen(interp.procid_stack) == 0);
+                        go = false;
+                        break;
+                    }
                     local_base = arrpop(interp.local_base_stack);
                     procid = arrpop(interp.procid_stack);
                     pc = arrpop(interp.pc_stack);
@@ -3244,7 +3249,7 @@ void ir_run(Job *jp, int procid) {
                     interp.iregs[inst.calcptroffset.offset_reg] * inst.calcptroffset.stride);
                 break;
             case IROP_ADDRLOCAL:
-                interp.iregs[inst.addrvar.reg_dest] = (u64)(arrlast(interp.local_base_stack) + inst.addrvar.offset);
+                interp.iregs[inst.addrvar.reg_dest] = (u64)(local_base + inst.addrvar.offset);
                 break;
             case IROP_ADDRGLOBAL:
                 interp.iregs[inst.addrvar.reg_dest] = (u64)(interp.global_segment + inst.addrvar.offset);
@@ -3252,32 +3257,32 @@ void ir_run(Job *jp, int procid) {
             case IROP_GETLOCAL:
                 switch(inst.getvar.bytes) {
                     case 1:
-                        interp.iregs[inst.getvar.reg_dest] = arrlast(interp.local_base_stack)[inst.getvar.offset];
+                        interp.iregs[inst.getvar.reg_dest] = local_base[inst.getvar.offset];
                         break;
                     case 2:
-                        interp.iregs[inst.getvar.reg_dest] = *(u16*)(arrlast(interp.local_base_stack) + inst.getvar.offset);
+                        interp.iregs[inst.getvar.reg_dest] = *(u16*)(local_base + inst.getvar.offset);
                         break;
                     case 4:
-                        interp.iregs[inst.getvar.reg_dest] = *(u32*)(arrlast(interp.local_base_stack) + inst.getvar.offset);
+                        interp.iregs[inst.getvar.reg_dest] = *(u32*)(local_base + inst.getvar.offset);
                         break;
                     case 8:
-                        interp.iregs[inst.getvar.reg_dest] = *(u64*)(arrlast(interp.local_base_stack) + inst.getvar.offset);
+                        interp.iregs[inst.getvar.reg_dest] = *(u64*)(local_base + inst.getvar.offset);
                         break;
                 }
                 break;
             case IROP_SETLOCAL:
                 switch(inst.getvar.bytes) {
                     case 1:
-                        arrlast(interp.local_base_stack)[inst.getvar.offset] = (u8)(interp.iregs[inst.getvar.reg_dest]);
+                        local_base[inst.getvar.offset] = (u8)(interp.iregs[inst.getvar.reg_dest]);
                         break;
                     case 2:
-                        *(u16*)(arrlast(interp.local_base_stack) + inst.getvar.offset) = (u16)(interp.iregs[inst.getvar.reg_dest]);
+                        *(u16*)(local_base + inst.getvar.offset) = (u16)(interp.iregs[inst.getvar.reg_dest]);
                         break;
                     case 4:
-                        *(u32*)(arrlast(interp.local_base_stack) + inst.getvar.offset) = (u32)(interp.iregs[inst.getvar.reg_dest]);
+                        *(u32*)(local_base + inst.getvar.offset) = (u32)(interp.iregs[inst.getvar.reg_dest]);
                         break;
                     case 8:
-                        *(u64*)(arrlast(interp.local_base_stack) + inst.getvar.offset) = (u64)(interp.iregs[inst.getvar.reg_dest]);
+                        *(u64*)(local_base + inst.getvar.offset) = (u64)(interp.iregs[inst.getvar.reg_dest]);
                         break;
                 }
                 break;
