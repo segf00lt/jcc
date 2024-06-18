@@ -322,6 +322,7 @@ INLINE Token lex(Lexer *l) {
 		if((l->pos[0] == '/' && l->pos[1] == '/')) {
 			while(*l->pos != '\n')
 				++l->pos;
+            ++l->pos;
 			l->loc_next.col = 1;
             ++l->loc_next.line;
             found_newline = true;

@@ -19,7 +19,7 @@
 #define Arr(T) T *
 #define Map(K, V) struct { K key; V value; } *
 #define Dict(V) struct { char *key; V value; } *
-#define UNREACHABLE assert(0)
+#define UNREACHABLE assert("UNREACHABLE"&&0)
 #define UNIMPLEMENTED assert("UNIMPLEMENTED"&&0)
 #define PASS assert(1)
 #define INLINE __attribute__((always_inline)) inline

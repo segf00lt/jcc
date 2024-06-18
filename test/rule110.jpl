@@ -1,7 +1,7 @@
 proc rule110() {
     buf2: [D]bool = ---;
 
-    buf1: [D]bool = ---;
+    buf1: [(buf2.count / 2) + (D >> 1)]bool = ---;
     buf1[0] = 1;
     buf1[1] = 1;
     buf1[2] = 0;
@@ -33,10 +33,12 @@ proc rule110() {
     buf1[28] = 1;
     buf1[29] = 1;
 
-    tape: *bool = buf1.data;
-    next_tape: *bool = buf2.data;
+    tape := buf1.data;
+    next_tape := buf2.data;
 
-    N := 32;
+    non_const := fib(10);
+
+    N := #run fib(20);
 
     rules: [8]int = ---;
     rules[0] = 0;
@@ -48,7 +50,7 @@ proc rule110() {
     rules[6] = 1;
     rules[7] = 0;
 
-    while N > 0 {
+    while N > 0 || 0 {
         defer N--;
 
         i := 0;
@@ -68,5 +70,15 @@ proc rule110() {
         next_tape = tmp;
     }
 }
+
+
+proc fib(n: int) int {
+    if n <= 1 return n;
+    return fib(n - 1) + fib(n - 2);
+}
+
+
+bfg := g * 6;
+g :: 348;
 
 D :: 30;
