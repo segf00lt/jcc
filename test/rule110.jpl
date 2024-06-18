@@ -1,0 +1,72 @@
+proc rule110() {
+    buf2: [D]bool = ---;
+
+    buf1: [D]bool = ---;
+    buf1[0] = 1;
+    buf1[1] = 1;
+    buf1[2] = 0;
+    buf1[3] = 1;
+    buf1[4] = 0;
+    buf1[5] = 0;
+    buf1[6] = 0;
+    buf1[7] = 0;
+    buf1[8] = 1;
+    buf1[9] = 0;
+    buf1[10] = 0;
+    buf1[11] = 1;
+    buf1[12] = 0;
+    buf1[13] = 0;
+    buf1[14] = 0;
+    buf1[15] = 1;
+    buf1[16] = 0;
+    buf1[17] = 0;
+    buf1[18] = 0;
+    buf1[19] = 0;
+    buf1[20] = 0;
+    buf1[21] = 1;
+    buf1[22] = 0;
+    buf1[23] = 0;
+    buf1[24] = 0;
+    buf1[25] = 0;
+    buf1[26] = 0;
+    buf1[27] = 0;
+    buf1[28] = 1;
+    buf1[29] = 1;
+
+    tape: *bool = buf1.data;
+    next_tape: *bool = buf2.data;
+
+    N := 32;
+
+    rules: [8]int = ---;
+    rules[0] = 0;
+    rules[1] = 1;
+    rules[2] = 1;
+    rules[3] = 1;
+    rules[4] = 0;
+    rules[5] = 1;
+    rules[6] = 1;
+    rules[7] = 0;
+
+    while N > 0 {
+        defer N--;
+
+        i := 0;
+
+        while i < D {
+            left := i - 1;
+            if i == 0 left = D - 1;
+            right := i + 1;
+            if i == D-1 right = 0;
+            pat := (tape[left] << 2) | (tape[i] << 1) | tape[right];
+            next_tape[i] = rules[pat];
+            i++;
+        }
+
+        tmp := tape;
+        tape = next_tape;
+        next_tape = tmp;
+    }
+}
+
+D :: 30;

@@ -484,7 +484,7 @@ struct Job {
 
     Pipe_stage           pipe_stage;
     Job_state            state;
-    Typecheck_step       step; //TODO make this a stack
+    Typecheck_step       step; //TODO we can get rid of this
 
     char                *handling_name;
     char                *waiting_on_name;
@@ -549,7 +549,7 @@ struct Sym {
     char *name;
     Loc_info loc;
     Jobid declared_by;
-    int proc_id;
+    int procid;
     bool is_global : 1;
     bool is_argument : 1;
     bool is_record_argument : 1;
@@ -921,7 +921,7 @@ Type*       atom_to_type(Job *jp, AST_atom *atom);
 Value*      evaluate_unary(Job *jp, Value *a, AST_expr *op_ast);
 Value*      evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast);
 
-int         procedure_table_add(IRinst *proc, u64 length, u64 local_segment_size, u64 *jump_table);
+int         procedure_table_add(IRinst *proc, char *name, u64 length, u64 local_segment_size, u64 *jump_table);
 
 //TODO typechecking should be done with a table of some kind, all this branching is a bit lazy
 bool        types_are_same(Type *a, Type *b);
@@ -1009,7 +1009,8 @@ Arena              global_scratch_allocator;
 Pool               global_sym_allocator;
 Scope              global_scope;
 Arr(IRinst*)       procedure_table;
-Arr(u64)           procedure_length;
+Arr(char*)         procedure_names;
+Arr(u64)           procedure_lengths;
 Arr(u64)           local_segment_size_table;
 Arr(u64*)          procedure_local_jump_table;
 
@@ -1679,9 +1680,10 @@ INLINE void print_ir_inst(IRinst inst) {
 
 }
 
-INLINE int procedure_table_add(IRinst *proc, u64 length, u64 local_segment_size, u64 *jump_table) {
+INLINE int procedure_table_add(IRinst *proc, char *name, u64 length, u64 local_segment_size, u64 *jump_table) {
     arrpush(procedure_table, proc);
-    arrpush(procedure_length, length);
+    arrpush(procedure_names, name);
+    arrpush(procedure_lengths, length);
     arrpush(local_segment_size_table, local_segment_size);
     arrpush(procedure_local_jump_table, jump_table);
     return arrlen(procedure_table) - 1;
@@ -1888,6 +1890,12 @@ AST* parse_procdecl(Job *jp) {
 
     while(true) {
         param_list->next = (AST_paramdecl*)parse_paramdecl(jp);
+
+        if(param_list->next == NULL) {
+            t = lex(lexer);
+            break;
+        }
+
         param_list = param_list->next;
         param_list->index = n_params;
         if(!must_be_default && param_list->init != NULL) {
@@ -3046,7 +3054,7 @@ void ir_gen(Job *jp) {
         u64 length = arrlen(jp->instructions);
         arrsetlen(jp->instructions, 0);
 
-        sym->proc_id = procedure_table_add(proc, length, jp->max_local_offset, jump_table);
+        sym->procid = procedure_table_add(proc, sym->name, length, jp->max_local_offset, jump_table);
 
     } else if(node->kind == AST_KIND_vardecl) {
         printf("sorry I don't know how to do this yet\n");
@@ -3068,33 +3076,45 @@ void ir_run(Job *jp, int procid) {
     u8 *local_base = interp.local_segment;
 
     assert(interp.local_segment && interp.global_segment && arrlen(interp.ports) > 0);
-    UNIMPLEMENTED;
 
-    for(bool go = true; go; ++pc) {
-        IRinst inst = procedure[pc];
-        u64 imask = 0x0;
+    IRinst inst;
+    u64 imask;
+    bool go = true;
+
+    while(go) {
+        inst = procedure[pc];
+        imask = 0;
+
+        printf("%lu: ", pc);
+        print_ir_inst(inst);
 
         switch(inst.opcode) {
             default:
-                printf("jcc: error: bad instruction\n");
+                printf("jcc: error: bad instruction at '%lu'\n", pc);
                 UNREACHABLE;
             case IROP_LABEL:
-                UNREACHABLE;
             case IROP_NOOP:
                 break;
 #define X(opcode, opsym) \
             case IROP_##opcode: \
-                                imask = (inst.arith.operand_bytes[0] < 8) \
+                                \
+                imask = (inst.arith.operand_bytes[0] < 8) \
                 ? ((1 << (inst.arith.operand_bytes[0] << 3)) - 1) \
                 : (u64)(-1); \
-                interp.iregs[inst.arith.reg[0]] = \
-                imask & (interp.iregs[inst.arith.reg[1]] opsym interp.iregs[inst.arith.reg[2]]); \
+                if(inst.arith.immediate) { \
+                    interp.iregs[inst.arith.reg[0]] = \
+                    imask & (interp.iregs[inst.arith.reg[1]] opsym inst.arith.imm.integer); \
+                } else { \
+                    interp.iregs[inst.arith.reg[0]] = \
+                    imask & (interp.iregs[inst.arith.reg[1]] opsym interp.iregs[inst.arith.reg[2]]); \
+                } \
                 break;
                 IR_INT_BINOPS;
 #undef X
 #define X(opcode, opsym) \
             case IROP_##opcode: \
-                                imask = (inst.arith.operand_bytes[0] < 8) \
+                                \
+                imask = (inst.arith.operand_bytes[0] < 8) \
                 ? ((1 << (inst.arith.operand_bytes[0] << 3)) - 1) \
                 : (u64)(-1); \
                 interp.iregs[inst.arith.reg[0]] = imask & (opsym interp.iregs[inst.arith.reg[1]]); \
@@ -3102,39 +3122,49 @@ void ir_run(Job *jp, int procid) {
                 IR_INT_UNOPS;
 #undef X
 #define X(opcode, opsym) \
-            case IROP_##opcode: \
-                                if(inst.arith.operand_bytes[0] == 8) { \
-                                    interp.f64regs[inst.arith.reg[0]] = \
-                                    interp.f64regs[inst.arith.reg[1]] opsym interp.f64regs[inst.arith.reg[2]]; \
-                                } else { \
-                                    interp.f32regs[inst.arith.reg[0]] = \
-                                    interp.f32regs[inst.arith.reg[1]] opsym interp.f32regs[inst.arith.reg[2]]; \
-                                }
+            case IROP_##opcode:\
+                               \
+                if(inst.arith.operand_bytes[0] == 8) { \
+                    interp.f64regs[inst.arith.reg[0]] = \
+                    interp.f64regs[inst.arith.reg[1]] opsym \
+                    (inst.arith.immediate ? inst.arith.imm.floating64 \
+                    : interp.f64regs[inst.arith.reg[2]]); \
+                } else { \
+                    interp.f32regs[inst.arith.reg[0]] = \
+                    interp.f32regs[inst.arith.reg[1]] opsym \
+                    (inst.arith.immediate ? inst.arith.imm.floating32 \
+                    : interp.f32regs[inst.arith.reg[2]]); \
+                }
                 break;
                 IR_FLOAT_BINOPS;
 #undef X
 #define X(opcode, opsym) \
             case IROP_##opcode: \
-                                if(inst.arith.operand_bytes[0] == 8) { \
-                                    interp.f64regs[inst.arith.reg[0]] = opsym interp.f64regs[inst.arith.reg[1]]; \
-                                } else { \
-                                    interp.f32regs[inst.arith.reg[0]] = opsym interp.f32regs[inst.arith.reg[1]]; \
-                                }
+                                \
+                if(inst.arith.operand_bytes[0] == 8) { \
+                    interp.f64regs[inst.arith.reg[0]] = opsym interp.f64regs[inst.arith.reg[1]]; \
+                } else { \
+                    interp.f32regs[inst.arith.reg[0]] = opsym interp.f32regs[inst.arith.reg[1]]; \
+                }
                 break;
                 IR_FLOAT_UNOPS;
 #undef X
 
             case IROP_IF:
-                if(interp.iregs[inst.branch.cond_reg] > 0)
+                if(interp.iregs[inst.branch.cond_reg] != 0) {
                     pc = procedure_local_jump_table[procid][inst.branch.label_id];
+                    continue;
+                }
                 break;
             case IROP_IFZ:
-                if(interp.iregs[inst.branch.cond_reg] == 0)
+                if(interp.iregs[inst.branch.cond_reg] == 0) {
                     pc = procedure_local_jump_table[procid][inst.branch.label_id];
+                    continue;
+                }
                 break;
             case IROP_JMP:
                 pc = procedure_local_jump_table[procid][inst.branch.label_id];
-                break;
+                continue;
             case IROP_CALL:
                 if(inst.call.c_call) {
                     UNIMPLEMENTED;
@@ -3149,7 +3179,7 @@ void ir_run(Job *jp, int procid) {
                     procedure = procedure_table[procid];
                     pc = 0;
                 }
-                break;
+                continue;
             case IROP_RET:
                 if(inst.call.c_call) {
                     UNIMPLEMENTED;
@@ -3157,7 +3187,7 @@ void ir_run(Job *jp, int procid) {
                     if(arrlen(interp.pc_stack) == 0) {
                         assert(arrlen(interp.local_base_stack) == 0 && arrlen(interp.procid_stack) == 0);
                         go = false;
-                        break;
+                        continue;
                     }
                     local_base = arrpop(interp.local_base_stack);
                     procid = arrpop(interp.procid_stack);
@@ -3271,18 +3301,18 @@ void ir_run(Job *jp, int procid) {
                 }
                 break;
             case IROP_SETLOCAL:
-                switch(inst.getvar.bytes) {
+                switch(inst.setvar.bytes) {
                     case 1:
-                        local_base[inst.getvar.offset] = (u8)(interp.iregs[inst.getvar.reg_dest]);
+                        local_base[inst.setvar.offset] = (u8)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 2:
-                        *(u16*)(local_base + inst.getvar.offset) = (u16)(interp.iregs[inst.getvar.reg_dest]);
+                        *(u16*)(local_base + inst.setvar.offset) = (u16)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 4:
-                        *(u32*)(local_base + inst.getvar.offset) = (u32)(interp.iregs[inst.getvar.reg_dest]);
+                        *(u32*)(local_base + inst.setvar.offset) = (u32)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 8:
-                        *(u64*)(local_base + inst.getvar.offset) = (u64)(interp.iregs[inst.getvar.reg_dest]);
+                        *(u64*)(local_base + inst.setvar.offset) = (u64)(interp.iregs[inst.setvar.reg_src]);
                         break;
                 }
                 break;
@@ -3303,18 +3333,18 @@ void ir_run(Job *jp, int procid) {
                 }
                 break;
             case IROP_SETGLOBAL:
-                switch(inst.getvar.bytes) {
+                switch(inst.setvar.bytes) {
                     case 1:
-                        interp.global_segment[inst.getvar.offset] = (u8)(interp.iregs[inst.getvar.reg_dest]);
+                        interp.global_segment[inst.setvar.offset] = (u8)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 2:
-                        *(u16*)(interp.global_segment + inst.getvar.offset) = (u16)(interp.iregs[inst.getvar.reg_dest]);
+                        *(u16*)(interp.global_segment + inst.setvar.offset) = (u16)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 4:
-                        *(u32*)(interp.global_segment + inst.getvar.offset) = (u32)(interp.iregs[inst.getvar.reg_dest]);
+                        *(u32*)(interp.global_segment + inst.setvar.offset) = (u32)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 8:
-                        *(u64*)(interp.global_segment + inst.getvar.offset) = (u64)(interp.iregs[inst.getvar.reg_dest]);
+                        *(u64*)(interp.global_segment + inst.setvar.offset) = (u64)(interp.iregs[inst.setvar.reg_src]);
                         break;
                 }
                 break;
@@ -3347,10 +3377,10 @@ void ir_run(Job *jp, int procid) {
                     interp.f32regs[inst.getvar.reg_dest] = *(f32*)(arrlast(interp.local_base_stack) + inst.getvar.offset);
                 break;
             case IROP_SETLOCALF:
-                if(inst.getvar.bytes == 8)
-                    *(f64*)(arrlast(interp.local_base_stack) + inst.getvar.offset) = interp.f64regs[inst.getvar.reg_dest];
+                if(inst.setvar.bytes == 8)
+                    *(f64*)(arrlast(interp.local_base_stack) + inst.setvar.offset) = interp.f64regs[inst.setvar.reg_src];
                 else
-                    *(f32*)(arrlast(interp.local_base_stack) + inst.getvar.offset) = interp.f32regs[inst.getvar.reg_dest];
+                    *(f32*)(arrlast(interp.local_base_stack) + inst.setvar.offset) = interp.f32regs[inst.setvar.reg_src];
                 break;
             case IROP_GETGLOBALF:
                 if(inst.getvar.bytes == 8)
@@ -3359,10 +3389,10 @@ void ir_run(Job *jp, int procid) {
                     interp.f32regs[inst.getvar.reg_dest] = *(f32*)(interp.global_segment + inst.getvar.offset);
                 break;
             case IROP_SETGLOBALF:
-                if(inst.getvar.bytes == 8)
-                    *(f64*)(interp.global_segment + inst.getvar.offset) = interp.f64regs[inst.getvar.reg_dest];
+                if(inst.setvar.bytes == 8)
+                    *(f64*)(interp.global_segment + inst.setvar.offset) = interp.f64regs[inst.setvar.reg_src];
                 else
-                    *(f32*)(interp.global_segment + inst.getvar.offset) = interp.f32regs[inst.getvar.reg_dest];
+                    *(f32*)(interp.global_segment + inst.setvar.offset) = interp.f32regs[inst.setvar.reg_src];
                 break;
             case IROP_SETARGF:
             case IROP_SETRETF:
@@ -3433,6 +3463,8 @@ void ir_run(Job *jp, int procid) {
                 }
                 break;
         }
+
+        ++pc;
     }
 }
 
@@ -4682,17 +4714,36 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 char *field = ((AST_atom*)(node->right))->text;
 
                 if(operand_type->kind == TYPE_KIND_ARRAY) {
-                    assert(!strcmp(field, "count"));
-                    inst =
-                        (IRinst) {
-                            .opcode = IROP_LOAD,
-                            .load = {
-                                .reg_dest = jp->reg_alloc++,
-                                .imm.integer = operand_type->array.n,
-                                .bytes = 8,
-                                .immediate = true,
-                            },
-                        };
+                    if(!strcmp(field, "count")) {
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_LOAD,
+                                .load = {
+                                    .reg_dest = jp->reg_alloc++,
+                                    .imm.integer = operand_type->array.n,
+                                    .bytes = 8,
+                                    .immediate = true,
+                                },
+                            };
+                    } else if(!strcmp(field, "data")) {
+                        // doing this to a local and to an array that was passed as a parameter are different
+                        Sym *sym = left->symbol_annotation;
+                        assert(sym->type->kind != TYPE_KIND_VOID);
+
+                        Type *elem_type;
+                        for(elem_type = sym->type->array.of; elem_type->kind == TYPE_KIND_ARRAY; elem_type = elem_type->array.of);
+                        Type *t = job_alloc_type(jp, TYPE_KIND_POINTER);
+                        t->pointer.to = elem_type;
+                        arrpush(type_stack, t);
+                        inst =
+                            (IRinst) {
+                                .opcode = (sym->is_global) ? IROP_ADDRGLOBAL : IROP_ADDRLOCAL,
+                                .addrvar = {
+                                    .reg_dest = jp->reg_alloc++,
+                                    .offset = sym->segment_offset,
+                                },
+                            };
+                    }
                     arrpush(jp->instructions, inst);
                 } else if(operand_type->kind == TYPE_KIND_ARRAY_VIEW) {
                     UNIMPLEMENTED;
@@ -5281,7 +5332,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                     .opcode = IROP_CALL,
                     .call = {
                         .name = callee_symbol->name,
-                        .id_imm = callee_symbol->proc_id,
+                        .id_imm = callee_symbol->procid,
                         .immediate = true, //TODO indirect calls
                     },
                 };
@@ -5927,10 +5978,29 @@ void job_runner(char *src, char *src_path) {
                             continue;
                         }
                         if(jp->symbol->type->kind == TYPE_KIND_PROC) {
-                            IRinst *instructions = procedure_table[jp->symbol->proc_id];
+                            IRinst *instructions = procedure_table[jp->symbol->procid];
                             printf("\n");
-                            for(int inst_i = 0; inst_i < procedure_length[jp->symbol->proc_id]; ++inst_i)
+                            for(int inst_i = 0; inst_i < procedure_lengths[jp->symbol->procid]; ++inst_i) {
+                                printf("%i: ", inst_i);
                                 print_ir_inst(instructions[inst_i]);
+                            }
+                            printf("\n");
+
+                            jp->interp.global_segment = malloc(1<<10);
+                            jp->interp.local_segment = malloc(1<<10);
+                            memset(jp->interp.global_segment, 0, 1<<10);
+                            memset(jp->interp.local_segment, 0, 1<<10);
+                            arrsetlen(jp->interp.ports, 16);
+
+                            ir_run(jp, jp->symbol->procid);
+
+                            printf("\nlocal segment dump\n");
+                            for(int i = 0; i < 3; ++i) {
+                                for(int j = 0; j < 30; ++j) {
+                                    printf("%i ", jp->interp.local_segment[i*30 + j]);
+                                }
+                                printf("\n");
+                            }
                             printf("\n");
                         }
                         ++i;
@@ -6552,6 +6622,7 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
                     return a;
                 job_error(jp, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
                 return builtin_type+TYPE_KIND_VOID;
+            //TODO casting an array to a pointer should do the same as array.data
             } else if(a->kind == TYPE_KIND_ARRAY_VIEW) {
                 if((b->kind >= TYPE_KIND_ARRAY && b->kind <= TYPE_KIND_ARRAY_VIEW && types_are_same(a->array.of, b->array.of)) ||
                    (b->kind == TYPE_KIND_POINTER && b->pointer.to->kind == TYPE_KIND_VOID))
@@ -7767,10 +7838,10 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *test_src_file = LoadFileText("test/main.jpl");
+    char *test_src_file = LoadFileText("test/rule110.jpl");
     printf("%s\n\n",test_src_file);
 
-    job_runner(test_src_file, "test/main.jpl");
+    job_runner(test_src_file, "test/110.jpl");
 
     return 0;
 }
