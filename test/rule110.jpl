@@ -48,6 +48,8 @@ proc rule110(N: int) {
     rules[6] = 1;
     rules[7] = 0;
 
+    N += fib(8);
+
     while N > 0 || 0 {
         defer N--;
 
@@ -74,11 +76,16 @@ proc fib(n: int) int {
     return fib(n - 1) + fib(n - 2);
 }
 
+/*
+#foreign_lib "libc","libc.so.6";
+
 proc malloc(n: u64) *void #foreign "libc";
+proc free(p: *void) #foreign "libc";
 
 
 bfg := g * 6;
 g :: 348;
+*/
 
 D :: 30;
 

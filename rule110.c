@@ -18,8 +18,15 @@ int main(void) {
 
     bool *tape = buf1;
     bool *next_tape = buf2;
-    int N = fib(8);
+    int N = fib(8) + fib(8);
     // 0 0 1 1 1 0 0 1 1 0 0 0 0 1 1 1 0 0 1 1 0 1 1 1 1 1 0 1 0 0
+    // 1 0 0 0 0 0 1 1 1 0 1 1 0 0 0 0 0 1 0 0 1 1 0 1 1 1 1 1 0 1
+
+    // tape       1 1 1 0 1 0 0 1 1 0 0 1 0 0 1 1 0 1 1 1 1 1 0 1 0 0 0 0 1 1
+               // 1 1 1 0 1 0 0 1 1 0 0 1 0 0 1 1 0 1 1 1 1 1 0 1 0 0 0 0 1 1
+               //
+    // next_tape  1 0 1 1 1 0 0 0 1 1 1 1 0 0 0 1 0 0 1 1 0 1 1 1 0 0 0 0 0 1
+               // 1 0 1 1 1 0 0 0 1 1 1 1 0 0 0 1 0 0 1 1 0 1 1 1 0 0 0 0 0 1
 
     int rules[8] = { 0, 1, 1, 1, 0, 1, 1, 0 };
 
@@ -44,6 +51,13 @@ int main(void) {
         next_tape = tmp;
     }
 
+    printf("tape       ");
+    for(int i = 0; i < D; ++i) {
+        printf("%d ", tape[i]);
+    }
+    printf("\n");
+
+    printf("next_tape  ");
     for(int i = 0; i < D; ++i) {
         printf("%d ", next_tape[i]);
     }

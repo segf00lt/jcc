@@ -5264,6 +5264,10 @@ void ir_gen_expr(Job *jp, AST *ast) {
             AST_call *ast_call = (AST_call*)cur_ast;
             IRinst inst = {0};
 
+            for(int i = arrlen(type_stack) - 1; i >= 0; --i) {
+                printf("type_stack[%i] = %s\n", i, job_type_to_str(jp, type_stack[i]));
+            }
+
             //TODO procedure pointers have to be differentiated from normal procedures
 
 
@@ -5361,40 +5365,49 @@ void ir_gen_expr(Job *jp, AST *ast) {
              */
             arrpush(jp->local_offset, arrlast(jp->local_offset));
 
-            Arr(u64) ireg_save_offsets = NULL;
-            Arr(u64) f32reg_save_offsets = NULL;
-            arrsetcap(ireg_save_offsets, 5);
-            arrsetcap(f32reg_save_offsets, 5);
+            Arr(u64) iregs_saved = NULL;
+            Arr(u64) fregs_saved = NULL;
+            Arr(u64) register_save_offsets = NULL;
+            arrsetlen(iregs_saved, jp->reg_alloc);
+            arrsetlen(fregs_saved, jp->float_reg_alloc);
+            arrsetlen(register_save_offsets, arrlen(type_stack));
 
-            for(u64 i = 0; i < jp->reg_alloc; ++i) {
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_SETLOCAL,
-                        .setvar = {
-                            .offset = arrlast(jp->local_offset),
-                            .reg_src = i,
-                            .bytes = 8,
-                        },
-                    };
-                arrpush(jp->instructions, inst);
-                arrpush(ireg_save_offsets, arrlast(jp->local_offset));
-                arrlast(jp->local_offset) += 8;
-            }
+            for(int i = arrlen(type_stack) - 1; i >= 0; --i) {
+                Type *t = type_stack[i];
 
-            // TODO distinguish float32 and float64 regs
-            for(u64 i = 0; i < jp->float_reg_alloc; ++i) {
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_SETLOCALF,
-                        .setvar = {
-                            .offset = arrlast(jp->local_offset),
-                            .reg_src = i,
-                            .bytes = 4,
-                        },
-                    };
+                if(TYPE_KIND_IS_NOT_SCALAR(t->kind))
+                    UNREACHABLE;
+
+                if(TYPE_KIND_IS_FLOAT(t->kind)) {
+                    jp->float_reg_alloc--;
+                    fregs_saved[i] = jp->float_reg_alloc;
+                    register_save_offsets[i] = arrlast(jp->local_offset);
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_SETLOCALF,
+                            .setvar = {
+                                .offset = arrlast(jp->local_offset),
+                                .reg_src = jp->float_reg_alloc,
+                                .bytes = t->bytes,
+                            },
+                        };
+                } else {
+                    jp->reg_alloc--;
+                    iregs_saved[i] = jp->reg_alloc;
+                    register_save_offsets[i] = arrlast(jp->local_offset);
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_SETLOCAL,
+                            .setvar = {
+                                .offset = arrlast(jp->local_offset),
+                                .reg_src = jp->reg_alloc,
+                                .bytes = t->bytes,
+                            },
+                        };
+                }
+
                 arrpush(jp->instructions, inst);
-                arrpush(f32reg_save_offsets, arrlast(jp->local_offset));
-                arrlast(jp->local_offset) += 4;
+                arrlast(jp->local_offset) += t->bytes;
             }
 
             for(int i = 0; i < arrlen(params); ++i) {
@@ -5534,34 +5547,38 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 };
             arrpush(jp->instructions, inst);
 
-            //TODO we should be able to inspect the type_stack to find out exactly what needs to be saved
-            for(u64 i = 0; i < arrlen(ireg_save_offsets); ++i) {
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_GETLOCAL,
-                        .getvar = {
-                            .reg_dest = i,
-                            .offset = ireg_save_offsets[i],
-                            .bytes = 8,
-                        },
-                    };
-                arrpush(jp->instructions, inst);
-            }
-            arrfree(ireg_save_offsets);
+            if(arrlen(iregs_saved) > 0) jp->reg_alloc = arrlast(iregs_saved) + 1;
+            if(arrlen(fregs_saved) > 0) jp->float_reg_alloc = arrlast(fregs_saved) + 1;
 
-            for(u64 i = 0; i < arrlen(f32reg_save_offsets); ++i) {
+            for(int i = arrlen(type_stack) - 1; i >= 0; --i) {
+                Type *t = type_stack[i];
+
+                Arr(u64) regs_saved = iregs_saved;
+                IRop opcode = IROP_GETLOCAL;
+
+                if(TYPE_KIND_IS_NOT_SCALAR(t->kind))
+                    UNREACHABLE;
+
+                if(TYPE_KIND_IS_FLOAT(t->kind)) {
+                    regs_saved = fregs_saved;
+                    opcode = IROP_GETLOCALF;
+                }
+
                 inst =
                     (IRinst) {
-                        .opcode = IROP_GETLOCALF,
+                        .opcode = opcode,
                         .getvar = {
-                            .reg_dest = i,
-                            .offset = f32reg_save_offsets[i],
-                            .bytes = 4,
+                            .reg_dest = arrpop(regs_saved),
+                            .offset = arrpop(register_save_offsets),
+                            .bytes = t->bytes,
                         },
                     };
                 arrpush(jp->instructions, inst);
             }
-            arrfree(f32reg_save_offsets);
+
+            arrfree(register_save_offsets);
+            arrfree(fregs_saved);
+            arrfree(iregs_saved);
 
             /* NOTE
              * here we allocate local data for the return values of nested procedure calls
