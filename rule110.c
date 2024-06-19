@@ -1,5 +1,10 @@
 #include "basic.h"
 
+int fib(int n) {
+    if(n <= 1) return n;
+    return fib(n - 1) + fib(n - 2);
+}
+
 int main(void) {
     bool buf1[] = {
         1,1,0,1,0,0,0,0,1,0,0,1,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,0,1,1
@@ -13,7 +18,8 @@ int main(void) {
 
     bool *tape = buf1;
     bool *next_tape = buf2;
-    int N = 32;
+    int N = fib(8);
+    // 0 0 1 1 1 0 0 1 1 0 0 0 0 1 1 1 0 0 1 1 0 1 1 1 1 1 0 1 0 0
 
     int rules[8] = { 0, 1, 1, 1, 0, 1, 1, 0 };
 
@@ -39,7 +45,7 @@ int main(void) {
     }
 
     for(int i = 0; i < D; ++i) {
-        printf("%d ", tape[i]);
+        printf("%d ", next_tape[i]);
     }
     printf("\n");
 

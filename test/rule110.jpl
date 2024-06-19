@@ -1,4 +1,6 @@
-proc rule110() {
+#run rule110(#run fib(8));
+
+proc rule110(N: int) {
     buf2: [D]bool = ---;
 
     buf1: [(buf2.count / 2) + (D >> 1)]bool = ---;
@@ -36,10 +38,6 @@ proc rule110() {
     tape := buf1.data;
     next_tape := buf2.data;
 
-    non_const := fib(10);
-
-    N := #run fib(20);
-
     rules: [8]int = ---;
     rules[0] = 0;
     rules[1] = 1;
@@ -71,14 +69,16 @@ proc rule110() {
     }
 }
 
-
 proc fib(n: int) int {
     if n <= 1 return n;
     return fib(n - 1) + fib(n - 2);
 }
+
+proc malloc(n: u64) *void #foreign "libc";
 
 
 bfg := g * 6;
 g :: 348;
 
 D :: 30;
+

@@ -57,6 +57,7 @@
     X(returnstatement)                  \
     X(statement)                        \
     X(block)                            \
+    X(run_directive)                    \
     X(structdecl)                       \
     X(uniondecl)                        \
     X(vardecl)                          \
@@ -69,7 +70,6 @@
     X(atom)                             \
     X(array_literal)                    \
     X(call)                             \
-    X(run_directive)                    \
 
 #define OPERATOR_PREC_TABLE             \
     /* indexing */\
@@ -551,6 +551,7 @@ struct Sym {
     Loc_info loc;
     Jobid declared_by;
     int procid;
+    bool ready_to_run;
     bool is_global : 1;
     bool is_argument : 1;
     bool is_record_argument : 1;
@@ -582,6 +583,7 @@ struct AST_param {
 
 struct AST_run_directive {
     AST base;
+    AST *next; // used for top level directives
     AST_call *call_to_run;
 };
 
@@ -782,6 +784,9 @@ struct AST_procdecl {
     AST_paramdecl *params;
     AST_retdecl *rets;
     bool c_call;
+    bool must_inline;
+    bool is_foreign;
+    char *foreign_lib_str;
     bool type_checked_body;
     bool varargs;
     bool has_defaults;
@@ -946,6 +951,8 @@ void        typecheck_structdecl(Job *jp);
 int         getprec(Token t);
 
 //TODO better parser errors
+AST*        parse_top_level_statement(Job *jp);
+AST*        parse_directive_statement(Job *jp);
 AST*        parse_run_directive(Job *jp);
 AST*        parse_procdecl(Job *jp);
 AST*        parse_structdecl(Job *jp);
@@ -1164,9 +1171,7 @@ char* job_alloc_text(Job *jp, char *s, char *e) {
 }
 
 INLINE Sym* job_alloc_sym(Job *jp) {
-    Sym *symp = pool_alloc(&jp->allocator.sym);
-    symp->procid = -1;
-    return symp;
+    return pool_alloc(&jp->allocator.sym);
 }
 
 INLINE Sym* job_alloc_global_sym(Job *jp) {
@@ -1714,6 +1719,31 @@ int getprec(Token t) {
     }
 }
 
+INLINE AST* parse_top_level_statement(Job *jp) {
+    AST *ast = NULL;
+
+    if(ast == NULL) ast = parse_procdecl(jp);
+    if(ast == NULL) ast = parse_structdecl(jp);
+    if(ast == NULL) ast = parse_directive_statement(jp);
+    if(ast == NULL) ast = parse_vardecl(jp);
+
+    return ast;
+}
+
+INLINE AST* parse_directive_statement(Job *jp) {
+    Lexer *lexer = jp->lexer;
+    AST *ast = NULL;
+
+    if(ast == NULL) ast = parse_run_directive(jp);
+    if(ast == NULL) return NULL;
+
+    Token t = lex(lexer);
+
+    if(t != ';') job_error(jp, lexer->loc, "expected ';' after top level directive");
+
+    return ast;
+}
+
 AST* parse_run_directive(Job *jp) {
     Lexer *lexer = jp->lexer;
     Lexer unlex = *lexer;
@@ -1992,7 +2022,38 @@ AST* parse_procdecl(Job *jp) {
         node->n_rets = n_rets;
     }
 
-    if(t != '{' && t != ';') job_error(jp, lexer->loc, "expected '{' or ';'");
+
+    if(t == TOKEN_INLINE_DIRECTIVE) {
+        node->must_inline = true;
+        unlex = *lexer;
+        t = lex(lexer);
+    }
+
+    if(t == TOKEN_C_CALL_DIRECTIVE) {
+        node->c_call = true;
+        unlex = *lexer;
+        t = lex(lexer);
+    }
+
+    if(t == TOKEN_FOREIGN_DIRECTIVE) {
+        node->is_foreign = true;
+        node->c_call = true;
+        if(node->must_inline) {
+            job_error(jp, node->base.loc, "cannot force foreign procedure to inline");
+        }
+        unlex = *lexer;
+        t = lex(lexer);
+        node->foreign_lib_str = job_alloc_text(jp, lexer->text.s, lexer->text.e);
+        t = lex(lexer);
+        if(t != ';')
+            job_error(jp, lexer->loc, "expected ';' at end of foreign procedure header");
+        return (AST*)node;
+    }
+
+    if(t != '{' && t != ';') {
+        job_error(jp, lexer->loc, "expected '{' or ';'");
+        return (AST*)node;
+    }
 
     if(t == ';') return (AST*)node;
 
@@ -3103,6 +3164,7 @@ void ir_gen(Job *jp) {
         arrsetlen(jp->instructions, 0);
 
         sym->procid = procedure_table_add(proc, sym->name, length, jp->max_local_offset, jump_table);
+        sym->ready_to_run = true;
 
     } else if(node->kind == AST_KIND_vardecl) {
         printf("sorry I don't know how to do this yet\n");
@@ -5223,8 +5285,6 @@ void ir_gen_expr(Job *jp, AST *ast) {
             if(ast_call->n_types_returned > 1)
                 UNIMPLEMENTED;
 
-            assert(ast_call->n_types_returned == 1);
-
             if(ast_call->value_annotation_list) {
                 //UNREACHABLE;
                 Type *result_type = ast_call->type_annotation_list[0];
@@ -5474,6 +5534,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 };
             arrpush(jp->instructions, inst);
 
+            //TODO we should be able to inspect the type_stack to find out exactly what needs to be saved
             for(u64 i = 0; i < arrlen(ireg_save_offsets); ++i) {
                 inst =
                     (IRinst) {
@@ -5509,6 +5570,8 @@ void ir_gen_expr(Job *jp, AST *ast) {
             if(arrlast(jp->local_offset) > jp->max_local_offset) jp->max_local_offset = arrlast(jp->local_offset);
             arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
 
+            if(callee_type->proc.ret.n == 0)
+                continue;
 
             if(TYPE_KIND_IS_NOT_SCALAR(return_type->kind)) {
                 UNIMPLEMENTED;
@@ -5581,11 +5644,7 @@ void job_runner(char *src, char *src_path) {
                         job_init_allocator_ast(jp);
                         job_init_allocator_scratch(jp);
 
-                        AST *ast = NULL;
-
-                        if(ast == NULL) ast = parse_procdecl(jp);
-                        if(ast == NULL) ast = parse_structdecl(jp);
-                        if(ast == NULL) ast = parse_vardecl(jp);
+                        AST *ast = parse_top_level_statement(jp);
 
                         if(ast == NULL) {
                             Token t = lex(jp->lexer);
@@ -5631,8 +5690,9 @@ void job_runner(char *src, char *src_path) {
                                 arrfree(jp->scopes);
                                 jp->pipe_stage = PIPE_STAGE_IR;
                                 //arrpush(job_queue_next, *jp);
-                                arrpush(job_queue, *jp);
-                                ++i;
+                                //Job push_job = *jp;
+                                //arrpush(job_queue, push_job);
+                                //++i;
                                 popped_stack = true;
                                 break;
                             } else {
@@ -5717,12 +5777,14 @@ void job_runner(char *src, char *src_path) {
                                 jp->cur_proc_type = NULL;
                                 arrlast(jp->tree_pos_stack) = ast_procdecl->next;
                                 Scope s = arrpop(jp->scopes);
+                                /*
                                 for(int i = 0; i < shlen(s); ++i) {
                                     if(s[i].value) {
                                         print_sym(s[i].value[0]);
                                         printf("\n");
                                     }
                                 }
+                                */
                                 shfree(s);
                                 printf("\ntype checked the body of '%s'!!!!!!!!!\n\n", ast_procdecl->name);
                                 break;
@@ -5764,12 +5826,14 @@ void job_runner(char *src, char *src_path) {
 
                             if(ast_block->visited) {
                                 Scope s = arrpop(jp->scopes);
+                                /*
                                 for(int i = 0; i < shlen(s); ++i) {
                                     if(s[i].value) {
                                         print_sym(s[i].value[0]);
                                         printf("\n");
                                     }
                                 }
+                                */
                                 ast_block->visited = false;
                                 shfree(s);
                                 arrlast(jp->tree_pos_stack) = ast_block->next;
@@ -5783,10 +5847,7 @@ void job_runner(char *src, char *src_path) {
                             AST_ifstatement *ast_if = (AST_ifstatement*)ast;
 
                             if(arrlen(jp->expr) == 0) {
-                                printf("linearizing expression!!!!!\n");
-                                print_ast_expr(ast_if->condition, 0);
                                 linearize_expr(jp, &ast_if->condition);
-                                printf("finished linearizing expression!!!!!\n\n\n");
                             }
                             typecheck_expr(jp);
 
@@ -5822,10 +5883,7 @@ void job_runner(char *src, char *src_path) {
                             AST_whilestatement *ast_while = (AST_whilestatement*)ast;
 
                             if(arrlen(jp->expr) == 0) {
-                                printf("linearizing expression!!!!!\n");
-                                print_ast_expr(ast_while->condition, 0);
                                 linearize_expr(jp, &ast_while->condition);
-                                printf("finished linearizing expression!!!!!\n\n\n");
                             }
                             typecheck_expr(jp);
 
@@ -5857,10 +5915,7 @@ void job_runner(char *src, char *src_path) {
                             AST_forstatement *ast_for = (AST_forstatement*)ast;
 
                             if(arrlen(jp->expr) == 0) {
-                                printf("linearizing expression!!!!!\n");
-                                print_ast_expr(ast_for->expr, 0);
                                 linearize_expr(jp, &ast_for->expr);
-                                printf("finished linearizing expression!!!!!\n\n\n");
                             }
                             typecheck_expr(jp);
                             Type *for_expr_type = ((AST_expr*)(ast_for->expr))->type_annotation;
@@ -5910,10 +5965,7 @@ void job_runner(char *src, char *src_path) {
 
                             if(jp->step == TYPECHECK_STEP_STATEMENT_LEFT) {
                                 if(arrlen(jp->expr) == 0) {
-                                    printf("linearizing expression!!!!!\n");
-                                    print_ast_expr(ast_statement->left, 0);
                                     linearize_expr(jp, &ast_statement->left);
-                                    printf("finished linearizing expression!!!!!\n\n\n");
                                 }
                                 typecheck_expr(jp);
 
@@ -5983,10 +6035,7 @@ void job_runner(char *src, char *src_path) {
 
                             if(jp->step == TYPECHECK_STEP_STATEMENT_RIGHT) {
                                 if(arrlen(jp->expr) == 0) {
-                                    printf("linearizing expression!!!!!\n");
-                                    print_ast_expr(ast_statement->right, 0);
                                     linearize_expr(jp, &ast_statement->right);
-                                printf("finished linearizing expression!!!!!\n\n\n");
                                 }
                                 typecheck_expr(jp);
 
@@ -6072,10 +6121,7 @@ void job_runner(char *src, char *src_path) {
 
                             for(u64 expr_list_pos = jp->expr_list_pos; expr_list_pos < arrlen(jp->expr_list); ++expr_list_pos) {
                                 if(arrlen(jp->expr) == 0) {
-                                    printf("linearizing expression!!!!!\n");
-                                    print_ast_expr(jp->expr_list[expr_list_pos][0], 0);
                                     linearize_expr(jp, jp->expr_list[expr_list_pos]);
-                                printf("finished linearizing expression!!!!!\n\n\n");
                                 }
                                 typecheck_expr(jp);
 
@@ -6127,6 +6173,45 @@ void job_runner(char *src, char *src_path) {
                             arrlast(jp->tree_pos_stack) = ast_return->next;
 
                             jp->step = TYPECHECK_STEP_NONE;
+                        } else if(ast->kind == AST_KIND_run_directive) {
+                            AST_run_directive *ast_run = (AST_run_directive*)ast;
+                            assert(ast_run->next == NULL);
+
+                            if(arrlen(jp->expr) == 0)
+                                linearize_expr(jp, &ast);
+                            typecheck_expr(jp);
+
+                            if(jp->state == JOB_STATE_WAIT) {
+                                Job push_job = *jp;
+                                arrpush(job_queue_next, push_job);
+                                arrlast(job_queue_next).state = JOB_STATE_READY;
+                                ++i;
+                                continue;
+                            }
+
+                            arrsetlen(jp->type_stack, 0);
+                            arrsetlen(jp->value_stack, 0);
+                            arrsetlen(jp->expr, 0);
+                            jp->expr_pos = 0;
+
+                            if(jp->state == JOB_STATE_ERROR) {
+                                job_report_all_messages(jp);
+                            }
+
+                            {
+                                printf("\nlocal segment dump\n");
+                                for(int i = 0; i < 3; ++i) {
+                                    for(int j = 0; j < 30; ++j) {
+                                        printf("%.2X ", jp->interp.local_segment[i*30 + j]);
+                                    }
+                                    printf("\n");
+                                }
+                                printf("\n");
+                            }
+
+                            job_die(jp);
+                            ++i;
+
                         } else {
                             UNIMPLEMENTED;
                         }
@@ -6141,33 +6226,6 @@ void job_runner(char *src, char *src_path) {
                             job_die(jp);
                             ++i;
                             continue;
-                        }
-                        if(jp->symbol->type->kind == TYPE_KIND_PROC) {
-                            IRinst *instructions = procedure_table[jp->symbol->procid];
-                            printf("\n");
-                            for(int inst_i = 0; inst_i < procedure_lengths[jp->symbol->procid]; ++inst_i) {
-                                printf("%i: ", inst_i);
-                                print_ir_inst(instructions[inst_i]);
-                            }
-                            printf("\n");
-
-                            if(!jp->interp.global_segment) jp->interp.global_segment = malloc(1<<10);
-                            if(!jp->interp.local_segment) jp->interp.local_segment = malloc(1<<10);
-                            memset(jp->interp.global_segment, 0, 1<<10);
-                            memset(jp->interp.local_segment, 0, 1<<10);
-                            arrsetlen(jp->interp.ports, 16);
-                            for(int i = 0; i < 16; ++i) jp->interp.ports[i] = (IRvalue){0};
-
-                            ir_run(jp, jp->symbol->procid);
-
-                            printf("\nlocal segment dump\n");
-                            for(int i = 0; i < 3; ++i) {
-                                for(int j = 0; j < 30; ++j) {
-                                    printf("%i ", jp->interp.local_segment[i*30 + j]);
-                                }
-                                printf("\n");
-                            }
-                            printf("\n");
                         }
                         ++i;
                         break;
@@ -6254,6 +6312,7 @@ void job_runner(char *src, char *src_path) {
         }
     }
 
+    /*
     if(!had_error) {
         for(int i = 0; i < shlen(global_scope); ++i) {
             if(global_scope[i].value) {
@@ -6262,6 +6321,7 @@ void job_runner(char *src, char *src_path) {
             }
         }
     }
+    */
 
     arrfree(job_queue);
     arrfree(job_queue_next);
@@ -7156,12 +7216,21 @@ void typecheck_expr(Job *jp) {
             if(run_at_compile_time) {
                 AST_run_directive *ast_run = (AST_run_directive*)expr[pos][0];
                 callp = ast_run->call_to_run;
+                Sym *s = ((AST_atom*)(callp->callee))->symbol_annotation;
+                assert(s);
+                if(s->ready_to_run == false) {
+                    jp->state = JOB_STATE_WAIT;
+                    jp->waiting_on_name = s->name;
+                    break;
+                }
             } else {
                 callp = (AST_call*)expr[pos][0];
             }
 
             Type *proc_type = arrpop(type_stack);
             arrsetlen(value_stack, arrlen(value_stack) - 1);
+
+            if(pos < arrlen(expr) - 1) assert(proc_type->proc.ret.n > 0);
 
             u8 params_passed[proc_type->proc.param.n];
             memset(params_passed, 0, proc_type->proc.param.n);
@@ -7324,11 +7393,14 @@ void typecheck_expr(Job *jp) {
                 if(!jp->interp.global_segment) jp->interp.global_segment = malloc(1<<10);
                 if(!jp->interp.local_segment) jp->interp.local_segment = malloc(1<<13);
                 memset(jp->interp.global_segment, 0, 1<<10);
-                memset(jp->interp.local_segment, 0, 1<<10);
+                memset(jp->interp.local_segment, 0, 1<<13);
                 arrsetlen(jp->interp.ports, 16);
                 for(int i = 0; i < 16; ++i) jp->interp.ports[i] = (IRvalue){0};
 
+                printf("running '%s'\n", proc_type->proc.name);
                 ir_run(jp, -1);
+
+                arrsetlen(jp->instructions, 0);
 
                 assert(arrlen(jp->interp.ports) >= proc_type->proc.ret.n);
 
@@ -7515,9 +7587,6 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
         arrpush(ir_expr, ast);
     } else if(ast->kind == AST_KIND_array_literal) {
         UNREACHABLE;
-    } else if(ast->kind == AST_KIND_run_directive) {
-        AST_run_directive *ast_run = (AST_run_directive*)ast;
-        arrpush(ir_expr, (AST*)(ast_run->call_to_run));
     } else if(ast->kind == AST_KIND_call) {
         arrpush(ir_expr, ast);
     } else {
@@ -7599,10 +7668,7 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
 //
 //            if(initialize && jp->step == TYPECHECK_STEP_STRUCTDECL_PARAMS_INITIALIZE) {
 //                if(arrlen(jp->expr) == 0) {
-//                    printf("linearizing expression!!!!!\n");
-//                    print_ast_expr(p->init, 0);
 //                    linearize_expr(jp, &p->init);
-//                                printf("finished linearizing expression!!!!!\n\n\n");
 //                }
 //                typecheck_expr(jp);
 //
@@ -7778,10 +7844,7 @@ void typecheck_procdecl(Job *jp) {
 
             if(initialize && jp->step == TYPECHECK_STEP_PROCDECL_PARAMS_INITIALIZE) {
                 if(arrlen(jp->expr) == 0) {
-                    printf("linearizing expression!!!!!\n");
-                    print_ast_expr(p->init, 0);
                     linearize_expr(jp, &p->init);
-                                printf("finished linearizing expression!!!!!\n\n\n");
                 }
                 typecheck_expr(jp);
 
@@ -7877,10 +7940,7 @@ void typecheck_procdecl(Job *jp) {
 
         for(AST_retdecl *r = jp->cur_retdecl; r; r = r->next) {
             if(arrlen(jp->expr) == 0) {
-                printf("linearizing expression!!!!!\n");
-                print_ast_expr(r->expr, 0);
                 linearize_expr(jp, &r->expr);
-                                printf("finished linearizing expression!!!!!\n\n\n");
             }
             typecheck_expr(jp);
 
@@ -7903,7 +7963,7 @@ void typecheck_procdecl(Job *jp) {
         }
     }
 
-    if(ast->n_rets > 0 && !all_paths_return(jp, ast->body)) {
+    if(ast->n_rets > 0 && ast->body && !all_paths_return(jp, ast->body)) {
         job_error(jp, jp->non_returning_path_loc,
                 "code path terminates with no return in procedure '%s'",
                 ast->name);
@@ -7961,10 +8021,7 @@ void typecheck_vardecl(Job *jp) {
 
     if(jp->step == TYPECHECK_STEP_VARDECL_BIND_TYPE) {
         if(arrlen(jp->expr) == 0) {
-            printf("linearizing expression!!!!!\n");
-            print_ast_expr(ast->type, 0);
             linearize_expr(jp, &ast->type);
-                                printf("finished linearizing expression!!!!!\n\n\n");
         }
         typecheck_expr(jp);
 
@@ -7983,10 +8040,7 @@ void typecheck_vardecl(Job *jp) {
 
     if(jp->step == TYPECHECK_STEP_VARDECL_INITIALIZE) {
         if(arrlen(jp->expr) == 0) {
-            printf("linearizing expression!!!!!\n");
-            print_ast_expr(ast->init, 0);
             linearize_expr(jp, &ast->init);
-                                printf("finished linearizing expression!!!!!\n\n\n");
         }
         typecheck_expr(jp);
 
@@ -8130,6 +8184,7 @@ void print_sym(Sym sym) {
     printf("name: %s\n", sym.name);
     printf("declared_by: %d\n", sym.declared_by);
     printf("constant: %s\n", sym.constant ? "true" : "false");
+    printf("segment_offset: %lu\n", sym.segment_offset);
     printf("type: %s\n", global_type_to_str(sym.type));
     printf("value: %p\n", (void *)sym.value);
 }
@@ -8147,7 +8202,6 @@ int main(void) {
     pool_init(&global_sym_allocator, sizeof(Sym));
 
     char *test_src_file = LoadFileText("test/rule110.jpl");
-    printf("%s\n\n",test_src_file);
 
     job_runner(test_src_file, "test/110.jpl");
 
