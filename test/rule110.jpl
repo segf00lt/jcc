@@ -51,12 +51,18 @@ proc rule110(N: int) {
 
     N += fib(8);
 
-    while N > 0 || 0 {
+    while generation_loop: N > 0 || 0 {
         defer N--;
 
         i := 0;
 
-        while i < D {
+        while tape_loop: i < D {
+
+            if N == 7 {
+                N--;
+                continue generation_loop;
+            }
+
             left := i - 1;
             if i == 0 left = D - 1;
             right := i + 1;
@@ -64,6 +70,10 @@ proc rule110(N: int) {
             pat := (tape[left] << 2) | (tape[i] << 1) | tape[right];
             next_tape[i] = rules[pat];
             i++;
+
+            if i == D && N == 5 {
+                break generation_loop;
+            }
         }
 
         tmp := tape;
