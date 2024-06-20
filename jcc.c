@@ -332,6 +332,7 @@ struct IRmachine {
     Arr(u64) pc_stack;
     Arr(int) procid_stack;
     Arr(u8*) local_base_stack;
+    Arr(u64*) jump_table_stack;
 
     u8 *global_segment;
     u8 *local_segment;
@@ -502,8 +503,8 @@ struct Job {
     Type                *cur_proc_type;
 
     /* struct and union */
-    bool                in_record_scope;
-    Arr(Type*)          record_types;
+    bool                 in_record_scope;
+    Arr(Type*)           record_types;
 
     union {
         Loc_info         non_returning_path_loc;
@@ -935,7 +936,7 @@ Type*       atom_to_type(Job *jp, AST_atom *atom);
 Value*      evaluate_unary(Job *jp, Value *a, AST_expr *op_ast);
 Value*      evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast);
 
-int         procedure_table_add(IRinst *proc, char *name, u64 length, u64 local_segment_size, u64 *jump_table);
+void        procedure_table_add(IRinst *proc, int procid, char *name, u64 length, u64 local_segment_size, u64 *jump_table);
 
 //TODO typechecking should be done with a table of some kind, all this branching is a bit lazy
 bool        types_are_same(Type *a, Type *b);
@@ -1025,11 +1026,13 @@ Value builtin_value[] = {
 Arena              global_scratch_allocator;
 Pool               global_sym_allocator;
 Scope              global_scope;
-Arr(IRinst*)       procedure_table;
-Arr(char*)         procedure_names;
-Arr(u64)           procedure_lengths;
-Arr(u64)           local_segment_size_table;
-Arr(u64*)          procedure_local_jump_table;
+int                procid_alloc;
+u64                n_procedures;
+Map(u64, IRinst*)  procedure_table;
+Map(u64, char*)    procedure_names;
+Map(u64, u64)      procedure_lengths;
+Map(u64, u64)      local_segment_size_table;
+Map(u64, u64*)     procedure_local_jump_table;
 
 
 /* function declarations */
@@ -1435,35 +1438,41 @@ bool all_paths_return(Job *jp, AST *ast) {
             case AST_KIND_ifstatement:
                 {
                     AST_ifstatement *ast_if = (AST_ifstatement*)ast_statement;
-                    if(!all_paths_return(jp, ast_if->body)) return false;
-
-                    AST *branch = ast_if->branch;
-                    while(branch && branch->kind == AST_KIND_ifstatement) {
-                        AST_ifstatement *ast_else_if = (AST_ifstatement*)branch;
-                        if(!all_paths_return(jp, ast_else_if->body)) return false;
-                        branch = ast_else_if->branch;
-                    }
-
-                    if(branch) {
-                        bool else_returns = all_paths_return(jp, branch);
-                        if(else_returns && ast_if->next == NULL) return true;
-                        if(!else_returns && ast_if->next == NULL) {
-                            return false;
+                    if(!all_paths_return(jp, ast_if->body)) {
+                        cannot_end_block = true;
+                    } else {
+                        AST *branch = ast_if->branch;
+                        while(branch && branch->kind == AST_KIND_ifstatement) {
+                            AST_ifstatement *ast_else_if = (AST_ifstatement*)branch;
+                            if(!all_paths_return(jp, ast_else_if->body)) return false;
+                            branch = ast_else_if->branch;
                         }
-                        if(!else_returns) jp->non_returning_path_loc = (Loc_info){0};
+
+                        if(branch) {
+                            bool else_returns = all_paths_return(jp, branch);
+                            if(else_returns && ast_if->next == NULL) return true;
+                            if(!else_returns && ast_if->next == NULL) {
+                                return false;
+                            }
+                            if(!else_returns) jp->non_returning_path_loc = (Loc_info){0};
+                        }
                     }
                 }
                 break;
             case AST_KIND_whilestatement:
                 {
                     AST_whilestatement *ast_while = (AST_whilestatement*)ast_statement;
-                    if(!all_paths_return(jp, ast_while->body)) return false;
+                    if(!all_paths_return(jp, ast_while->body)) {
+                        cannot_end_block = true;
+                    }
                 }
                 break;
             case AST_KIND_forstatement:
                 {
                     AST_forstatement *ast_for = (AST_forstatement*)ast_statement;
-                    if(!all_paths_return(jp, ast_for->body)) return false;
+                    if(!all_paths_return(jp, ast_for->body)) {
+                        cannot_end_block = true;
+                    }
                 }
                 break;
             case AST_KIND_returnstatement:
@@ -1475,7 +1484,9 @@ bool all_paths_return(Job *jp, AST *ast) {
             case AST_KIND_block:
                 {
                     AST_block *ast_block = (AST_block*)ast_statement;
-                    if(!all_paths_return(jp, ast_block->down)) return false;
+                    if(!all_paths_return(jp, ast_block->down)) {
+                        cannot_end_block = true;
+                    }
                 }
                 break;
         }
@@ -1701,13 +1712,13 @@ INLINE void print_ir_inst(IRinst inst) {
 
 }
 
-INLINE int procedure_table_add(IRinst *proc, char *name, u64 length, u64 local_segment_size, u64 *jump_table) {
-    arrpush(procedure_table, proc);
-    arrpush(procedure_names, name);
-    arrpush(procedure_lengths, length);
-    arrpush(local_segment_size_table, local_segment_size);
-    arrpush(procedure_local_jump_table, jump_table);
-    return arrlen(procedure_table) - 1;
+INLINE void procedure_table_add(IRinst *proc, int procid, char *name, u64 length, u64 local_segment_size, u64 *jump_table) {
+    hmput(procedure_table, procid, proc);
+    hmput(procedure_names, procid, name);
+    hmput(procedure_lengths, procid, length);
+    hmput(local_segment_size_table, procid, local_segment_size);
+    hmput(procedure_local_jump_table, procid, jump_table);
+    n_procedures++;
 }
 
 int getprec(Token t) {
@@ -3163,7 +3174,7 @@ void ir_gen(Job *jp) {
         u64 length = arrlen(jp->instructions);
         arrsetlen(jp->instructions, 0);
 
-        sym->procid = procedure_table_add(proc, sym->name, length, jp->max_local_offset, jump_table);
+        procedure_table_add(proc, sym->procid, sym->name, length, jp->max_local_offset, jump_table);
         sym->ready_to_run = true;
 
     } else if(node->kind == AST_KIND_vardecl) {
@@ -3182,10 +3193,13 @@ void ir_run(Job *jp, int procid) {
     // data is put in and extracted from the IRmachine elsewhere
 
     IRinst *procedure;
-    if(procid == -1)
+    u64 *jump_table = NULL;
+    if(procid == -1) {
         procedure = jp->instructions;
-    else
-        procedure = procedure_table[procid];
+    } else {
+        procedure = hmget(procedure_table, procid);
+        jump_table = hmget(procedure_local_jump_table, procid);
+    }
     u64 pc = 0;
     u8 *local_base = interp.local_segment;
 
@@ -3268,18 +3282,18 @@ void ir_run(Job *jp, int procid) {
 
             case IROP_IF:
                 if(interp.iregs[inst.branch.cond_reg] != 0) {
-                    pc = procedure_local_jump_table[procid][inst.branch.label_id];
+                    pc = jump_table[inst.branch.label_id];
                     continue;
                 }
                 break;
             case IROP_IFZ:
                 if(interp.iregs[inst.branch.cond_reg] == 0) {
-                    pc = procedure_local_jump_table[procid][inst.branch.label_id];
+                    pc = jump_table[inst.branch.label_id];
                     continue;
                 }
                 break;
             case IROP_JMP:
-                pc = procedure_local_jump_table[procid][inst.branch.label_id];
+                pc = jump_table[inst.branch.label_id];
                 continue;
             case IROP_CALL:
                 if(inst.call.c_call) {
@@ -3289,10 +3303,12 @@ void ir_run(Job *jp, int procid) {
                     if(!inst.call.immediate) new_procid = interp.iregs[inst.call.id_reg];
                     arrpush(interp.local_base_stack, local_base);
                     arrpush(interp.procid_stack, procid);
+                    arrpush(interp.jump_table_stack, jump_table);
                     arrpush(interp.pc_stack, pc + 1);
-                    local_base += local_segment_size_table[procid];
+                    if(procid >= 0) local_base += hmget(local_segment_size_table, procid);
                     procid = new_procid;
-                    procedure = procedure_table[procid];
+                    procedure = hmget(procedure_table, procid);
+                    jump_table = hmget(procedure_local_jump_table, procid);
                     pc = 0;
                 }
                 continue;
@@ -3306,12 +3322,13 @@ void ir_run(Job *jp, int procid) {
                         continue;
                     }
                     local_base = arrpop(interp.local_base_stack);
+                    jump_table = arrpop(interp.jump_table_stack);
                     procid = arrpop(interp.procid_stack);
                     pc = arrpop(interp.pc_stack);
                     if(procid == -1)
                         procedure = jp->instructions;
                     else
-                        procedure = procedure_table[procid];
+                        procedure = hmget(procedure_table, procid);
                     continue;
                 }
                 break;
@@ -5334,6 +5351,10 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
             AST_atom *callee = (AST_atom*)(ast_call->callee);
             Sym *callee_symbol = callee->symbol_annotation;
+            printf("\n");
+            print_sym(*callee_symbol);
+            printf("\n");
+            assert(callee_symbol);
             Type *callee_type = callee_symbol->type;
             assert(callee_type->kind == TYPE_KIND_PROC);
             Type *return_type = callee_type->proc.ret.types[0];
@@ -6136,6 +6157,8 @@ void job_runner(char *src, char *src_path) {
                                 continue;
                             }
 
+                            bool job_needs_to_wait = false;
+
                             for(u64 expr_list_pos = jp->expr_list_pos; expr_list_pos < arrlen(jp->expr_list); ++expr_list_pos) {
                                 if(arrlen(jp->expr) == 0) {
                                     linearize_expr(jp, jp->expr_list[expr_list_pos]);
@@ -6147,7 +6170,8 @@ void job_runner(char *src, char *src_path) {
                                     arrpush(job_queue_next, *jp);
                                     arrlast(job_queue_next).state = JOB_STATE_READY;
                                     ++i;
-                                    continue;
+                                    job_needs_to_wait = true;
+                                    break;
                                 }
 
                                 arrsetlen(jp->type_stack, 0);
@@ -6168,6 +6192,8 @@ void job_runner(char *src, char *src_path) {
                                             job_type_to_str(jp, expect_type),
                                             job_type_to_str(jp, ret_expr_type));
                             }
+
+                            if(job_needs_to_wait) continue;
 
                             arrsetlen(jp->expr_list, 0);
                             jp->expr_list_pos = 0;
@@ -6217,13 +6243,24 @@ void job_runner(char *src, char *src_path) {
 
                             {
                                 printf("\nlocal segment dump\n");
-                                for(int i = 0; i < 3; ++i) {
+                                for(int i = 0; i < 9; ++i) {
                                     for(int j = 0; j < 30; ++j) {
                                         printf("%.2X ", jp->interp.local_segment[i*30 + j]);
                                     }
                                     printf("\n");
                                 }
                                 printf("\n");
+                            }
+
+                            {
+                                printf("\nport dump\n");
+                                for(int i = 0; i < arrlen(jp->interp.ports); ++i) {
+                                    printf("port %i: { .i = %lu, .f32 = %f, .f64 = %g }\n",
+                                            i,
+                                            jp->interp.ports[i].integer,
+                                            jp->interp.ports[i].floating32,
+                                            jp->interp.ports[i].floating64);
+                                }
                             }
 
                             job_die(jp);
@@ -6243,6 +6280,10 @@ void job_runner(char *src, char *src_path) {
                             job_die(jp);
                             ++i;
                             continue;
+                        }
+                        Sym *handling_sym = global_scope_lookup(jp, jp->handling_name);
+                        for(int i = 0; i < hmget(procedure_lengths, handling_sym->procid); ++i) {
+                            print_ir_inst(hmget(procedure_table, handling_sym->procid)[i]);
                         }
                         ++i;
                         break;
@@ -6287,8 +6328,13 @@ void job_runner(char *src, char *src_path) {
 
         for(u64 i = 0; i < arrlen(job_queue); ++i) {
             Job *jp = job_queue + i;
-            shput(name_graph, jp->handling_name, jp->waiting_on_name);
-            shput(job_graph, jp->handling_name, jp);
+            if(jp->handling_name) {
+                shput(name_graph, jp->handling_name, jp->waiting_on_name);
+                shput(job_graph, jp->handling_name, jp);
+            } else {
+                job_error(jp, arrlast(jp->tree_pos_stack)->loc, "undeclared identifier '%s'", jp->waiting_on_name);
+                job_report_all_messages(jp);
+            }
         }
 
         for(u64 i = 0; i < shlen(name_graph); ++i) {
@@ -7057,6 +7103,8 @@ void typecheck_expr(Job *jp) {
             AST_atom *atom = (AST_atom*)expr[pos][0];
             if(atom->token == TOKEN_IDENT) {
                 Sym *sym = NULL;
+                if(!strcmp(atom->text, "fib"))
+                    PASS;
                 sym = job_scope_lookup(jp, atom->text);
 
                 if(!sym) sym = global_scope_lookup(jp, atom->text);
@@ -7235,6 +7283,7 @@ void typecheck_expr(Job *jp) {
                 callp = ast_run->call_to_run;
                 Sym *s = ((AST_atom*)(callp->callee))->symbol_annotation;
                 assert(s);
+                assert(s->name);
                 if(s->ready_to_run == false) {
                     jp->state = JOB_STATE_WAIT;
                     jp->waiting_on_name = s->name;
@@ -7408,7 +7457,7 @@ void typecheck_expr(Job *jp) {
                 jp->label_alloc = 0;
 
                 if(!jp->interp.global_segment) jp->interp.global_segment = malloc(1<<10);
-                if(!jp->interp.local_segment) jp->interp.local_segment = malloc(1<<13);
+                if(!jp->interp.local_segment) jp->interp.local_segment = malloc(1<<15);
                 memset(jp->interp.global_segment, 0, 1<<10);
                 memset(jp->interp.local_segment, 0, 1<<13);
                 arrsetlen(jp->interp.ports, 16);
@@ -7446,6 +7495,7 @@ void typecheck_expr(Job *jp) {
                         case TYPE_KIND_INT:
                             v->kind = VALUE_KIND_INT;
                             v->val.integer = (s64)(jp->interp.ports[i].integer);
+                            printf("~~~~~~ %lu\n", v->val.integer);
                             break;
                         case TYPE_KIND_U8:
                         case TYPE_KIND_U16:
@@ -7995,6 +8045,7 @@ void typecheck_procdecl(Job *jp) {
         .name = ast->name,
         .loc = ast->base.loc,
         .declared_by = jp->id,
+        .procid = procid_alloc++,
         .constant = true,
         .type = proc_type,
     };
@@ -8201,6 +8252,7 @@ void print_sym(Sym sym) {
     printf("name: %s\n", sym.name);
     printf("declared_by: %d\n", sym.declared_by);
     printf("constant: %s\n", sym.constant ? "true" : "false");
+    printf("procid: %i\n", sym.procid);
     printf("segment_offset: %lu\n", sym.segment_offset);
     printf("type: %s\n", global_type_to_str(sym.type));
     printf("value: %p\n", (void *)sym.value);
@@ -8218,9 +8270,10 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *test_src_file = LoadFileText("test/rule110.jpl");
+    char *path = "test/rule110.jpl";
+    char *test_src_file = LoadFileText(path);
 
-    job_runner(test_src_file, "test/110.jpl");
+    job_runner(test_src_file, path);
 
     return 0;
 }

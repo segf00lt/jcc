@@ -1,4 +1,5 @@
-#run rule110(#run fib(8));
+
+#run rule110(#run fib(#run fib(8)));
 
 proc rule110(N: int) {
     buf2: [D]bool = ---;
@@ -71,21 +72,25 @@ proc rule110(N: int) {
     }
 }
 
+proc test2(x: int) {
+    //x = fib(x);
+    return;
+}
+
 proc fib(n: int) int {
     if n <= 1 return n;
     return fib(n - 1) + fib(n - 2);
 }
 
-/*
-#foreign_lib "libc","libc.so.6";
+proc fib2(n: int) int {
+    if n <= 1 return n;
+    return fib(n - 1) + 1;
+}
 
-proc malloc(n: u64) *void #foreign "libc";
-proc free(p: *void) #foreign "libc";
-
-
-bfg := g * 6;
-g :: 348;
-*/
+proc test(x: int) int {
+    //x = fib(x);
+    return x + 1;
+}
 
 D :: 30;
 

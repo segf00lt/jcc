@@ -1,0 +1,39 @@
+// BUG 19/06/2024
+// 
+// Very weird bug here
+// if there is a nested #run call to a proc then every proc
+// in the program has to call that proc otherwise the result
+// of the #run is randomly altered.
+// 
+// This has something to do with the job scheduler, because
+// if fib() is at the top of the file before any references to
+// it as it is now the bug won't happen.
+// 
+// SOLUTION solved 20/06/2024
+// 
+// This bug had to do with when procedure id's were assigned to
+// a procedure symbol. They were only being assigned when bytecode
+// had been generated and as a result calls to the procedure would
+// be generated with the wrong procid, be they recursive calls or
+// calls within other procedures. The solution was to globally allocate
+// procedures (see the global variable 'int procid_alloc') at the time
+// that we typecheck the header and enter their symbols in to the symbol
+// table. Then the tables for storing bytecode, number of instructions,
+// jump table and other info about a procedure, were changed from Arrays to
+// hash tables (I may revert them to arrays and create a symbol mapping table,
+// should be quicker than hash map). This was done because procedures will not be
+// compiled in order of procid, so a mapping is required to access the data.
+// 
+
+#run test(#run fib(0));
+#run fib(21);
+
+proc test(x: int) int {
+    n := fib(5);
+    return x + n;
+}
+
+proc fib(n: int) int {
+    if n <= 1 return n;
+    return fib(n - 1) + fib(n - 2);
+}
