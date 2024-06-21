@@ -3,8 +3,12 @@ FLAGS = -ggdb -O0 -Wall -Wpedantic -Werror -Wno-switch -Wno-comment -D'_UNITY_BU
 TARGET = jcc.c
 LDFLAGS = -L'/usr/local/lib/' -lraylib -lm
 
+UNAME_S = $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+	FLAGS += -Wno-format
+endif
+
 all:
-	ctags *.c *.h
 	$(CC) $(FLAGS) $(TARGET) -o jcc $(LDFLAGS)
 
 #test: all
