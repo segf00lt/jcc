@@ -1193,7 +1193,7 @@ Sym* job_scope_lookup(Job *jp, char *name) {
 
 void job_scope_enter(Job *jp, Sym *sym) {
     assert(arrlen(jp->scopes) > 0);
-    printf("job %i accessing scope %lu\n", jp->id, arrlen(jp->scopes) - 1);
+    printf("job %i accessing scope %li\n", jp->id, arrlen(jp->scopes) - 1);
     Scope scope = arrlast(jp->scopes);
     shput(scope, sym->name, sym);
     arrlast(jp->scopes) = scope;
@@ -1295,7 +1295,7 @@ Arr(char) _type_to_str(Type *t, Arr(char) tmp_buf) {
         if(t->kind == TYPE_KIND_ARRAY) {
             u64 cur_len = arrlen(tmp_buf);
             char *p = arraddnptr(tmp_buf, 21);
-            u64 n = stbsp_sprintf(p, "%lu", t->array.n);
+            u64 n = stbsp_sprintf(p, "%llu", t->array.n);
             arrsetlen(tmp_buf, cur_len + n);
         } else if(t->kind == TYPE_KIND_DYNAMIC_ARRAY) {
             arrpush(tmp_buf, '.');
@@ -1523,14 +1523,14 @@ INLINE void print_ir_inst(IRinst inst) {
             if(inst.arith.immediate) {
                 if(inst.opcode >= IROP_FADD) {
                     if(inst.arith.operand_bytes[2] == 8) {
-                        printf("%s r_%lu %luB, r_%lu %luB, %g %luB\n",
+                        printf("%s r_%llu %lluB, r_%llu %lluB, %g %lluB\n",
                                 opstr,
                                 inst.arith.reg[0], inst.arith.operand_bytes[0],
                                 inst.arith.reg[1], inst.arith.operand_bytes[1],
                                 inst.arith.imm.floating64, inst.arith.operand_bytes[2]
                               );
                     } else {
-                        printf("%s r_%lu %luB, r_%lu %luB, %f %luB\n",
+                        printf("%s r_%llu %lluB, r_%llu %lluB, %f %lluB\n",
                                 opstr,
                                 inst.arith.reg[0], inst.arith.operand_bytes[0],
                                 inst.arith.reg[1], inst.arith.operand_bytes[1],
@@ -1538,7 +1538,7 @@ INLINE void print_ir_inst(IRinst inst) {
                               );
                     }
                 } else {
-                    printf("%s r_%lu %luB, r_%lu %luB, %lu %luB\n",
+                    printf("%s r_%llu %lluB, r_%llu %lluB, %llu %lluB\n",
                             opstr,
                             inst.arith.reg[0], inst.arith.operand_bytes[0],
                             inst.arith.reg[1], inst.arith.operand_bytes[1],
@@ -1546,7 +1546,7 @@ INLINE void print_ir_inst(IRinst inst) {
                           );
                 }
             } else {
-                printf("%s r_%lu %luB, r_%lu %luB, r_%lu %luB\n",
+                printf("%s r_%llu %lluB, r_%llu %lluB, r_%llu %lluB\n",
                         opstr,
                         inst.arith.reg[0], inst.arith.operand_bytes[0],
                         inst.arith.reg[1], inst.arith.operand_bytes[1],
@@ -1557,7 +1557,7 @@ INLINE void print_ir_inst(IRinst inst) {
         case IROP_NOT: case IROP_NEG:
         case IROP_FNEG:
             assert(inst.arith.immediate == false);
-            printf("%s r_%lu %luB, r_%lu %luB\n",
+            printf("%s r_%llu %lluB, r_%llu %lluB\n",
                     opstr,
                     inst.arith.reg[0], inst.arith.operand_bytes[0],
                     inst.arith.reg[1], inst.arith.operand_bytes[1]
@@ -1565,25 +1565,25 @@ INLINE void print_ir_inst(IRinst inst) {
             break;
 		case IROP_IF:
 		case IROP_IFZ:
-            printf("%s r_%lu label %lu\n", opstr, inst.branch.cond_reg, inst.branch.label_id);
+            printf("%s r_%llu label %llu\n", opstr, inst.branch.cond_reg, inst.branch.label_id);
 			break;
 		case IROP_JMP:
-            printf("%s label %lu\n", opstr, inst.branch.label_id);
+            printf("%s label %llu\n", opstr, inst.branch.label_id);
 			break;
 		case IROP_CALL:
             if(inst.call.immediate)
-                printf("%s %s %s %lu\n", opstr, inst.call.c_call ? "#c_call": "", inst.call.name, inst.call.id_imm);
+                printf("%s %s %s %llu\n", opstr, inst.call.c_call ? "#c_call": "", inst.call.name, inst.call.id_imm);
             else
-                printf("%s %s %s r_%lu\n", opstr, inst.call.c_call ? "#c_call": "", inst.call.name, inst.call.id_reg);
+                printf("%s %s %s r_%llu\n", opstr, inst.call.c_call ? "#c_call": "", inst.call.name, inst.call.id_reg);
 			break;
 		case IROP_RET:
             printf("%s %s\n", opstr, inst.call.c_call ? "#c_call": "");
 			break;
     	case IROP_LABEL:
-            printf("%s %lu\n", opstr, inst.label.id);
+            printf("%s %llu\n", opstr, inst.label.id);
 			break;
         case IROP_CALCPTROFFSET:
-            printf("%s r_%lu, ptr_r_%lu, offset_r_%lu, stride %luB\n",
+            printf("%s r_%llu, ptr_r_%llu, offset_r_%llu, stride %lluB\n",
                     opstr,
                     inst.calcptroffset.reg_dest,
                     inst.calcptroffset.reg_src_ptr,
@@ -1591,36 +1591,36 @@ INLINE void print_ir_inst(IRinst inst) {
                     inst.calcptroffset.stride);
             break;
         case IROP_ADDRLOCAL: case IROP_ADDRGLOBAL:
-            printf("%s r_%lu, segment offset %lu\n", opstr, inst.addrvar.reg_dest, inst.addrvar.offset);
+            printf("%s r_%llu, segment offset %llu\n", opstr, inst.addrvar.reg_dest, inst.addrvar.offset);
             break;
 		case IROP_LOAD:
 		case IROP_LOADF:
             if(inst.load.immediate) {
                 if(inst.opcode == IROP_LOADF) {
                     if(inst.load.bytes == 8) {
-                        printf("%s r_%lu, %g, %luB\n",
+                        printf("%s r_%llu, %g, %lluB\n",
                                 opstr,
                                 inst.load.reg_dest, inst.load.imm.floating64, inst.load.bytes
                               );
                     } else {
-                        printf("%s r_%lu, %f, %luB\n",
+                        printf("%s r_%llu, %f, %lluB\n",
                                 opstr,
                                 inst.load.reg_dest, inst.load.imm.floating32, inst.load.bytes
                               );
                     }
                 } else {
-                    printf("%s r_%lu, %lu, %luB\n",
+                    printf("%s r_%llu, %llu, %lluB\n",
                             opstr,
                             inst.load.reg_dest, inst.load.imm.integer, inst.load.bytes
                           );
                 }
             } else if(inst.load.has_offset) {
-                printf("%s r_%lu, ptr_r_%lu, offset_r_%lu, %luB\n",
+                printf("%s r_%llu, ptr_r_%llu, offset_r_%llu, %lluB\n",
                         opstr,
                         inst.load.reg_dest, inst.load.reg_src_ptr, inst.load.offset_reg, inst.load.bytes
                       );
             } else {
-                printf("%s r_%lu, ptr_r_%lu, %luB\n",
+                printf("%s r_%llu, ptr_r_%llu, %lluB\n",
                         opstr,
                         inst.load.reg_dest, inst.load.reg_src_ptr, inst.load.bytes
                       );
@@ -1631,29 +1631,29 @@ INLINE void print_ir_inst(IRinst inst) {
             if(inst.stor.immediate) {
                 if(inst.opcode == IROP_STORF) {
                     if(inst.stor.bytes == 8) {
-                        printf("%s ptr_r_%lu, %g, %luB\n",
+                        printf("%s ptr_r_%llu, %g, %lluB\n",
                                 opstr,
                                 inst.stor.reg_dest_ptr, inst.stor.imm.floating64, inst.stor.bytes
                               );
                     } else {
-                        printf("%s ptr_r_%lu, %f, %luB\n",
+                        printf("%s ptr_r_%llu, %f, %lluB\n",
                                 opstr,
                                 inst.stor.reg_dest_ptr, inst.stor.imm.floating32, inst.stor.bytes
                               );
                     }
                 } else {
-                    printf("%s ptr_r_%lu, %lu, %luB\n",
+                    printf("%s ptr_r_%llu, %llu, %lluB\n",
                             opstr,
                             inst.stor.reg_dest_ptr, inst.stor.imm.integer, inst.stor.bytes
                           );
                 }
             } else if(inst.stor.has_offset) {
-                printf("%s ptr_r_%lu, offset_r_%lu, r_%lu, %luB\n",
+                printf("%s ptr_r_%llu, offset_r_%llu, r_%llu, %lluB\n",
                         opstr,
                         inst.stor.reg_dest_ptr, inst.stor.offset_reg, inst.stor.reg_src, inst.stor.bytes
                       );
             } else {
-                printf("%s ptr_r_%lu, r_%lu, %luB\n",
+                printf("%s ptr_r_%llu, r_%llu, %lluB\n",
                         opstr,
                         inst.stor.reg_dest_ptr, inst.stor.reg_src, inst.stor.bytes
                       );
@@ -1663,36 +1663,36 @@ INLINE void print_ir_inst(IRinst inst) {
 		case IROP_GETGLOBAL:
 		case IROP_GETLOCALF:
 		case IROP_GETGLOBALF:
-            printf("%s r_%lu, addr %lu, %luB\n", opstr, inst.getvar.reg_dest, inst.getvar.offset, inst.getvar.bytes);
+            printf("%s r_%llu, addr %llu, %lluB\n", opstr, inst.getvar.reg_dest, inst.getvar.offset, inst.getvar.bytes);
 			break;
         case IROP_SETLOCAL:
         case IROP_SETGLOBAL:
             if(inst.setvar.immediate)
-                printf("%s addr %lu, %lu, %luB\n", opstr, inst.setvar.offset, inst.setvar.imm.integer, inst.setvar.bytes);
+                printf("%s addr %llu, %llu, %lluB\n", opstr, inst.setvar.offset, inst.setvar.imm.integer, inst.setvar.bytes);
             else
-                printf("%s addr %lu, r_%lu, %luB\n", opstr, inst.setvar.offset, inst.setvar.reg_src, inst.setvar.bytes);
+                printf("%s addr %llu, r_%llu, %lluB\n", opstr, inst.setvar.offset, inst.setvar.reg_src, inst.setvar.bytes);
 			break;
         case IROP_SETLOCALF:
         case IROP_SETGLOBALF:
             if(inst.setvar.immediate) {
                 if(inst.setvar.bytes == 8)
-                    printf("%s addr %lu, %g, %luB\n",opstr,inst.setvar.offset,inst.setvar.imm.floating64,inst.setvar.bytes);
+                    printf("%s addr %llu, %g, %lluB\n",opstr,inst.setvar.offset,inst.setvar.imm.floating64,inst.setvar.bytes);
                 else
-                    printf("%s addr %lu, %f, %luB\n",opstr,inst.setvar.offset,inst.setvar.imm.floating32,inst.setvar.bytes);
+                    printf("%s addr %llu, %f, %lluB\n",opstr,inst.setvar.offset,inst.setvar.imm.floating32,inst.setvar.bytes);
             } else {
-                printf("%s addr %lu, r_%lu, %luB\n", opstr, inst.setvar.offset, inst.setvar.reg_src, inst.setvar.bytes);
+                printf("%s addr %llu, r_%llu, %lluB\n", opstr, inst.setvar.offset, inst.setvar.reg_src, inst.setvar.bytes);
             }
 			break;
 		case IROP_SETARG: case IROP_SETRET:
 		case IROP_SETARGF: case IROP_SETRETF:
-            printf("%s %s p_%lu, r_%lu, %luB\n",
+            printf("%s %s p_%llu, r_%llu, %lluB\n",
                     opstr,
                     inst.setport.c_call ? "#c_call": "",
                     inst.setport.port, inst.setport.reg_src, inst.setport.bytes);
 			break;
         case IROP_GETARG: case IROP_GETRET:
         case IROP_GETARGF: case IROP_GETRETF:
-            printf("%s %s r_%lu, p_%lu, %luB\n",
+            printf("%s %s r_%llu, p_%llu, %lluB\n",
                     opstr,
                     inst.getport.c_call ? "#c_call": "",
                     inst.getport.reg_dest, inst.getport.port, inst.getport.bytes);
@@ -1701,7 +1701,7 @@ INLINE void print_ir_inst(IRinst inst) {
 		case IROP_FTOI:
 		case IROP_ITOI:
         case IROP_FTOB:
-            printf("%s r_%lu %luB, r_%lu %luB\n",
+            printf("%s r_%llu %lluB, r_%llu %lluB\n",
                     opstr,
                     inst.typeconv.to_reg,
                     inst.typeconv.to_bytes,
@@ -3054,10 +3054,10 @@ void print_ast_expr(AST *expr, int indent) {
                     case TOKEN_HEXLIT:
                     case TOKEN_BINLIT:
                     case TOKEN_UINTLIT:
-                        printf("%lu\n", a->uinteger);
+                        printf("%llu\n", a->uinteger);
                         break;
                     case TOKEN_INTLIT:
-                        printf("%lu\n", a->integer);
+                        printf("%llu\n", a->integer);
                         break;
                     case TOKEN_FLOATLIT:
                         printf("%f\n", a->floating);
@@ -3225,13 +3225,13 @@ void ir_run(Job *jp, int procid) {
         imask = 0;
 
         /*
-        printf("%lu: ", pc);
+        printf("%llu: ", pc);
         print_ir_inst(inst);
         */
 
         switch(inst.opcode) {
             default:
-                printf("jcc: error: bad instruction at '%lu'\n", pc);
+                printf("jcc: error: bad instruction at '%llu'\n", pc);
                 UNREACHABLE;
             case IROP_LABEL:
             case IROP_NOOP:
@@ -3673,7 +3673,7 @@ void ir_gen_array_literal(Job *jp, AST_array_literal *ast_array) {
                 }
 
                 ir_gen_expr(jp, elements->expr);
-                printf("jp->reg_alloc = %lu in generation of array literal\n", jp->reg_alloc);
+                printf("jp->reg_alloc = %llu in generation of array literal\n", jp->reg_alloc);
 
                 inst =
                     (IRinst) {
@@ -6196,7 +6196,7 @@ void job_runner(char *src, char *src_path) {
 
                             if(cur_proc_type->proc.ret.n != arrlen(jp->expr_list))
                                 job_error(jp, ast_return->base.loc,
-                                        "mismatch in number of return values when returning from '%s', expected '%lu' got '%lu'",
+                                        "mismatch in number of return values when returning from '%s', expected '%llu' got '%llu'",
                                         cur_proc_type->proc.name, cur_proc_type->proc.ret.n, arrlen(jp->expr_list));
 
                             if(jp->state == JOB_STATE_ERROR) {
@@ -6304,7 +6304,7 @@ void job_runner(char *src, char *src_path) {
                             {
                                 printf("\nport dump\n");
                                 for(int i = 0; i < arrlen(jp->interp.ports); ++i) {
-                                    printf("port %i: { .i = %lu, .f32 = %f, .f64 = %g }\n",
+                                    printf("port %i: { .i = %llu, .f32 = %f, .f64 = %g }\n",
                                             i,
                                             jp->interp.ports[i].integer,
                                             jp->interp.ports[i].floating32,
@@ -7545,7 +7545,7 @@ void typecheck_expr(Job *jp) {
                         case TYPE_KIND_INT:
                             v->kind = VALUE_KIND_INT;
                             v->val.integer = (s64)(jp->interp.ports[i].integer);
-                            printf("~~~~~~ %lu\n", v->val.integer);
+                            printf("~~~~~~ %llu\n", v->val.integer);
                             break;
                         case TYPE_KIND_U8:
                         case TYPE_KIND_U16:
@@ -8303,7 +8303,7 @@ void print_sym(Sym sym) {
     printf("declared_by: %d\n", sym.declared_by);
     printf("constant: %s\n", sym.constant ? "true" : "false");
     printf("procid: %i\n", sym.procid);
-    printf("segment_offset: %lu\n", sym.segment_offset);
+    printf("segment_offset: %llu\n", sym.segment_offset);
     printf("type: %s\n", global_type_to_str(sym.type));
     printf("value: %p\n", (void *)sym.value);
 }
