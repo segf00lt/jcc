@@ -1523,14 +1523,14 @@ INLINE void print_ir_inst(IRinst inst) {
             if(inst.arith.immediate) {
                 if(inst.opcode >= IROP_FADD) {
                     if(inst.arith.operand_bytes[2] == 8) {
-                        printf("%s r_%lu %luB, r_%lu %luB, %g %luB\n",
+                        printf("%s f_%lu %luB, f_%lu %luB, %g %luB\n",
                                 opstr,
                                 inst.arith.reg[0], inst.arith.operand_bytes[0],
                                 inst.arith.reg[1], inst.arith.operand_bytes[1],
                                 inst.arith.imm.floating64, inst.arith.operand_bytes[2]
                               );
                     } else {
-                        printf("%s r_%lu %luB, r_%lu %luB, %f %luB\n",
+                        printf("%s f_%lu %luB, f_%lu %luB, %f %luB\n",
                                 opstr,
                                 inst.arith.reg[0], inst.arith.operand_bytes[0],
                                 inst.arith.reg[1], inst.arith.operand_bytes[1],
@@ -1546,12 +1546,21 @@ INLINE void print_ir_inst(IRinst inst) {
                           );
                 }
             } else {
-                printf("%s r_%lu %luB, r_%lu %luB, r_%lu %luB\n",
-                        opstr,
-                        inst.arith.reg[0], inst.arith.operand_bytes[0],
-                        inst.arith.reg[1], inst.arith.operand_bytes[1],
-                        inst.arith.reg[2], inst.arith.operand_bytes[2]
-                        );
+                if(inst.opcode >= IROP_FADD) {
+                    printf("%s f_%lu %luB, f_%lu %luB, f_%lu %luB\n",
+                            opstr,
+                            inst.arith.reg[0], inst.arith.operand_bytes[0],
+                            inst.arith.reg[1], inst.arith.operand_bytes[1],
+                            inst.arith.reg[2], inst.arith.operand_bytes[2]
+                          );
+                } else {
+                    printf("%s r_%lu %luB, r_%lu %luB, r_%lu %luB\n",
+                            opstr,
+                            inst.arith.reg[0], inst.arith.operand_bytes[0],
+                            inst.arith.reg[1], inst.arith.operand_bytes[1],
+                            inst.arith.reg[2], inst.arith.operand_bytes[2]
+                          );
+                }
             }
             break;
         case IROP_NOT: case IROP_NEG:
@@ -1598,12 +1607,12 @@ INLINE void print_ir_inst(IRinst inst) {
             if(inst.load.immediate) {
                 if(inst.opcode == IROP_LOADF) {
                     if(inst.load.bytes == 8) {
-                        printf("%s r_%lu, %g, %luB\n",
+                        printf("%s f_%lu, %g, %luB\n",
                                 opstr,
                                 inst.load.reg_dest, inst.load.imm.floating64, inst.load.bytes
                               );
                     } else {
-                        printf("%s r_%lu, %f, %luB\n",
+                        printf("%s f_%lu, %f, %luB\n",
                                 opstr,
                                 inst.load.reg_dest, inst.load.imm.floating32, inst.load.bytes
                               );
@@ -1620,10 +1629,17 @@ INLINE void print_ir_inst(IRinst inst) {
                         inst.load.reg_dest, inst.load.reg_src_ptr, inst.load.offset_reg, inst.load.bytes
                       );
             } else {
-                printf("%s r_%lu, ptr_r_%lu, %luB\n",
-                        opstr,
-                        inst.load.reg_dest, inst.load.reg_src_ptr, inst.load.bytes
-                      );
+                if(inst.opcode == IROP_LOADF) {
+                    printf("%s f_%lu, ptr_r_%lu, %luB\n",
+                            opstr,
+                            inst.load.reg_dest, inst.load.reg_src_ptr, inst.load.bytes
+                          );
+                } else {
+                    printf("%s r_%lu, ptr_r_%lu, %luB\n",
+                            opstr,
+                            inst.load.reg_dest, inst.load.reg_src_ptr, inst.load.bytes
+                          );
+                }
             }
 			break;
     	case IROP_STOR:
@@ -1653,17 +1669,26 @@ INLINE void print_ir_inst(IRinst inst) {
                         inst.stor.reg_dest_ptr, inst.stor.offset_reg, inst.stor.reg_src, inst.stor.bytes
                       );
             } else {
-                printf("%s ptr_r_%lu, r_%lu, %luB\n",
-                        opstr,
-                        inst.stor.reg_dest_ptr, inst.stor.reg_src, inst.stor.bytes
-                      );
+                if(inst.opcode == IROP_STORF) {
+                    printf("%s ptr_r_%lu, f_%lu, %luB\n",
+                            opstr,
+                            inst.stor.reg_dest_ptr, inst.stor.reg_src, inst.stor.bytes
+                          );
+                } else {
+                    printf("%s ptr_r_%lu, r_%lu, %luB\n",
+                            opstr,
+                            inst.stor.reg_dest_ptr, inst.stor.reg_src, inst.stor.bytes
+                          );
+                }
             }
 			break;
 		case IROP_GETLOCAL:
 		case IROP_GETGLOBAL:
+            printf("%s r_%lu, addr %lu, %luB\n", opstr, inst.getvar.reg_dest, inst.getvar.offset, inst.getvar.bytes);
+			break;
 		case IROP_GETLOCALF:
 		case IROP_GETGLOBALF:
-            printf("%s r_%lu, addr %lu, %luB\n", opstr, inst.getvar.reg_dest, inst.getvar.offset, inst.getvar.bytes);
+            printf("%s f_%lu, addr %lu, %luB\n", opstr, inst.getvar.reg_dest, inst.getvar.offset, inst.getvar.bytes);
 			break;
         case IROP_SETLOCAL:
         case IROP_SETGLOBAL:
@@ -1680,28 +1705,59 @@ INLINE void print_ir_inst(IRinst inst) {
                 else
                     printf("%s addr %lu, %f, %luB\n",opstr,inst.setvar.offset,inst.setvar.imm.floating32,inst.setvar.bytes);
             } else {
-                printf("%s addr %lu, r_%lu, %luB\n", opstr, inst.setvar.offset, inst.setvar.reg_src, inst.setvar.bytes);
+                printf("%s addr %lu, f_%lu, %luB\n", opstr, inst.setvar.offset, inst.setvar.reg_src, inst.setvar.bytes);
             }
 			break;
 		case IROP_SETARG: case IROP_SETRET:
-		case IROP_SETARGF: case IROP_SETRETF:
             printf("%s %s p_%lu, r_%lu, %luB\n",
                     opstr,
                     inst.setport.c_call ? "#c_call": "",
                     inst.setport.port, inst.setport.reg_src, inst.setport.bytes);
 			break;
+		case IROP_SETARGF: case IROP_SETRETF:
+            printf("%s %s p_%lu, f_%lu, %luB\n",
+                    opstr,
+                    inst.setport.c_call ? "#c_call": "",
+                    inst.setport.port, inst.setport.reg_src, inst.setport.bytes);
+			break;
         case IROP_GETARG: case IROP_GETRET:
-        case IROP_GETARGF: case IROP_GETRETF:
             printf("%s %s r_%lu, p_%lu, %luB\n",
                     opstr,
                     inst.getport.c_call ? "#c_call": "",
                     inst.getport.reg_dest, inst.getport.port, inst.getport.bytes);
             break;
+        case IROP_GETARGF: case IROP_GETRETF:
+            printf("%s %s f_%lu, p_%lu, %luB\n",
+                    opstr,
+                    inst.getport.c_call ? "#c_call": "",
+                    inst.getport.reg_dest, inst.getport.port, inst.getport.bytes);
+            break;
 		case IROP_ITOF:
+            printf("%s f_%lu %luB, r_%lu %luB\n",
+                    opstr,
+                    inst.typeconv.to_reg,
+                    inst.typeconv.to_bytes,
+                    inst.typeconv.from_reg,
+                    inst.typeconv.from_bytes);
+			break;
 		case IROP_FTOI:
+            printf("%s r_%lu %luB, f_%lu %luB\n",
+                    opstr,
+                    inst.typeconv.to_reg,
+                    inst.typeconv.to_bytes,
+                    inst.typeconv.from_reg,
+                    inst.typeconv.from_bytes);
+			break;
 		case IROP_ITOI:
-        case IROP_FTOB:
             printf("%s r_%lu %luB, r_%lu %luB\n",
+                    opstr,
+                    inst.typeconv.to_reg,
+                    inst.typeconv.to_bytes,
+                    inst.typeconv.from_reg,
+                    inst.typeconv.from_bytes);
+			break;
+        case IROP_FTOB:
+            printf("%s r_%lu %luB, f_%lu %luB\n",
                     opstr,
                     inst.typeconv.to_reg,
                     inst.typeconv.to_bytes,
@@ -8314,13 +8370,13 @@ void print_sym(Sym sym) {
 // structs
 // dot operator on structs
 // output assembly
-// directives (#load, #import, #run, #assert, #assert_static etc)
+// directives (#load, #import, #assert, etc)
 // varargs and runtime type info
 int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/rule110.jpl";
+    char *path = "test/test_floats.jpl";
     char *test_src_file = LoadFileText(path);
 
     job_runner(test_src_file, path);
