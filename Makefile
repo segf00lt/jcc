@@ -9,6 +9,7 @@ ifeq ($(UNAME_S),Darwin)
 endif
 
 all:
+	ctags -w *.c *.h
 	$(CC) $(FLAGS) $(TARGET) -o jcc $(LDFLAGS)
 
 #test: all
