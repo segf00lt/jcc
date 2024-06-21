@@ -1193,7 +1193,7 @@ Sym* job_scope_lookup(Job *jp, char *name) {
 
 void job_scope_enter(Job *jp, Sym *sym) {
     assert(arrlen(jp->scopes) > 0);
-    printf("job %i accessing scope %lu\n", jp->id, arrlen(jp->scopes) - 1);
+    printf("job %i accessing scope %li\n", jp->id, arrlen(jp->scopes) - 1);
     Scope scope = arrlast(jp->scopes);
     shput(scope, sym->name, sym);
     arrlast(jp->scopes) = scope;
