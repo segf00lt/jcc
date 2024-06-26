@@ -23,3 +23,5 @@ vgcore*
 a.out
 .project.gf
 rule110
+.vscode/launch.json
+.vscode/settings.json

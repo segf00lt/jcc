@@ -1,5 +1,5 @@
 CC = clang
-FLAGS = -ggdb -O0 -Wall -Wpedantic -Werror -Wno-switch -Wno-comment -D'_UNITY_BUILD_'
+FLAGS = -g -O0 -Wall -Wpedantic -Werror -Wno-switch -Wno-comment -D'_UNITY_BUILD_'
 TARGET = jcc.c
 LDFLAGS = -L'/usr/local/lib/' -lraylib -lm
 
