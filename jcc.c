@@ -590,7 +590,8 @@ struct AST_run_directive {
 
 struct AST_call {
     AST base;
-    //TODO have a type_annotation for use within expressions and the list for multiple assignment/initialization
+    Type *type_annotation; /* for use in expressions */
+    Value *value_annotation;
     Type **type_annotation_list; /* because callables can return multiple values */
     Value **value_annotation_list;
     int n_types_returned;
@@ -1308,14 +1309,20 @@ Arr(char) _type_to_str(Type *t, Arr(char) tmp_buf) {
         tmp_buf = _type_to_str(t->pointer.to, tmp_buf);
     } else if(t->kind == TYPE_KIND_PROC) {
         arrpush(tmp_buf, '(');
-        for(u64 i = 0; i < t->proc.param.n; ++i) {
-            Type *param_type = t->proc.param.types[i];
-            tmp_buf = _type_to_str(param_type, tmp_buf);
-            arrpush(tmp_buf, ',');
-            arrpush(tmp_buf, ' ');
+        if(t->proc.param.n == 0) {
+            char *p = arraddnptr(tmp_buf, token_keyword_lengths[TOKEN_VOID - TOKEN_INVALID - 1] + 2);
+            char cpy[] = "void) ";
+            for(int i = 0; i < STRLEN(cpy); ++i) p[i] = cpy[i]; 
+        } else {
+            for(u64 i = 0; i < t->proc.param.n; ++i) {
+                Type *param_type = t->proc.param.types[i];
+                tmp_buf = _type_to_str(param_type, tmp_buf);
+                arrpush(tmp_buf, ',');
+                arrpush(tmp_buf, ' ');
+            }
+            tmp_buf[arrlen(tmp_buf) - 2] = ')';
         }
 
-        tmp_buf[arrlen(tmp_buf) - 2] = ')';
         arrpush(tmp_buf, '-');
         arrpush(tmp_buf, '>');
         arrpush(tmp_buf, ' ');
@@ -1848,7 +1855,9 @@ AST* parse_structblock(Job *jp, int *n) {
         statement_list->next = parse_anonstruct(jp);
         if(!statement_list->next) statement_list->next = parse_vardecl(jp);
 
-        assert(statement_list->next); //TODO syntax error
+        if(!statement_list->next) {
+            job_error(jp, lexer->loc, "illegal statement in declarative block");
+        }
 
         if(jp->state == JOB_STATE_ERROR) {
             return NULL;
@@ -1992,9 +2001,6 @@ AST* parse_structdecl(Job *jp) {
 }
 
 AST* parse_procdecl(Job *jp) {
-    //TODO dont count void return type
-    //
-    // in fact maybe void should only be allowed next to * as in *void
     Lexer *lexer = jp->lexer;
     Lexer unlex = *lexer;
 
@@ -2065,28 +2071,34 @@ AST* parse_procdecl(Job *jp) {
     t = lex(lexer);
 
     if(t != '{') {
-        *lexer = unlex;
         int n_rets = 0;
         AST_retdecl head;
         AST_retdecl *ret_list = &head;
 
-        while(true) {
-            ret_list->next = (AST_retdecl*)job_alloc_ast(jp, AST_KIND_retdecl);
-            ret_list->next->expr = parse_expr(jp);
-            ret_list = ret_list->next;
-            ret_list->index = n_rets;
+        if(t == TOKEN_VOID) {
+            node->n_rets = 0;
             unlex = *lexer;
             t = lex(lexer);
+        } else {
+            *lexer = unlex;
+            while(true) {
+                ret_list->next = (AST_retdecl*)job_alloc_ast(jp, AST_KIND_retdecl);
+                ret_list->next->expr = parse_expr(jp);
+                ret_list = ret_list->next;
+                ret_list->index = n_rets;
+                unlex = *lexer;
+                t = lex(lexer);
 
-            if(ret_list->expr) ++n_rets;
+                if(ret_list->expr) ++n_rets;
 
-            if(t != ',') {
-                break;
+                if(t != ',') {
+                    break;
+                }
             }
-        }
 
-        node->rets = head.next;
-        node->n_rets = n_rets;
+            node->rets = head.next;
+            node->n_rets = n_rets;
+        }
     }
 
 
@@ -2142,6 +2154,8 @@ AST* parse_procblock(Job *jp) {
         return NULL;
     }
 
+    Pool_save save[AST_KIND_MAX] = {0};
+    job_ast_allocator_to_save(jp, save);
     AST_block *block = (AST_block*)job_alloc_ast(jp, AST_KIND_block);
 
     AST_statement head = {0};
@@ -2159,6 +2173,7 @@ AST* parse_procblock(Job *jp) {
         }
 
         if(jp->state == JOB_STATE_ERROR) {
+            job_ast_allocator_from_save(jp, save);
             return NULL;
         }
 
@@ -2247,9 +2262,11 @@ AST* parse_controlflow(Job *jp) {
                         if(branch->condition == NULL) job_error(jp, branch->base.loc, "else-if statement missing condition");
                         branch->body = body_func(jp);
                     } else {
-                        //TODO some error checking here for empty body
                         *lexer = unlex;
                         branch->branch = body_func(jp);
+                        if(!branch->branch) {
+                            job_error(jp, unlex.loc, "else statement has no body");
+                        }
                     }
 
                     if(node->body == NULL) job_error(jp, node->base.loc, "missing body");
@@ -2530,6 +2547,10 @@ AST* parse_paramdecl(Job *jp) {
     Lexer lexer_reset = *lexer;
 
     Token t = lex(lexer);
+
+    if(t == TOKEN_VOID) {
+        return NULL;
+    }
 
     if(t != TOKEN_IDENT) {
         *lexer = lexer_reset;
@@ -5408,13 +5429,13 @@ void ir_gen_expr(Job *jp, AST *ast) {
             // to this memory in the first argument register %rdi. Upon returning the function places
             // this same address in %rax
 
-            if(ast_call->n_types_returned > 1)
+            if(ast_call->n_types_returned > 1) {
                 UNIMPLEMENTED;
+            }
 
-            if(ast_call->value_annotation_list) {
-                //UNREACHABLE;
-                Type *result_type = ast_call->type_annotation_list[0];
-                Value *result_value = ast_call->value_annotation_list[0];
+            if(ast_call->value_annotation) {
+                Type *result_type = ast_call->type_annotation;
+                Value *result_value = ast_call->value_annotation;
 
                 assert(result_type->kind != TYPE_KIND_VOID);
 
@@ -6207,17 +6228,16 @@ void job_runner(char *src, char *src_path) {
                             }
 
                             Type *type_left = ((AST_expr*)(ast_statement->left))->type_annotation;
-                            Type *type_right;
+                            Type *type_right = ast_statement->right
+                                ? ((AST_expr*)(ast_statement->right))->type_annotation
+                                : NULL;
                             //TODO this is horrible
                             //     maybe call should have a type_annotation and a type_annotation_list
                             //     the list is only used in multi-assign
-                            if(ast_statement->right->kind == AST_KIND_call) {
-                                type_right = ((AST_call*)(ast_statement->right))->type_annotation_list[0];
-                            } else {
-                                type_right = ast_statement->right
-                                    ? ((AST_expr*)(ast_statement->right))->type_annotation
-                                    : NULL;
-                            }
+                            //if(ast_statement->right->kind == AST_KIND_call) {
+                            //    type_right = ((AST_call*)(ast_statement->right))->type_annotation_list[0];
+                            //} else {
+                            //}
                             Type *t = typecheck_assign(jp, type_left, type_right, ast_statement->assign_op);
 
                             if(t->kind == TYPE_KIND_VOID)
@@ -6481,7 +6501,6 @@ void job_runner(char *src, char *src_path) {
         }
     }
 
-    /*
     if(!had_error) {
         for(int i = 0; i < shlen(global_scope); ++i) {
             if(global_scope[i].value) {
@@ -6490,7 +6509,6 @@ void job_runner(char *src, char *src_path) {
             }
         }
     }
-    */
 
     arrfree(job_queue);
     arrfree(job_queue_next);
@@ -7525,14 +7543,14 @@ void typecheck_expr(Job *jp) {
             if(is_call_expr) { /* if the only thing in the expr is a call */
                 assert(arrlen(type_stack) == 0);
                 callp->n_types_returned = proc_type->proc.ret.n;
+                callp->type_annotation = proc_type->proc.ret.types[0];
                 callp->type_annotation_list = job_alloc_scratch(jp, sizeof(Type*) * proc_type->proc.ret.n);
                 for(int i = 0; i < proc_type->proc.ret.n; ++i) {
                     callp->type_annotation_list[i] = proc_type->proc.ret.types[i];
                 }
             } else {
                 callp->n_types_returned = 1;
-                callp->type_annotation_list = job_alloc_scratch(jp, sizeof(Type*));
-                callp->type_annotation_list[0] = proc_type->proc.ret.types[0];
+                callp->type_annotation = proc_type->proc.ret.types[0];
                 arrpush(type_stack, proc_type->proc.ret.types[0]);
             }
 
@@ -7628,9 +7646,9 @@ void typecheck_expr(Job *jp) {
                     for(int i = 0; i < proc_type->proc.ret.n; ++i) {
                         callp->value_annotation_list[i] = return_value_array[i];
                     }
+                    callp->value_annotation = return_value_array[0];
                 } else {
-                    callp->value_annotation_list = job_alloc_scratch(jp, sizeof(Value*));
-                    callp->value_annotation_list[0] = return_value_array[0];
+                    callp->value_annotation = return_value_array[0];
                     arrpush(value_stack, return_value_array[0]);
                 }
 
@@ -8246,12 +8264,12 @@ void typecheck_vardecl(Job *jp) {
 
     if(initialize) {
         //TODO multi-identifier declarations so we can initialize from a function that returns multiple values
-        if(ast->init->kind == AST_KIND_call) {
-            init_type = ((AST_call*)ast->init)->type_annotation_list[0];
-        } else {
-            init_value = ((AST_expr*)ast->init)->value_annotation;
-            init_type = ((AST_expr*)ast->init)->type_annotation;
-        }
+        //if(ast->init->kind == AST_KIND_call) {
+        //    init_type = ((AST_call*)ast->init)->type_annotation_list[0];
+        //} else {
+        //}
+        init_value = ((AST_expr*)ast->init)->value_annotation;
+        init_type = ((AST_expr*)ast->init)->type_annotation;
 
         if(!infer_type) {
             Type *t = typecheck_assign(jp, bind_type, init_type, '=');
@@ -8376,7 +8394,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/test_floats.jpl";
+    char *path = "test/rule110.jpl";
     char *test_src_file = LoadFileText(path);
 
     job_runner(test_src_file, path);

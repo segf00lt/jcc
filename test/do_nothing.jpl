@@ -1,0 +1,15 @@
+proc do_nothing1(void) void {
+    x: int;
+}
+
+proc do_nothing2() void {
+    x: int;
+}
+
+proc do_nothing3() {
+    x: int;
+}
+
+proc do_nothing4(void) {
+    x: int;
+}

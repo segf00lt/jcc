@@ -1,7 +1,7 @@
 
 #run rule110(#run fib(#run fib(8)));
 
-proc rule110(N: int) {
+proc rule110(N: int) void {
     buf2: [D]bool = ---;
 
     buf1: [(buf2.count / 2) + (D >> 1)]bool = ---;
@@ -58,10 +58,10 @@ proc rule110(N: int) {
 
         while tape_loop: i < D {
 
-            if N == 7 {
-                N--;
-                continue generation_loop;
-            }
+            //if N == 7 {
+            //    N--;
+            //    continue generation_loop;
+            //}
 
             left := i - 1;
             if i == 0 left = D - 1;
@@ -71,9 +71,9 @@ proc rule110(N: int) {
             next_tape[i] = rules[pat];
             i++;
 
-            if i == D && N == 5 {
-                break generation_loop;
-            }
+            //if i == D && N == 5 {
+            //    break generation_loop;
+            //}
         }
 
         tmp := tape;

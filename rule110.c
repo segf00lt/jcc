@@ -18,7 +18,8 @@ int main(void) {
 
     bool *tape = buf1;
     bool *next_tape = buf2;
-    int N = fib(21) + fib(8);
+    int N = fib(fib(8)) + fib(8);
+    printf("%i\n",N);
     // 0 0 1 1 1 0 0 1 1 0 0 0 0 1 1 1 0 0 1 1 0 1 1 1 1 1 0 1 0 0
     // 1 0 0 0 0 0 1 1 1 0 1 1 0 0 0 0 0 1 0 0 1 1 0 1 1 1 1 1 0 1
     //
