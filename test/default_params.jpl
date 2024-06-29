@@ -1,0 +1,16 @@
+#run fib();
+#run fib(5);
+
+#run test(b=2.0, a=5, c=#run fib());
+
+proc test(a: int, b: float, c: int = 4, d: float = 5.0) float {
+    a += c;
+    b += d;
+
+    return cast(float)a + b;
+}
+
+proc fib(n: int = 7) int {
+    if n <= 1 return n;
+    return fib(n - 1) + fib(n - 2);
+}

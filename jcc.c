@@ -1141,7 +1141,7 @@ AST* job_alloc_ast(Job *jp, ASTkind kind) {
 #undef X
     }
     ptr->kind = kind;
-    ptr->loc = jp->lexer->loc;
+    if(jp->lexer) ptr->loc = jp->lexer->loc;
     return ptr;
 }
 
@@ -5404,6 +5404,9 @@ void ir_gen_expr(Job *jp, AST *ast) {
         } else if(kind == AST_KIND_array_literal) {
             UNIMPLEMENTED;
         } else if(kind == AST_KIND_call) {
+            Pool_save ast_save[AST_KIND_MAX] = {0};
+            job_ast_allocator_to_save(jp, ast_save);
+
             AST_call *ast_call = (AST_call*)cur_ast;
             IRinst inst = {0};
 
@@ -5488,11 +5491,14 @@ void ir_gen_expr(Job *jp, AST *ast) {
             Arr(AST_param*) params = NULL;
             Arr(u64) nested_call_param_offsets = NULL;
 
-            arrsetcap(params, ast_call->n_params);
-            arrsetcap(nested_call_param_offsets, ast_call->n_params);
+            arrsetlen(params, callee_type->proc.param.n);
+            arrsetlen(nested_call_param_offsets, callee_type->proc.param.n);
+            bool params_passed[arrlen(params)];
+            for(int i = 0; i < STATICARRLEN(params_passed); ++i) params_passed[i] = false;
 
             for(AST_param *p = ast_call->params; p; p = p->next) {
                 p->has_nested_call = has_nested_call(p->value);
+
                 if(p->name) {
                     for(u64 i = 0; i < callee_type->proc.param.n; ++i) {
                         if(!strcmp(p->name, callee_type->proc.param.names[i])) {
@@ -5500,8 +5506,30 @@ void ir_gen_expr(Job *jp, AST *ast) {
                             break;
                         }
                     }
+                } else {
+                    p->name = callee_type->proc.param.names[p->index];
                 }
-                arrins(params, p->index, p);
+
+                params[p->index] = p;
+                params_passed[p->index] = true;
+            }
+
+            /* handle default parameters*/
+
+            //TODO maybe we should have a helper function to generate the IR for a value of a given type
+
+            for(int i = 0; i < callee_type->proc.param.n; ++i) {
+                if(params_passed[i]) continue;
+                AST_param *p = (AST_param *)job_alloc_ast(jp, AST_KIND_param);
+                p->index = i;
+                p->name = callee_type->proc.param.names[i];
+                p->type_annotation = callee_type->proc.param.types[i];
+                p->value_annotation = callee_type->proc.param.values[i];
+                p->value = job_alloc_ast(jp, AST_KIND_atom);
+                ((AST_atom*)(p->value))->type_annotation = p->type_annotation; //TODO this is a terrible hack
+                ((AST_atom*)(p->value))->value_annotation = p->value_annotation;
+                params[i] = p;
+                params_passed[i] = true;
             }
 
             //TODO allocate space for non scalar (struct, array) return values here
@@ -5769,6 +5797,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
             arrfree(params);
             arrfree(nested_call_param_offsets);
+            job_ast_allocator_from_save(jp, ast_save);
         } else {
             UNIMPLEMENTED;
         }
