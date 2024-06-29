@@ -1,0 +1,15 @@
+proc main() {
+    x := 24.0;
+
+    y := test(cast(int)x) + fib(3);
+
+}
+
+proc test(x: int) void {
+    x += 23189;
+}
+
+proc fib(n: int) int {
+    if n <= 1 return n;
+    return fib(n - 1) + fib(n - 2);
+}

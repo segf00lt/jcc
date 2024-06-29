@@ -5,7 +5,7 @@ LDFLAGS = -L'/usr/local/lib/' -lraylib -lm
 
 UNAME_S = $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
-	FLAGS += -Wno-format
+	FLAGS += -Wno-format -fsanitize=address
 endif
 
 all:

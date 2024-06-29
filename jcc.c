@@ -6231,13 +6231,6 @@ void job_runner(char *src, char *src_path) {
                             Type *type_right = ast_statement->right
                                 ? ((AST_expr*)(ast_statement->right))->type_annotation
                                 : NULL;
-                            //TODO this is horrible
-                            //     maybe call should have a type_annotation and a type_annotation_list
-                            //     the list is only used in multi-assign
-                            //if(ast_statement->right->kind == AST_KIND_call) {
-                            //    type_right = ((AST_call*)(ast_statement->right))->type_annotation_list[0];
-                            //} else {
-                            //}
                             Type *t = typecheck_assign(jp, type_left, type_right, ast_statement->assign_op);
 
                             if(t->kind == TYPE_KIND_VOID)
@@ -7227,8 +7220,6 @@ void typecheck_expr(Job *jp) {
             AST_atom *atom = (AST_atom*)expr[pos][0];
             if(atom->token == TOKEN_IDENT) {
                 Sym *sym = NULL;
-                if(!strcmp(atom->text, "fib"))
-                    PASS;
                 sym = job_scope_lookup(jp, atom->text);
 
                 if(!sym) sym = global_scope_lookup(jp, atom->text);
@@ -7420,8 +7411,6 @@ void typecheck_expr(Job *jp) {
             Type *proc_type = arrpop(type_stack);
             arrsetlen(value_stack, arrlen(value_stack) - 1);
 
-            if(pos < arrlen(expr) - 1) assert(proc_type->proc.ret.n > 0);
-
             u8 params_passed[proc_type->proc.param.n];
             memset(params_passed, 0, proc_type->proc.param.n);
             for(int i = proc_type->proc.first_default_param; i < proc_type->proc.param.n; ++i)
@@ -7530,8 +7519,6 @@ void typecheck_expr(Job *jp) {
                 }
             }
 
-            if(jp->state == JOB_STATE_ERROR) return;
-
             bool is_call_expr = (callp->n_params == arrlen(type_stack) && pos == arrlen(expr) - 1);
 
             arrsetlen(type_stack, arrlen(type_stack) - callp->n_params);
@@ -7539,6 +7526,12 @@ void typecheck_expr(Job *jp) {
 
             //TODO make sure procedure return type is not void
             //     procedures that don't return anything must be alone in expressions
+
+            if(!is_call_expr && proc_type->proc.ret.n == 0) {
+                job_error(jp, callp->base.loc, "attempted to use void procedure in expression");
+            }
+
+            if(jp->state == JOB_STATE_ERROR) return;
 
             if(is_call_expr) { /* if the only thing in the expr is a call */
                 assert(arrlen(type_stack) == 0);
@@ -7641,15 +7634,17 @@ void typecheck_expr(Job *jp) {
                     return_value_array[i] = v;
                 }
 
-                if(is_call_expr) {
-                    callp->value_annotation_list = job_alloc_scratch(jp, sizeof(Value*) * proc_type->proc.ret.n);
-                    for(int i = 0; i < proc_type->proc.ret.n; ++i) {
-                        callp->value_annotation_list[i] = return_value_array[i];
+                if(proc_type->proc.ret.n > 0) {
+                    if(is_call_expr) {
+                        callp->value_annotation_list = job_alloc_scratch(jp, sizeof(Value*) * proc_type->proc.ret.n);
+                        for(int i = 0; i < proc_type->proc.ret.n; ++i) {
+                            callp->value_annotation_list[i] = return_value_array[i];
+                        }
+                        callp->value_annotation = return_value_array[0];
+                    } else {
+                        callp->value_annotation = return_value_array[0];
+                        arrpush(value_stack, return_value_array[0]);
                     }
-                    callp->value_annotation = return_value_array[0];
-                } else {
-                    callp->value_annotation = return_value_array[0];
-                    arrpush(value_stack, return_value_array[0]);
                 }
 
                 expr[pos][0] = (AST*)callp;
@@ -8394,7 +8389,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/rule110.jpl";
+    char *path = "test/default_params.jpl";
     char *test_src_file = LoadFileText(path);
 
     job_runner(test_src_file, path);
