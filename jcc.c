@@ -65,10 +65,12 @@
     X(paramdecl)                        \
     X(retdecl)                          \
     X(expr_list)                        \
+    X(member_list)                      \
     X(expr)                             \
     X(param)                            \
     X(atom)                             \
     X(array_literal)                    \
+    X(struct_literal)                   \
     X(call)                             \
 
 #define OPERATOR_PREC_TABLE             \
@@ -621,9 +623,18 @@ struct AST_array_literal {
     AST base;
     Type *type_annotation;
     Value *value_annotation;
-    int n;
+    int n_elements;
     AST *type;
     AST_expr_list *elements;
+};
+
+struct AST_struct_literal {
+    AST base;
+    Type *type_annotation;
+    Value *value_annotation;
+    int n_members;
+    char *name;
+    AST_member_list *members;
 };
 
 struct AST_atom {
@@ -640,6 +651,13 @@ struct AST_atom {
         char character;
         char *text;
     };
+};
+
+struct AST_member_list {
+    AST base;
+    char *name;
+    AST *value;
+    AST_member_list *next;
 };
 
 struct AST_expr_list {
@@ -972,6 +990,9 @@ AST*        parse_prefix(Job *jp);
 AST*        parse_postfix(Job *jp);
 AST*        parse_term(Job *jp);
 AST*        parse_call(Job *jp);
+AST*        parse_array_lit(Job *jp);
+AST*        parse_struct_lit(Job *jp);
+AST*        parse_rvalue(Job *jp);
 
 void*       global_alloc_scratch(size_t bytes);
 Sym*        global_scope_lookup(Job *jp, char *name);
@@ -2265,7 +2286,7 @@ AST* parse_controlflow(Job *jp) {
                         *lexer = unlex;
                         branch->branch = body_func(jp);
                         if(!branch->branch) {
-                            job_error(jp, unlex.loc, "else statement has no body");
+                            job_error(jp, lexer->loc, "else statement has no body");
                         }
                     }
 
@@ -2383,7 +2404,7 @@ AST* parse_statement(Job *jp) {
 
         if(t == '=' || (t >= TOKEN_PLUSEQUAL && t <= TOKEN_XOREQUAL)) {
             node->assign_op = t;
-            node->right = parse_expr(jp);
+            node->right = parse_rvalue(jp);
             t = lex(lexer);
             if(!is_lvalue(node->left)) job_error(jp, node->left->loc, "left hand side of assignment must be lvalue");
         } else if(t == TOKEN_PLUSPLUS || t == TOKEN_MINUSMINUS) {
@@ -2450,7 +2471,7 @@ AST* parse_statement(Job *jp) {
                     while(t != ';') {
                         expr_list->next = (AST_expr_list*)job_alloc_ast(jp, AST_KIND_expr_list);
                         expr_list = expr_list->next;
-                        expr_list->expr = parse_expr(jp);
+                        expr_list->expr = parse_rvalue(jp);
                         t = lex(lexer);
                     }
 
@@ -2504,7 +2525,7 @@ AST* parse_vardecl(Job *jp) {
             node->uninitialized = true;
         } else {
             *lexer = unlex;
-            node->init = parse_expr(jp);
+            node->init = parse_rvalue(jp);
         }
         t = lex(lexer);
     } else {
@@ -2526,7 +2547,7 @@ AST* parse_vardecl(Job *jp) {
                 node->uninitialized = true;
             } else {
                 *lexer = unlex;
-                node->init = parse_expr(jp);
+                node->init = parse_rvalue(jp);
                 if(node->init == NULL) job_error(jp, lexer->loc, "expected initializer expression");
             }
             t = lex(lexer);
@@ -2582,7 +2603,7 @@ AST* parse_paramdecl(Job *jp) {
     t = lex(lexer);
 
     if(t == '=') {
-        node->init = parse_expr(jp);
+        node->init = parse_rvalue(jp);
         unlex = *lexer;
         t = lex(lexer);
     }
@@ -2841,39 +2862,6 @@ AST* parse_term(Job *jp) {
             if(t != ')') job_error(jp, lexer->loc, "unbalanced parenthesis");
             node = (AST*)expr;
             break;
-            //TODO array literals cannot be used in expressions
-            //case '.':
-            //    t = lex(lexer);
-            //    if(t != '[')
-            //        job_error(jp, lexer->loc, "expected '[' after '.' to mark beginning of array literal");
-            //    if(jp->state == JOB_STATE_ERROR) return NULL;
-            //    // NOTE copypasta
-            //    {
-            //        AST_array_literal *array_lit = (AST_array_literal*)job_alloc_ast(jp, AST_KIND_array_literal);
-            //        AST_expr_list head = {0};
-            //        AST_expr_list *list = &head;
-            //        int n = 0;
-            //        while(true) {
-            //            list->next = (AST_expr_list*)job_alloc_ast(jp, AST_KIND_expr_list);
-            //            list->next->expr = parse_expr(jp);
-            //            list = list->next;
-            //            ++n;
-            //            t = lex(lexer);
-            //            if(t == ']') {
-            //                break;
-            //            } else if(t != ',') {
-            //                job_error(jp, lexer->loc, "expected ',' separating elements in array literal");
-            //                return NULL;
-            //            }
-            //        }
-            //        array_lit->n = n;
-            //        array_lit->elements = head.next;
-            //        array_lit->base.loc.col -= 2; /* NOTE hack to correct array literal column location */
-            //        node = (AST*)array_lit;
-            //        node->weight = 1;
-            //        return node;
-            //    }
-            //    break;
         case TOKEN_IDENT:
             {
                 Lexer unlex2 = *lexer; // terrible name I'm sorry
@@ -2936,48 +2924,6 @@ AST* parse_term(Job *jp) {
             node->weight = 1;
             break;
     }
-
-    //TODO array literals cannot be used in expressions
-    //unlex = *lexer;
-    //t = lex(lexer);
-
-    //if(t == '.') {
-    //    t = lex(lexer);
-    //    if(t != '[') {
-    //        job_error(jp, lexer->loc, "expected '[' after '.' to mark beginning of array literal");
-    //        return NULL;
-    //    }
-    //    // NOTE copypasta
-    //    {
-    //        AST_array_literal *array_lit = (AST_array_literal*)job_alloc_ast(jp, AST_KIND_array_literal);
-    //        array_lit->type = node;
-    //        AST_expr_list head = {0};
-    //        AST_expr_list *list = &head;
-    //        int n = 0;
-    //        while(true) {
-    //            list->next = (AST_expr_list*)job_alloc_ast(jp, AST_KIND_expr_list);
-    //            list->next->expr = parse_expr(jp);
-    //            list = list->next;
-    //            ++n;
-    //            t = lex(lexer);
-    //            if(t == ']') {
-    //                break;
-    //            } else if(t != ',') {
-    //                job_error(jp, lexer->loc, "expected ',' separating elements in array literal");
-    //                return NULL;
-    //            }
-    //        }
-    //        array_lit->n = n;
-    //        array_lit->elements = head.next;
-    //        array_lit->base.loc.col -= 2; /* NOTE hack to correct array literal column location */
-    //        node = (AST*)array_lit;
-    //        node->weight = 1;
-
-    //        return node;
-    //    }
-    //}
-
-    //*lexer = unlex;
 
     return node;
 }
@@ -3093,6 +3039,174 @@ AST* parse_call(Job *jp) {
     }
 
     node = (AST*)call_op;
+
+    return node;
+}
+
+AST* parse_array_lit(Job *jp) {
+    Lexer *lexer = jp->lexer;
+    Lexer unlex = *lexer;
+    Token t = lex(lexer);
+
+    AST *type_expr = NULL;
+
+    while(t != ';') {
+        if(t == ':') {
+            t = lex(lexer);
+
+            if(t != '[') {
+                *lexer = unlex;
+                return NULL;
+            }
+
+            break;
+        }
+
+        t = lex(lexer);
+    }
+
+    if(t != ';') {
+        *lexer = unlex;
+        type_expr = parse_expr(jp);
+        t = lex(lexer);
+        assert(t == ':');
+        t = lex(lexer);
+        assert(t == '[');
+    } else {
+        *lexer = unlex;
+        t = lex(lexer);
+
+        if(t != '[') {
+            *lexer = unlex;
+            return NULL;
+        }
+    }
+
+    AST_array_literal *array_ast = (AST_array_literal*)job_alloc_ast(jp, AST_KIND_array_literal);
+    array_ast->base.loc = lexer->loc;
+    array_ast->type = type_expr;
+
+    AST_expr_list head;
+    AST_expr_list *elem_list = &head;
+
+    while(t != ']') {
+        AST *elem = parse_rvalue(jp);
+
+        if(!elem) {
+            t = lex(lexer);
+            if(t != ']') {
+                job_error(jp, lexer->loc, "expected ']' at end of array literal");
+                return NULL;
+            }
+        }
+
+        elem_list->next = (AST_expr_list*)job_alloc_ast(jp, AST_KIND_expr_list);
+        elem_list = elem_list->next;
+        elem_list->expr = elem;
+
+        t = lex(lexer);
+        if(t != ',' && t != ']') {
+            job_error(jp, lexer->loc, "expected ']' or ','");
+            return NULL;
+        }
+
+        unlex = *lexer;
+        t = lex(lexer);
+
+        if(t != ']') {
+            array_ast->n_elements++;
+            *lexer = unlex;
+        }
+    }
+
+    array_ast->elements = head.next;
+
+    return (AST*)array_ast;
+}
+
+AST* parse_struct_lit(Job *jp) {
+    UNIMPLEMENTED;
+
+    Lexer *lexer = jp->lexer;
+    Lexer unlex = *lexer;
+    Token t = lex(lexer);
+
+    if(t != '{' && t != TOKEN_IDENT) {
+        *lexer = unlex;
+        return NULL;
+    }
+
+    char *struct_name = NULL;
+    char *s = lexer->text.s;
+    char *e = lexer->text.e;
+
+    if(t == TOKEN_IDENT) {
+        t = lex(lexer);
+
+        if(t != ':') {
+            *lexer = unlex;
+            return NULL;
+        }
+
+        t = lex(lexer);
+
+        if(t != '{') {
+            *lexer = unlex;
+            return NULL;
+        }
+
+        struct_name = job_alloc_text(jp, s, e);
+    }
+
+    AST_struct_literal *struct_ast = (AST_struct_literal*)job_alloc_ast(jp, AST_KIND_struct_literal);
+    struct_ast->name = struct_name;
+
+    unlex = *lexer;
+    t = lex(lexer);
+
+    AST_member_list head;
+    AST_member_list *list = &head;
+
+    while(t != '}') {
+        if(t != '.') {
+            job_error(jp, lexer->loc, "expected '.' to begin member");
+            return NULL;
+        }
+
+        unlex = *lexer;
+        t = lex(lexer);
+
+        if(t != TOKEN_IDENT) {
+            job_error(jp, lexer->loc, "expected identifier");
+            return NULL;
+        }
+
+        list->next = (AST_member_list*)job_alloc_ast(jp, AST_KIND_member_list);
+        list = list->next;
+        list->name = job_alloc_text(jp, lexer->text.s, lexer->text.e);
+        list->value = parse_rvalue(jp);
+
+        t = lex(lexer);
+
+        if(t != '}' && t != ',') {
+            job_error(jp, lexer->loc, "expected '}' or ','");
+            return NULL;
+        }
+
+        t = lex(lexer);
+    }
+
+    return (AST*)struct_ast;
+}
+
+AST* parse_rvalue(Job *jp) {
+    AST *node = parse_array_lit(jp);
+    //TODO if(!node) node = parse_struct_lit(jp);
+    if(!node) node = parse_expr(jp);
+
+    if(!node) {
+        job_error(jp, jp->lexer->loc, "expected array literal, struct literal or expression");
+    }
 
     return node;
 }
@@ -5410,11 +5524,15 @@ void ir_gen_expr(Job *jp, AST *ast) {
             AST_call *ast_call = (AST_call*)cur_ast;
             IRinst inst = {0};
 
-            for(int i = arrlen(type_stack) - 1; i >= 0; --i) {
-                printf("type_stack[%i] = %s\n", i, job_type_to_str(jp, type_stack[i]));
-            }
+            //for(int i = arrlen(type_stack) - 1; i >= 0; --i) {
+            //    printf("type_stack[%i] = %s\n", i, job_type_to_str(jp, type_stack[i]));
+            //}
 
             //TODO procedure pointers have to be differentiated from normal procedures
+            //
+            //     if the symbol is non constant then you know it is a procedure pointer
+            //     then we need a different IR instruction to load a procedure pointer so
+            //     that we can lower the load to assembly afterwards
 
 
             // NOTE
@@ -7355,58 +7473,58 @@ void typecheck_expr(Job *jp) {
 
             if(jp->state == JOB_STATE_ERROR)
                 break;
-        } else if(kind == AST_KIND_array_literal) {
-            if(arrlast(expr)[0]->kind != AST_KIND_array_literal)
-                job_error(jp, arrlast(expr)[0]->loc, "array literal must be alone in right hand side of expression");
+        //} else if(kind == AST_KIND_array_literal) {
+        //    if(arrlast(expr)[0]->kind != AST_KIND_array_literal)
+        //        job_error(jp, arrlast(expr)[0]->loc, "array literal must be alone in right hand side of expression");
 
-            AST_array_literal *array_lit = (AST_array_literal*)(expr[pos][0]);
-            Type *array_elem_type = NULL;
-            u64 i = 0;
+        //    AST_array_literal *array_lit = (AST_array_literal*)(expr[pos][0]);
+        //    Type *array_elem_type = NULL;
+        //    u64 i = 0;
 
-            if(array_lit->type) {
-                Type *t = arrpop(type_stack);
-                Value *t_value = arrpop(value_stack);
-                if(t->kind != TYPE_KIND_TYPE)
-                    job_error(jp, array_lit->type->loc,
-                            "expected type expression before array literal, not '%s'",
-                            job_type_to_str(jp, t));
-                array_elem_type = t_value->val.type;
-                i = arrlen(type_stack) - array_lit->n;
-            } else {
-                i = arrlen(type_stack) - array_lit->n;
-                array_elem_type = type_stack[i++];
-            }
+        //    if(array_lit->type) {
+        //        Type *t = arrpop(type_stack);
+        //        Value *t_value = arrpop(value_stack);
+        //        if(t->kind != TYPE_KIND_TYPE)
+        //            job_error(jp, array_lit->type->loc,
+        //                    "expected type expression before array literal, not '%s'",
+        //                    job_type_to_str(jp, t));
+        //        array_elem_type = t_value->val.type;
+        //        i = arrlen(type_stack) - array_lit->n_elements;
+        //    } else {
+        //        i = arrlen(type_stack) - array_lit->n_elements;
+        //        array_elem_type = type_stack[i++];
+        //    }
 
-            for(; i < arrlen(type_stack); ++i) {
-                Type *t = typecheck_assign(jp, array_elem_type, type_stack[i], '=');
-                if(t->kind == TYPE_KIND_VOID)
-                    job_error(jp, array_lit->base.loc,
-                            "cannot have element of type '%s' in array literal with element type '%s'",
-                            job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
-            }
-            Value **elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n);
-            i = arrlen(value_stack) - array_lit->n;
-            u64 j = 0;
-            while(j < array_lit->n)
-                elements[j++] = value_stack[i++];
-            Value *array_val = job_alloc_value(jp, VALUE_KIND_ARRAY);
-            array_val->val.array.n = array_lit->n;
-            array_val->val.array.type = array_elem_type;
-            array_val->val.array.elements = elements;
+        //    for(; i < arrlen(type_stack); ++i) {
+        //        Type *t = typecheck_assign(jp, array_elem_type, type_stack[i], '=');
+        //        if(t->kind == TYPE_KIND_VOID)
+        //            job_error(jp, array_lit->base.loc,
+        //                    "cannot have element of type '%s' in array literal with element type '%s'",
+        //                    job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
+        //    }
+        //    Value **elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n_elements);
+        //    i = arrlen(value_stack) - array_lit->n_elements;
+        //    u64 j = 0;
+        //    while(j < array_lit->n_elements)
+        //        elements[j++] = value_stack[i++];
+        //    Value *array_val = job_alloc_value(jp, VALUE_KIND_ARRAY);
+        //    array_val->val.array.n = array_lit->n_elements;
+        //    array_val->val.array.type = array_elem_type;
+        //    array_val->val.array.elements = elements;
 
-            arrsetlen(type_stack, arrlen(type_stack) - array_lit->n);
-            arrsetlen(value_stack, arrlen(value_stack) - array_lit->n);
+        //    arrsetlen(type_stack, arrlen(type_stack) - array_lit->n_elements);
+        //    arrsetlen(value_stack, arrlen(value_stack) - array_lit->n_elements);
 
-            Type *array_type = job_alloc_type(jp, TYPE_KIND_ARRAY);
-            array_type->array.of = array_elem_type;
-            array_type->array.count = array_lit->n;
-            array_type->array.n = array_lit->n;
+        //    Type *array_type = job_alloc_type(jp, TYPE_KIND_ARRAY);
+        //    array_type->array.of = array_elem_type;
+        //    array_type->array.count = array_lit->n_elements;
+        //    array_type->array.n = array_lit->n_elements;
 
-            array_lit->type_annotation = array_type;
-            array_lit->value_annotation = array_val;
+        //    array_lit->type_annotation = array_type;
+        //    array_lit->value_annotation = array_val;
 
-            arrpush(type_stack, array_type);
-            arrpush(value_stack, array_val);
+        //    arrpush(type_stack, array_type);
+        //    arrpush(value_stack, array_val);
         } else if(kind == AST_KIND_param) {
             AST_param *paramp = (AST_param*)expr[pos][0];
             Value *v = arrpop(value_stack);
@@ -7552,9 +7670,6 @@ void typecheck_expr(Job *jp) {
 
             arrsetlen(type_stack, arrlen(type_stack) - callp->n_params);
             arrsetlen(value_stack, arrlen(value_stack) - callp->n_params);
-
-            //TODO make sure procedure return type is not void
-            //     procedures that don't return anything must be alone in expressions
 
             if(!is_call_expr && proc_type->proc.ret.n == 0) {
                 job_error(jp, callp->base.loc, "attempted to use void procedure in expression");
@@ -8408,9 +8523,10 @@ void print_sym(Sym sym) {
 
 //TODO
 // dynamic arrays and views
-// C interop
+// pass arrays to procedures
 // structs
-// dot operator on structs
+// pass structs to procedures
+// C interop
 // output assembly
 // directives (#load, #import, #assert, etc)
 // varargs and runtime type info
@@ -8418,7 +8534,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/default_params.jpl";
+    char *path = "test/rule110.jpl";
     char *test_src_file = LoadFileText(path);
 
     job_runner(test_src_file, path);

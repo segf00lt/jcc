@@ -14,3 +14,6 @@ proc fib(n: int = 7) int {
     if n <= 1 return n;
     return fib(n - 1) + fib(n - 2);
 }
+
+arr := int:[1, 2, 3];
+bob := Bob:{ .i = 1, .x = 2, .t = 3};
