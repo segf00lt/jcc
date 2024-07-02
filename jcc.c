@@ -946,7 +946,7 @@ void        ir_gen_block(Job *jp, AST *ast);
 void        ir_gen_statement(Job *jp, AST_statement *ast_statement);
 void        ir_gen_logical_expr(Job *jp, AST *ast);
 void        ir_gen_expr(Job *jp, AST *ast);
-void        ir_gen_array_literal(Job *jp, AST_array_literal *ast_array);
+void        ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array);
 void        ir_run(Job *jp, int procid);
 
 Value*      atom_to_value(Job *jp, AST_atom *atom);
@@ -1140,9 +1140,11 @@ Type* job_alloc_type(Job *jp, Typekind kind) {
             ptr->bytes = 8;
             break;
         case TYPE_KIND_DYNAMIC_ARRAY:
-            ptr->bytes = 24;
+            ptr->bytes = 24; // needs to be bigger for allowing an allocator pointer
             break;
         case TYPE_KIND_ARRAY_VIEW:
+            ptr->bytes = 16;
+            break;
         case TYPE_KIND_ARRAY:
             ptr->bytes = 8;
             break;
@@ -3228,6 +3230,56 @@ AST* parse_rvalue(Job *jp) {
     return node;
 }
 
+void print_value(Value *v) {
+    if(!v) return;
+    switch(v->kind) {
+        case VALUE_KIND_NIL:
+            printf("nil");
+            break;
+        case VALUE_KIND_BOOL:
+            printf("%s", v->val.boolean ? "true" : "false");
+            break;
+        case VALUE_KIND_CHAR:
+            printf("'%c'", v->val.boolean);
+            break;
+        case VALUE_KIND_INT:
+            printf("%lli", v->val.integer);
+            break;
+        case VALUE_KIND_UINT:
+            printf("%llu", v->val.uinteger);
+            break;
+        case VALUE_KIND_FLOAT:
+            printf("%f", v->val.floating);
+            break;
+        case VALUE_KIND_TYPE:
+            printf("%s", global_type_to_str(v->val.type));
+            break;
+        case VALUE_KIND_STRING:
+            UNIMPLEMENTED;
+            break;
+        case VALUE_KIND_ARRAY:
+            printf("[ ");
+            if(v->val.array.n > 0) {
+                for(u64 i = 0; i < v->val.array.n - 1; ++i) {
+                    print_value(v->val.array.elements[i]);
+                    printf(", ");
+                }
+                print_value(v->val.array.elements[v->val.array.n - 1]);
+            }
+            printf(" ]");
+            break;
+        case VALUE_KIND_STRUCT:
+            UNIMPLEMENTED;
+            break;
+        case VALUE_KIND_PARAM:
+            UNIMPLEMENTED;
+            break;
+        case VALUE_KIND_TOKEN:
+            printf("%s", token_debug[v->val.token]);
+            break;
+    }
+}
+
 void print_ast_expr(AST *expr, int indent) {
     AST_expr *e;
     AST_atom *a;
@@ -3830,82 +3882,88 @@ void ir_run(Job *jp, int procid) {
  * assignment of array literals to arrays is more complicated when we consider
  * arrays of arbitrary dimension. You need to know about both sides of
  * the assignment
-void ir_gen_array_literal(Job *jp, AST_array_literal *ast_array) {
-    IRinst inst = {0};
-    Type *tp = ast_array->type_annotation;
+ *
+ * multidimensional arrays can only be static size and can only be assigned to static arrays
+ * arrays views can take unidimensional arrays to allow for functions that don't care what
+ * kind of memory is backing the array
+ */
+void ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array) {
+    UNIMPLEMENTED;
 
-    u64 last_dim = 0;
-
-    u64 bytes_to_alloc = 1;
-
-    while(tp->kind == TYPE_KIND_ARRAY) {
-        last_dim = tp->array.n;
-        bytes_to_alloc *= tp->array.n;
-        tp = tp->array.of;
-    }
-
-    bytes_to_alloc *= tp->bytes;
-    u64 element_bytes = tp->bytes;
-    u64 offset = arrlast(jp->local_offset);
-    jp->local_offset += bytes_to_alloc;
-
-    Arr(AST_array_literal*) ast_array_stack = NULL;
-    arrpush(ast_array_stack, ast_array);
-
-    if(TYPE_KIND_IS_NOT_SCALAR(tp->kind)) {
-        UNIMPLEMENTED;
-    } else {
-        while(arrlen(ast_array_stack) > 0) {
-            AST_array_literal *cur_ast = arrlast(ast_array_stack);
-
-            AST_expr_list *elements = cur_ast->elements;
-            int i = 0;
-            for(; i < cur_ast->n; ++i) {
-                if(elements == NULL) {
-                    inst =
-                        (IRinst) {
-                            .opcode = IROP_SETLOCAL,
-                            .setvar = {
-                                .offset = offset,
-                                .bytes = element_bytes,
-                                .immediate = true,
-                            },
-                        };
-                    arrpush(jp->instructions, inst);
-                    continue;
-                }
-
-                if(elements->expr->kind == AST_KIND_array_literal) {
-                    arrpush(ast_array_stack, (AST_array_literal*)(elements->expr));
-                    break;
-                }
-
-                ir_gen_expr(jp, elements->expr);
-                printf("jp->reg_alloc = %lu in generation of array literal\n", jp->reg_alloc);
-
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_SETLOCAL,
-                        .setvar = {
-                            .offset = offset,
-                            .reg_src = jp->reg_alloc,
-                            .bytes = element_bytes,
-                        },
-                    };
-
-                if(tp->kind >= TYPE_KIND_FLOAT && tp->kind <= TYPE_KIND_F64)
-                    inst.opcode = IROP_SETLOCALF;
-
-                arrpush(jp->instructions, inst);
-                elements = elements->next;
-            }
-
-            if(i == cur_ast->n)
-                arrsetlen(ast_array_stack, arrlen(ast_array_stack) - 1);
-        }
-    }
+//    IRinst inst = {0};
+//    Type *tp = ast_array->type_annotation;
+//
+//    //u64 last_dim = 0;
+//
+//    u64 bytes_to_alloc = 1;
+//
+//    while(tp->kind == TYPE_KIND_ARRAY) {
+//        //last_dim = tp->array.n;
+//        bytes_to_alloc *= tp->array.n;
+//        tp = tp->array.of;
+//    }
+//
+//    bytes_to_alloc *= tp->bytes;
+//    u64 element_bytes = tp->bytes;
+//    u64 offset = arrlast(jp->local_offset);
+//    jp->local_offset += bytes_to_alloc;
+//
+//    Arr(AST_array_literal*) ast_array_stack = NULL;
+//    arrpush(ast_array_stack, ast_array);
+//
+//    if(TYPE_KIND_IS_NOT_SCALAR(tp->kind)) {
+//        UNIMPLEMENTED;
+//    } else {
+//        while(arrlen(ast_array_stack) > 0) {
+//            AST_array_literal *cur_ast = arrlast(ast_array_stack);
+//
+//            AST_expr_list *elements = cur_ast->elements;
+//            int i = 0;
+//            for(; i < cur_ast->n_elements; ++i) {
+//                if(elements == NULL) {
+//                    inst =
+//                        (IRinst) {
+//                            .opcode = IROP_SETLOCAL,
+//                            .setvar = {
+//                                .offset = offset,
+//                                .bytes = element_bytes,
+//                                .immediate = true,
+//                            },
+//                        };
+//                    arrpush(jp->instructions, inst);
+//                    continue;
+//                }
+//
+//                if(elements->expr->kind == AST_KIND_array_literal) {
+//                    arrpush(ast_array_stack, (AST_array_literal*)(elements->expr));
+//                    break;
+//                }
+//
+//                ir_gen_expr(jp, elements->expr);
+//                printf("jp->reg_alloc = %lu in generation of array literal\n", jp->reg_alloc);
+//
+//                inst =
+//                    (IRinst) {
+//                        .opcode = IROP_SETLOCAL,
+//                        .setvar = {
+//                            .offset = offset,
+//                            .reg_src = jp->reg_alloc,
+//                            .bytes = element_bytes,
+//                        },
+//                    };
+//
+//                if(tp->kind >= TYPE_KIND_FLOAT && tp->kind <= TYPE_KIND_F64)
+//                    inst.opcode = IROP_SETLOCALF;
+//
+//                arrpush(jp->instructions, inst);
+//                elements = elements->next;
+//            }
+//
+//            if(i == cur_ast->n_elements)
+//                arrsetlen(ast_array_stack, arrlen(ast_array_stack) - 1);
+//        }
+//    }
 }
-*/
 
 INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
     IRinst inst = {0};
@@ -7541,6 +7599,14 @@ void typecheck_expr(Job *jp) {
             array_type->array.of = array_elem_type;
             array_type->array.count = array_lit->n_elements;
             array_type->array.n = array_lit->n_elements;
+            //TODO the allocated size of the array should be in the bytes field of the type
+            //     use a table for the size of the header
+            if(array_elem_type->kind == TYPE_KIND_ARRAY) {
+                array_type->array.element_stride =
+                    array_elem_type->array.element_stride * array_elem_type->array.n;
+            } else {
+                array_type->array.element_stride = array_elem_type->bytes;
+            }
 
             array_lit->type_annotation = array_type;
             array_lit->value_annotation = array_val;
@@ -8541,7 +8607,14 @@ void print_sym(Sym sym) {
     printf("procid: %i\n", sym.procid);
     printf("segment_offset: %lu\n", sym.segment_offset);
     printf("type: %s\n", global_type_to_str(sym.type));
-    printf("value: %p\n", (void *)sym.value);
+    printf("value: ");
+    print_value(sym.value);
+    printf("\n");
+    if(sym.type->kind == TYPE_KIND_ARRAY) {
+        printf("size_in_bytes: %zu\n", sym.type->array.element_stride * sym.type->array.n);
+    } else {
+        printf("size_in_bytes: %zu\n", sym.type->bytes);
+    }
 }
 
 //TODO

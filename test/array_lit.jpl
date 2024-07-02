@@ -1,7 +1,9 @@
+ivar := 35;
+
 array1: [4]int = [1, 2, 3, 4];
 array2: [4]int = int:[1, 2, 3, 4];
 array3 := int:[1, 2, 3, 4];
-array4 := [1, 2, 3, 4];
+array4 := [ivar, 2, 3, 4];
 
 array5 := [
     float:[1, 2],
