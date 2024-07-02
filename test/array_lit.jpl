@@ -1,6 +1,27 @@
 array1: [4]int = [1, 2, 3, 4];
 array2: [4]int = int:[1, 2, 3, 4];
 array3 := int:[1, 2, 3, 4];
+array4 := [1, 2, 3, 4];
+
+array5 := [
+    float:[1, 2],
+    float:[3, 4],
+];
+
+array6 : [2][2]float = [
+    int:[1, 2],
+    [3, 4],
+];
+
+array7 := [2]int:[
+    [1, 2],
+    [3, 4],
+];
+
+array8: [2][2]int = [2]int:[
+    [1, 2],
+    [3, 4],
+];
 
 //proc main() {
 //    array1: [4]int = [1, 2, 3, 4];

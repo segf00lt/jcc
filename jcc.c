@@ -3050,32 +3050,46 @@ AST* parse_array_lit(Job *jp) {
 
     AST *type_expr = NULL;
 
-    while(t != ';') {
-        if(t == ':') {
+    if(t == '[') {
+        while(t != ']' && t != ',') {
+            t = lex(lexer);
+        }
+
+        if(t == ']') {
+            *lexer = unlex;
+            type_expr = parse_expr(jp);
+
+            t = lex(lexer);
+            if(t != ':') {
+                *lexer = unlex;
+                return NULL;
+            }
+
+            t = lex(lexer);
+            if(t != '[') {
+                *lexer = unlex;
+                return NULL;
+            }
+        } else {
+            *lexer = unlex;
             t = lex(lexer);
 
             if(t != '[') {
                 *lexer = unlex;
                 return NULL;
             }
+        }
+    } else {
+        *lexer = unlex;
+        type_expr = parse_expr(jp);
 
-            break;
+        t = lex(lexer);
+        if(t != ':') {
+            *lexer = unlex;
+            return NULL;
         }
 
         t = lex(lexer);
-    }
-
-    if(t != ';') {
-        *lexer = unlex;
-        type_expr = parse_expr(jp);
-        t = lex(lexer);
-        assert(t == ':');
-        t = lex(lexer);
-        assert(t == '[');
-    } else {
-        *lexer = unlex;
-        t = lex(lexer);
-
         if(t != '[') {
             *lexer = unlex;
             return NULL;
@@ -3100,6 +3114,8 @@ AST* parse_array_lit(Job *jp) {
             }
         }
 
+        array_ast->n_elements++;
+
         elem_list->next = (AST_expr_list*)job_alloc_ast(jp, AST_KIND_expr_list);
         elem_list = elem_list->next;
         elem_list->expr = elem;
@@ -3110,12 +3126,13 @@ AST* parse_array_lit(Job *jp) {
             return NULL;
         }
 
-        unlex = *lexer;
-        t = lex(lexer);
+        if(t == ',') {
+            unlex = *lexer;
+            t = lex(lexer);
 
-        if(t != ']') {
-            array_ast->n_elements++;
-            *lexer = unlex;
+            if(t != ']') {
+                *lexer = unlex;
+            }
         }
     }
 
@@ -7045,13 +7062,18 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
                 if( b->kind < TYPE_KIND_ARRAY || b->kind > TYPE_KIND_ARRAY_VIEW) return builtin_type+TYPE_KIND_VOID;
                 if(a->array.of != b->array.of) return builtin_type+TYPE_KIND_VOID;
 
-                a->array.n = b->array.n;
+                Type *t = typecheck_assign(jp, a->array.of, b->array.of, '=');
+                if(t->kind == TYPE_KIND_VOID) return builtin_type+TYPE_KIND_VOID;
+
+                a->array.n = b->array.n; //TODO array views don't actually need this
 
                 return a;
             } else if(a->kind == TYPE_KIND_ARRAY || a->kind == TYPE_KIND_DYNAMIC_ARRAY) {
                 if(a->kind != b->kind) return builtin_type+TYPE_KIND_VOID;
-                if(a->array.of != b->array.of) return builtin_type+TYPE_KIND_VOID;
                 if(a->kind == TYPE_KIND_ARRAY && a->array.n < b->array.n) return builtin_type+TYPE_KIND_VOID;
+
+                Type *t = typecheck_assign(jp, a->array.of, b->array.of, '=');
+                if(t->kind == TYPE_KIND_VOID) return builtin_type+TYPE_KIND_VOID;
 
                 if(a->kind == TYPE_KIND_ARRAY && a->array.n > b->array.n) {
                     b->array.n = a->array.n;
@@ -7473,58 +7495,58 @@ void typecheck_expr(Job *jp) {
 
             if(jp->state == JOB_STATE_ERROR)
                 break;
-        //} else if(kind == AST_KIND_array_literal) {
-        //    if(arrlast(expr)[0]->kind != AST_KIND_array_literal)
-        //        job_error(jp, arrlast(expr)[0]->loc, "array literal must be alone in right hand side of expression");
+        } else if(kind == AST_KIND_array_literal) {
+            AST_array_literal *array_lit = (AST_array_literal*)(expr[pos][0]);
+            Type *array_elem_type = NULL;
+            u64 i = 0;
 
-        //    AST_array_literal *array_lit = (AST_array_literal*)(expr[pos][0]);
-        //    Type *array_elem_type = NULL;
-        //    u64 i = 0;
+            if(array_lit->type) {
+                Type *t = arrpop(type_stack);
+                Value *t_value = arrpop(value_stack);
+                if(t->kind != TYPE_KIND_TYPE)
+                    job_error(jp, array_lit->type->loc,
+                            "expected type expression before array literal, not '%s'",
+                            job_type_to_str(jp, t));
+                array_elem_type = t_value->val.type;
+                i = arrlen(type_stack) - array_lit->n_elements;
+            } else {
+                i = arrlen(type_stack) - array_lit->n_elements;
+                array_elem_type = type_stack[i++];
+            }
 
-        //    if(array_lit->type) {
-        //        Type *t = arrpop(type_stack);
-        //        Value *t_value = arrpop(value_stack);
-        //        if(t->kind != TYPE_KIND_TYPE)
-        //            job_error(jp, array_lit->type->loc,
-        //                    "expected type expression before array literal, not '%s'",
-        //                    job_type_to_str(jp, t));
-        //        array_elem_type = t_value->val.type;
-        //        i = arrlen(type_stack) - array_lit->n_elements;
-        //    } else {
-        //        i = arrlen(type_stack) - array_lit->n_elements;
-        //        array_elem_type = type_stack[i++];
-        //    }
+            for(; i < arrlen(type_stack); ++i) {
+                Type *t = typecheck_assign(jp, array_elem_type, type_stack[i], '=');
+                if(t->kind == TYPE_KIND_VOID)
+                    job_error(jp, array_lit->base.loc,
+                            "cannot have element of type '%s' in array literal with element type '%s'",
+                            job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
+            }
 
-        //    for(; i < arrlen(type_stack); ++i) {
-        //        Type *t = typecheck_assign(jp, array_elem_type, type_stack[i], '=');
-        //        if(t->kind == TYPE_KIND_VOID)
-        //            job_error(jp, array_lit->base.loc,
-        //                    "cannot have element of type '%s' in array literal with element type '%s'",
-        //                    job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
-        //    }
-        //    Value **elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n_elements);
-        //    i = arrlen(value_stack) - array_lit->n_elements;
-        //    u64 j = 0;
-        //    while(j < array_lit->n_elements)
-        //        elements[j++] = value_stack[i++];
-        //    Value *array_val = job_alloc_value(jp, VALUE_KIND_ARRAY);
-        //    array_val->val.array.n = array_lit->n_elements;
-        //    array_val->val.array.type = array_elem_type;
-        //    array_val->val.array.elements = elements;
+            Value **elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n_elements);
 
-        //    arrsetlen(type_stack, arrlen(type_stack) - array_lit->n_elements);
-        //    arrsetlen(value_stack, arrlen(value_stack) - array_lit->n_elements);
+            i = arrlen(value_stack) - array_lit->n_elements;
+            u64 j = 0;
+            while(j < array_lit->n_elements)
+                elements[j++] = value_stack[i++];
 
-        //    Type *array_type = job_alloc_type(jp, TYPE_KIND_ARRAY);
-        //    array_type->array.of = array_elem_type;
-        //    array_type->array.count = array_lit->n_elements;
-        //    array_type->array.n = array_lit->n_elements;
+            Value *array_val = job_alloc_value(jp, VALUE_KIND_ARRAY);
+            array_val->val.array.n = array_lit->n_elements;
+            array_val->val.array.type = array_elem_type;
+            array_val->val.array.elements = elements;
 
-        //    array_lit->type_annotation = array_type;
-        //    array_lit->value_annotation = array_val;
+            arrsetlen(type_stack, arrlen(type_stack) - array_lit->n_elements);
+            arrsetlen(value_stack, arrlen(value_stack) - array_lit->n_elements);
 
-        //    arrpush(type_stack, array_type);
-        //    arrpush(value_stack, array_val);
+            Type *array_type = job_alloc_type(jp, TYPE_KIND_ARRAY);
+            array_type->array.of = array_elem_type;
+            array_type->array.count = array_lit->n_elements;
+            array_type->array.n = array_lit->n_elements;
+
+            array_lit->type_annotation = array_type;
+            array_lit->value_annotation = array_val;
+
+            arrpush(type_stack, array_type);
+            arrpush(value_stack, array_val);
         } else if(kind == AST_KIND_param) {
             AST_param *paramp = (AST_param*)expr[pos][0];
             Value *v = arrpop(value_stack);
@@ -7807,6 +7829,7 @@ void typecheck_expr(Job *jp) {
     jp->expr_pos = pos;
 }
 
+//TODO use AST* instead of AST**
 void linearize_expr(Job *jp, AST **astpp) {
     if(!*astpp) return;
 
@@ -8534,7 +8557,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/rule110.jpl";
+    char *path = "test/array_lit.jpl";
     char *test_src_file = LoadFileText(path);
 
     job_runner(test_src_file, path);
