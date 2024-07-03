@@ -946,7 +946,7 @@ void        ir_gen_block(Job *jp, AST *ast);
 void        ir_gen_statement(Job *jp, AST_statement *ast_statement);
 void        ir_gen_logical_expr(Job *jp, AST *ast);
 void        ir_gen_expr(Job *jp, AST *ast);
-void        ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array);
+u64         ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array);
 void        ir_run(Job *jp, int procid);
 
 Value*      atom_to_value(Job *jp, AST_atom *atom);
@@ -3711,16 +3711,28 @@ void ir_run(Job *jp, int procid) {
             case IROP_SETLOCAL:
                 switch(inst.setvar.bytes) {
                     case 1:
-                        local_base[inst.setvar.offset] = (u8)(interp.iregs[inst.setvar.reg_src]);
+                        local_base[inst.setvar.offset] =
+                            inst.setvar.immediate
+                            ? (inst.setvar.imm.integer & 0xff)
+                            : (u8)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 2:
-                        *(u16*)(local_base + inst.setvar.offset) = (u16)(interp.iregs[inst.setvar.reg_src]);
+                        *(u16*)(local_base + inst.setvar.offset) =
+                            inst.setvar.immediate
+                            ? (inst.setvar.imm.integer & 0xffff)
+                            : (u16)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 4:
-                        *(u32*)(local_base + inst.setvar.offset) = (u32)(interp.iregs[inst.setvar.reg_src]);
+                        *(u32*)(local_base + inst.setvar.offset) =
+                            inst.setvar.immediate
+                            ? (inst.setvar.imm.integer & 0xffffffff)
+                            : (u32)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 8:
-                        *(u64*)(local_base + inst.setvar.offset) = (u64)(interp.iregs[inst.setvar.reg_src]);
+                        *(u64*)(local_base + inst.setvar.offset) =
+                            inst.setvar.immediate
+                            ? inst.setvar.imm.integer
+                            : (u64)(interp.iregs[inst.setvar.reg_src]);
                         break;
                 }
                 break;
@@ -3743,16 +3755,28 @@ void ir_run(Job *jp, int procid) {
             case IROP_SETGLOBAL:
                 switch(inst.setvar.bytes) {
                     case 1:
-                        interp.global_segment[inst.setvar.offset] = (u8)(interp.iregs[inst.setvar.reg_src]);
+                        interp.global_segment[inst.setvar.offset] =
+                            inst.setvar.immediate
+                            ? (inst.setvar.imm.integer & 0xff)
+                            : (u8)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 2:
-                        *(u16*)(interp.global_segment + inst.setvar.offset) = (u16)(interp.iregs[inst.setvar.reg_src]);
+                        *(u16*)(interp.global_segment + inst.setvar.offset) =
+                            inst.setvar.immediate
+                            ? (inst.setvar.imm.integer & 0xffff)
+                            : (u16)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 4:
-                        *(u32*)(interp.global_segment + inst.setvar.offset) = (u32)(interp.iregs[inst.setvar.reg_src]);
+                        *(u32*)(interp.global_segment + inst.setvar.offset) =
+                            inst.setvar.immediate
+                            ? (inst.setvar.imm.integer & 0xffffffff)
+                            : (u32)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 8:
-                        *(u64*)(interp.global_segment + inst.setvar.offset) = (u64)(interp.iregs[inst.setvar.reg_src]);
+                        *(u64*)(interp.global_segment + inst.setvar.offset) =
+                            inst.setvar.immediate
+                            ? inst.setvar.imm.integer
+                            : (u64)(interp.iregs[inst.setvar.reg_src]);
                         break;
                 }
                 break;
@@ -3886,83 +3910,93 @@ void ir_run(Job *jp, int procid) {
  * multidimensional arrays can only be static size and can only be assigned to static arrays
  * arrays views can take unidimensional arrays to allow for functions that don't care what
  * kind of memory is backing the array
+ *
+ * generate each expression and write it to local (or global) data then return the offset
+ *
+ * for initializing a dynamic array from an array literal we add a copy, I can't be bothered to
+ * do anything more complicated
+ *
+ * initializing a view is just a matter of setting the pointer to the local address
+ *
+ * for now I'll only do local array literals, later on handle globals
+ *
  */
-void ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array) {
-    UNIMPLEMENTED;
+u64 ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array) {
+    assert(array_type->kind == TYPE_KIND_ARRAY);
+    assert(array_type->kind == ast_array->type_annotation->kind);
 
-//    IRinst inst = {0};
-//    Type *tp = ast_array->type_annotation;
-//
-//    //u64 last_dim = 0;
-//
-//    u64 bytes_to_alloc = 1;
-//
-//    while(tp->kind == TYPE_KIND_ARRAY) {
-//        //last_dim = tp->array.n;
-//        bytes_to_alloc *= tp->array.n;
-//        tp = tp->array.of;
-//    }
-//
-//    bytes_to_alloc *= tp->bytes;
-//    u64 element_bytes = tp->bytes;
-//    u64 offset = arrlast(jp->local_offset);
-//    jp->local_offset += bytes_to_alloc;
-//
-//    Arr(AST_array_literal*) ast_array_stack = NULL;
-//    arrpush(ast_array_stack, ast_array);
-//
-//    if(TYPE_KIND_IS_NOT_SCALAR(tp->kind)) {
-//        UNIMPLEMENTED;
-//    } else {
-//        while(arrlen(ast_array_stack) > 0) {
-//            AST_array_literal *cur_ast = arrlast(ast_array_stack);
-//
-//            AST_expr_list *elements = cur_ast->elements;
-//            int i = 0;
-//            for(; i < cur_ast->n_elements; ++i) {
-//                if(elements == NULL) {
-//                    inst =
-//                        (IRinst) {
-//                            .opcode = IROP_SETLOCAL,
-//                            .setvar = {
-//                                .offset = offset,
-//                                .bytes = element_bytes,
-//                                .immediate = true,
-//                            },
-//                        };
-//                    arrpush(jp->instructions, inst);
-//                    continue;
-//                }
-//
-//                if(elements->expr->kind == AST_KIND_array_literal) {
-//                    arrpush(ast_array_stack, (AST_array_literal*)(elements->expr));
-//                    break;
-//                }
-//
-//                ir_gen_expr(jp, elements->expr);
-//                printf("jp->reg_alloc = %lu in generation of array literal\n", jp->reg_alloc);
-//
-//                inst =
-//                    (IRinst) {
-//                        .opcode = IROP_SETLOCAL,
-//                        .setvar = {
-//                            .offset = offset,
-//                            .reg_src = jp->reg_alloc,
-//                            .bytes = element_bytes,
-//                        },
-//                    };
-//
-//                if(tp->kind >= TYPE_KIND_FLOAT && tp->kind <= TYPE_KIND_F64)
-//                    inst.opcode = IROP_SETLOCALF;
-//
-//                arrpush(jp->instructions, inst);
-//                elements = elements->next;
-//            }
-//
-//            if(i == cur_ast->n_elements)
-//                arrsetlen(ast_array_stack, arrlen(ast_array_stack) - 1);
-//        }
-//    }
+    u64 offset = arrlast(jp->local_offset);
+
+    if(array_type->array.of->kind == TYPE_KIND_ARRAY) {
+        for(AST_expr_list *elem = ast_array->elements; elem; elem = elem->next) {
+            ir_gen_array_literal(jp, array_type->array.of, (AST_array_literal*)(elem->expr));
+        }
+    } else {
+        arrlast(jp->local_offset) += array_type->array.element_stride * array_type->array.n;
+
+        if(TYPE_KIND_IS_NOT_SCALAR(array_type->array.of->kind)) {
+            UNIMPLEMENTED;
+        } else {
+            u64 stride = array_type->array.element_stride;
+            int n_elements = 0;
+
+            u64 *regp = &(jp->reg_alloc);
+
+            IRinst inst = {
+                .opcode = IROP_SETLOCAL,
+                .setvar = {
+                    .offset = offset,
+                    .bytes = stride,
+                },
+            };
+
+            if(TYPE_KIND_IS_FLOAT(array_type->array.of->kind)) {
+                regp = &(jp->float_reg_alloc);
+
+                inst = (IRinst) {
+                    .opcode = IROP_SETLOCALF,
+                    .setvar = {
+                        .offset = offset,
+                        .bytes = stride,
+                    },
+                };
+            }
+
+            for(AST_expr_list *elem = ast_array->elements; elem; elem = elem->next) {
+                AST_expr_base *expr_base = (AST_expr_base*)(elem->expr);
+                if(expr_base->value_annotation == NULL) {
+                    inst.setvar.immediate = false;
+                    ir_gen_expr(jp, elem->expr);
+                    (*regp)--;
+                    inst.setvar.reg_src = *regp;
+                } else {
+                    inst.setvar.immediate = true;
+                    if(array_type->array.of->kind == TYPE_KIND_F64) {
+                        UNIMPLEMENTED; //TODO implement f64
+                    } else if(array_type->array.of->kind >= TYPE_KIND_FLOAT) {
+                        inst.setvar.imm.floating32 = expr_base->value_annotation->val.floating;
+                    } else {
+                        inst.setvar.imm.integer = expr_base->value_annotation->val.integer;
+                    }
+                }
+                arrpush(jp->instructions, inst);
+                inst.setvar.offset += stride;
+                ++n_elements;
+            }
+
+            inst.setvar.reg_src = 0;
+            inst.setvar.immediate = true;
+            inst.setvar.imm = (IRvalue){0};
+
+            while(n_elements < array_type->array.n) {
+                arrpush(jp->instructions, inst);
+                inst.setvar.offset += stride;
+                ++n_elements;
+            }
+        }
+    }
+
+    return offset;
 }
 
 INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
@@ -3983,7 +4017,23 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
 
     if(ast_statement->right && ast_statement->right->kind == AST_KIND_array_literal) {
         UNIMPLEMENTED;
-        //ir_gen_array_literal(jp, (AST_array_literal*)(ast_statement->right));
+        //AST_array_literal *array_lit = (AST_array_literal*)(ast_statement->right);
+        AST_expr *left_expr = (AST_expr*)ast_statement->left;
+        Type *type_left = left_expr->type_annotation;
+
+        //TODO in these cases we generate the array and then copy
+        if(type_left->kind == TYPE_KIND_ARRAY) {
+            UNIMPLEMENTED;
+            //u64 offset = ir_gen_array_literal(jp, type_left, array_lit);
+        } else if(type_left->kind == TYPE_KIND_ARRAY_VIEW) {
+            UNIMPLEMENTED;
+            //u64 offset = ir_gen_array_literal(jp, array_lit->type_annotation, array_lit);
+        } else if(type_left->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+            UNIMPLEMENTED;
+            //u64 offset = ir_gen_array_literal(jp, array_lit->type_annotation, array_lit);
+        } else {
+            UNREACHABLE;
+        }
     } else if(ast_statement->right) {
         ir_gen_expr(jp, ast_statement->right);
     } else {
@@ -4680,37 +4730,36 @@ void ir_gen_block(Job *jp, AST *ast) {
 
                     if(TYPE_KIND_IS_NOT_SCALAR(var_type->kind)) {
                         if(var_type->kind == TYPE_KIND_ARRAY) {
-                            u64 total_bytes = 1;
+                            if(ast_vardecl->init) {
+                                assert(ast_vardecl->init->kind == AST_KIND_array_literal);
+                                AST_array_literal *array_literal = (AST_array_literal*)(ast_vardecl->init);
+                                u64 array_data_offset = ir_gen_array_literal(jp, var_type, array_literal);
+                                assert(array_data_offset == sym->segment_offset);
+                            } else {
+                                u64 array_data_offset = sym->segment_offset;
+                                u64 total_bytes = var_type->array.element_stride * var_type->array.n;
+                                arrlast(jp->local_offset) += total_bytes;
 
-                            Type *t = var_type;
-                            while(t->kind == TYPE_KIND_ARRAY) {
-                                total_bytes *= t->array.n;
-                                t = t->array.of;
-                            }
-                            total_bytes *= t->bytes;
+                                if(ast_vardecl->uninitialized) {
+                                    jp->reg_alloc = 0;
+                                    jp->float_reg_alloc = 0;
+                                    ast = ast_vardecl->next;
+                                    continue;
+                                }
 
-                            u64 array_data_offset = sym->segment_offset;
-                            arrlast(jp->local_offset) += total_bytes;
-
-                            if(ast_vardecl->uninitialized) {
-                                jp->reg_alloc = 0;
-                                ast = ast_vardecl->next;
-                                continue;
-                            }
-
-                            for(u64 b = 0, step = 8; b < total_bytes; b += step) {
-                                while(b + step > total_bytes) step >>= 1;
-
-                                inst =
-                                    (IRinst) {
-                                        .opcode = IROP_SETLOCAL,
-                                        .setvar = {
-                                            .offset = array_data_offset + b,
-                                            .bytes = step,
-                                            .immediate = true,
-                                        },
-                                    };
-                                arrpush(jp->instructions, inst);
+                                for(u64 b = 0, step = 8; b < total_bytes; b += step) {
+                                    while(b + step > total_bytes) step >>= 1;
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = IROP_SETLOCAL,
+                                            .setvar = {
+                                                .offset = array_data_offset + b,
+                                                .bytes = step,
+                                                .immediate = true,
+                                            },
+                                        };
+                                    arrpush(jp->instructions, inst);
+                                }
                             }
                         } else {
                             UNIMPLEMENTED;
@@ -8630,7 +8679,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/array_lit.jpl";
+    char *path = "test/rule110.jpl";
     char *test_src_file = LoadFileText(path);
 
     job_runner(test_src_file, path);

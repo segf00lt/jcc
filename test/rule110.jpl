@@ -4,6 +4,7 @@
 proc rule110(N: int) void {
     buf2: [D]bool = ---;
 
+/*
     buf1: [(buf2.count / 2) + (D >> 1)]bool = ---;
     buf1[0] = 1;
     buf1[1] = 1;
@@ -35,6 +36,10 @@ proc rule110(N: int) void {
     buf1[27] = 0;
     buf1[28] = 1;
     buf1[29] = 1;
+    */
+    buf1: [(buf2.count / 2) + (D >> 1)]bool = [
+          1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1,
+    ];
 
     tape := buf1.data;
     next_tape := buf2.data;
