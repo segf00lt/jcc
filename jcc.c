@@ -3926,19 +3926,19 @@ u64 ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array
     assert(array_type->kind == ast_array->type_annotation->kind);
 
     u64 offset = arrlast(jp->local_offset);
+    u64 expected_size = array_type->array.element_stride * array_type->array.n;
 
     if(array_type->array.of->kind == TYPE_KIND_ARRAY) {
         for(AST_expr_list *elem = ast_array->elements; elem; elem = elem->next) {
             ir_gen_array_literal(jp, array_type->array.of, (AST_array_literal*)(elem->expr));
         }
     } else {
-        arrlast(jp->local_offset) += array_type->array.element_stride * array_type->array.n;
+        arrlast(jp->local_offset) += expected_size;
 
         if(TYPE_KIND_IS_NOT_SCALAR(array_type->array.of->kind)) {
             UNIMPLEMENTED;
         } else {
             u64 stride = array_type->array.element_stride;
-            int n_elements = 0;
 
             u64 *regp = &(jp->reg_alloc);
 
@@ -3974,26 +3974,39 @@ u64 ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array
                     if(array_type->array.of->kind == TYPE_KIND_F64) {
                         UNIMPLEMENTED; //TODO implement f64
                     } else if(array_type->array.of->kind >= TYPE_KIND_FLOAT) {
-                        inst.setvar.imm.floating32 = expr_base->value_annotation->val.floating;
+                        //TODO implicit casts should be resolved in the typechecker
+                        if(expr_base->value_annotation->kind <= VALUE_KIND_UINT) {
+                            assert(expr_base->value_annotation->kind != VALUE_KIND_UINT); // uint shouldn't implicitly cast
+                            assert(expr_base->value_annotation->kind != VALUE_KIND_NIL);
+                            inst.setvar.imm.floating32 = (f32)(expr_base->value_annotation->val.integer);
+                        } else {
+                            inst.setvar.imm.floating32 = expr_base->value_annotation->val.floating;
+                        }
                     } else {
                         inst.setvar.imm.integer = expr_base->value_annotation->val.integer;
                     }
                 }
                 arrpush(jp->instructions, inst);
                 inst.setvar.offset += stride;
-                ++n_elements;
-            }
-
-            inst.setvar.reg_src = 0;
-            inst.setvar.immediate = true;
-            inst.setvar.imm = (IRvalue){0};
-
-            while(n_elements < array_type->array.n) {
-                arrpush(jp->instructions, inst);
-                inst.setvar.offset += stride;
-                ++n_elements;
             }
         }
+    }
+
+    u64 cur_offset = arrlast(jp->local_offset);
+    u64 expected_offset = offset + expected_size;
+
+    for(u64 step = 8; cur_offset < expected_offset; cur_offset += step) {
+        while(cur_offset + step > expected_offset) step >>= 1;
+        IRinst inst =
+            (IRinst) {
+                .opcode = IROP_SETLOCAL,
+                .setvar = {
+                    .offset = cur_offset,
+                    .bytes = step,
+                    .immediate = true,
+                },
+            };
+        arrpush(jp->instructions, inst);
     }
 
     return offset;
@@ -4725,6 +4738,10 @@ void ir_gen_block(Job *jp, AST *ast) {
 
                     Sym *sym = ast_vardecl->symbol_annotation;
                     sym->segment_offset = arrlast(jp->local_offset);
+
+                    printf("\n");
+                    print_sym(*sym);
+                    printf("\n");
 
                     Type *var_type = sym->type;
 
@@ -7147,7 +7164,13 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
                 if(a->kind == b->kind) return a;
 
                 //TODO prevent int from casting to float, instead add a number type for intlit's
-                if(a->kind >= TYPE_KIND_INT || b->kind == TYPE_KIND_INT) /* integers are very flexible */
+                if(a->kind >= TYPE_KIND_INT && b->kind == TYPE_KIND_INT) /* integers are very flexible */
+                    return a;
+
+                if(a->kind == TYPE_KIND_F64 && b->kind == TYPE_KIND_F64)
+                    return a;
+
+                if(a->kind >= TYPE_KIND_FLOAT && a->kind <= TYPE_KIND_F32 && b->kind >= TYPE_KIND_FLOAT && b->kind <= TYPE_KIND_F32)
                     return a;
 
                 if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_U8)
@@ -7623,10 +7646,12 @@ void typecheck_expr(Job *jp) {
 
             for(; i < arrlen(type_stack); ++i) {
                 Type *t = typecheck_assign(jp, array_elem_type, type_stack[i], '=');
-                if(t->kind == TYPE_KIND_VOID)
+                if(t->kind == TYPE_KIND_VOID) {
                     job_error(jp, array_lit->base.loc,
                             "cannot have element of type '%s' in array literal with element type '%s'",
                             job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
+                    break;
+                }
             }
 
             Value **elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n_elements);
@@ -8675,11 +8700,13 @@ void print_sym(Sym sym) {
 // output assembly
 // directives (#load, #import, #assert, etc)
 // varargs and runtime type info
+// allow variables in inner scopes to be named the same as vars in outer scopes
+// prevent shadowing of global constants
 int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/rule110.jpl";
+    char *path = "test/array_lit.jpl";
     char *test_src_file = LoadFileText(path);
 
     job_runner(test_src_file, path);
