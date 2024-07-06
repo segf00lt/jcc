@@ -3975,6 +3975,7 @@ u64 ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array
                         UNIMPLEMENTED; //TODO implement f64
                     } else if(array_type->array.of->kind >= TYPE_KIND_FLOAT) {
                         //TODO implicit casts should be resolved in the typechecker
+                        //TODO overhaul typechecking and implement number type
                         if(expr_base->value_annotation->kind <= VALUE_KIND_UINT) {
                             assert(expr_base->value_annotation->kind != VALUE_KIND_UINT); // uint shouldn't implicitly cast
                             assert(expr_base->value_annotation->kind != VALUE_KIND_NIL);
@@ -7067,12 +7068,62 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
                 UNREACHABLE;
             }
             break;
-        case '%': case '&': case '|': case '^': case TOKEN_LSHIFT: case TOKEN_RSHIFT:
+        case '%':
             if(a->kind == VALUE_KIND_NIL || b->kind == VALUE_KIND_NIL) {
                 result = builtin_value+VALUE_KIND_NIL;
             } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
                 result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
-                result->val.uinteger = a->val.uinteger + b->val.uinteger;
+                result->val.uinteger = a->val.uinteger % b->val.uinteger;
+            } else {
+                UNREACHABLE;
+            }
+            break;
+        case '&':
+            if(a->kind == VALUE_KIND_NIL || b->kind == VALUE_KIND_NIL) {
+                result = builtin_value+VALUE_KIND_NIL;
+            } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
+                result->val.uinteger = a->val.uinteger & b->val.uinteger;
+            } else {
+                UNREACHABLE;
+            }
+            break;
+        case '|':
+            if(a->kind == VALUE_KIND_NIL || b->kind == VALUE_KIND_NIL) {
+                result = builtin_value+VALUE_KIND_NIL;
+            } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
+                result->val.uinteger = a->val.uinteger | b->val.uinteger;
+            } else {
+                UNREACHABLE;
+            }
+            break;
+        case '^':
+            if(a->kind == VALUE_KIND_NIL || b->kind == VALUE_KIND_NIL) {
+                result = builtin_value+VALUE_KIND_NIL;
+            } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
+                result->val.uinteger = a->val.uinteger ^ b->val.uinteger;
+            } else {
+                UNREACHABLE;
+            }
+            break;
+        case TOKEN_LSHIFT:
+            if(a->kind == VALUE_KIND_NIL || b->kind == VALUE_KIND_NIL) {
+                result = builtin_value+VALUE_KIND_NIL;
+            } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
+                result->val.uinteger = a->val.uinteger << b->val.uinteger;
+            } else {
+                UNREACHABLE;
+            }
+            break;
+        case TOKEN_RSHIFT:
+            if(a->kind == VALUE_KIND_NIL || b->kind == VALUE_KIND_NIL) {
+                result = builtin_value+VALUE_KIND_NIL;
+            } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
+                result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
+                result->val.uinteger = a->val.uinteger >> b->val.uinteger;
             } else {
                 UNREACHABLE;
             }
@@ -7168,6 +7219,9 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
                     return a;
 
                 if(a->kind == TYPE_KIND_F64 && b->kind == TYPE_KIND_F64)
+                    return a;
+
+                if(a->kind <= TYPE_KIND_INT && b->kind == TYPE_KIND_INT)
                     return a;
 
                 if(a->kind >= TYPE_KIND_FLOAT && a->kind <= TYPE_KIND_F32 && b->kind >= TYPE_KIND_FLOAT && b->kind <= TYPE_KIND_F32)
@@ -8706,7 +8760,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/array_lit.jpl";
+    char *path = "test/rule110.jpl";
     char *test_src_file = LoadFileText(path);
 
     job_runner(test_src_file, path);
