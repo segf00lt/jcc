@@ -899,7 +899,6 @@ struct Type {
         struct { /* static array, dynamic or slice */
             u64  n; /* used for capacity of static array */
             u64  element_stride;
-            u64  count;
             Type *of;
         } array;
 
@@ -1146,7 +1145,7 @@ Type* job_alloc_type(Job *jp, Typekind kind) {
             ptr->bytes = 16;
             break;
         case TYPE_KIND_ARRAY:
-            ptr->bytes = 8;
+            ptr->bytes = 0;
             break;
     }
 
@@ -3926,7 +3925,8 @@ u64 ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array
     assert(array_type->kind == ast_array->type_annotation->kind);
 
     u64 offset = arrlast(jp->local_offset);
-    u64 expected_size = array_type->array.element_stride * array_type->array.n;
+    assert(array_type->bytes == array_type->array.element_stride * array_type->array.n);
+    u64 expected_size = array_type->bytes;
 
     if(array_type->array.of->kind == TYPE_KIND_ARRAY) {
         for(AST_expr_list *elem = ast_array->elements; elem; elem = elem->next) {
@@ -4755,7 +4755,8 @@ void ir_gen_block(Job *jp, AST *ast) {
                                 assert(array_data_offset == sym->segment_offset);
                             } else {
                                 u64 array_data_offset = sym->segment_offset;
-                                u64 total_bytes = var_type->array.element_stride * var_type->array.n;
+                                assert(var_type->bytes == var_type->array.element_stride * var_type->array.n);
+                                u64 total_bytes = var_type->bytes;
                                 arrlast(jp->local_offset) += total_bytes;
 
                                 if(ast_vardecl->uninitialized) {
@@ -4783,7 +4784,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                             UNIMPLEMENTED;
                         }
                     } else {
-                        arrlast(jp->local_offset) += sym->type->bytes;
+                        arrlast(jp->local_offset) += var_type->bytes;
 
                         if(ast_vardecl->uninitialized) {
                             jp->reg_alloc = 0;
@@ -6965,14 +6966,8 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
                     result->val.type = job_alloc_type(jp, TYPE_KIND_ARRAY);
                     result->val.type->array.of = a->val.type;
                     result->val.type->array.n = b->val.integer;
-                    if(a->val.type->kind == TYPE_KIND_ARRAY) {
-                        result->val.type->array.element_stride =
-                            a->val.type->array.element_stride * a->val.type->array.n;
-                    } else {
-                        result->val.type->array.element_stride = a->val.type->bytes;
-                    }
-                    //TODO can we compute the allocated size here somehow?
-                    //result->val.type->bytes += a->val.type->bytes * b->val.integer;
+                    result->val.type->array.element_stride = a->val.type->bytes;
+                    result->val.type->bytes = result->val.type->array.element_stride * result->val.type->array.n;
                     if(result->val.type->array.n == 0)
                         job_error(jp, op_ast->base.loc, "static array size expression evaluates to 0");
                 }
@@ -7248,11 +7243,8 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
 
                 Type *t = typecheck_assign(jp, a->array.of, b->array.of, '=');
                 if(t->kind == TYPE_KIND_VOID) return builtin_type+TYPE_KIND_VOID;
-
-                a->array.n = b->array.n; //TODO array views don't actually need this
-
                 return a;
-            } else if(a->kind == TYPE_KIND_ARRAY || a->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+            } else if(a->kind == TYPE_KIND_ARRAY) {
                 if(a->kind != b->kind) return builtin_type+TYPE_KIND_VOID;
                 if(a->kind == TYPE_KIND_ARRAY && a->array.n < b->array.n) return builtin_type+TYPE_KIND_VOID;
 
@@ -7261,10 +7253,11 @@ Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
 
                 if(a->kind == TYPE_KIND_ARRAY && a->array.n > b->array.n) {
                     b->array.n = a->array.n;
-                    a->array.count = b->array.count;
                 }
 
                 return a;
+            } else if(a->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+                UNIMPLEMENTED;
             } else if(a->kind == TYPE_KIND_POINTER) {
                 if(b->kind != TYPE_KIND_POINTER)
                     return builtin_type+TYPE_KIND_VOID;
@@ -7715,6 +7708,10 @@ void typecheck_expr(Job *jp) {
             while(j < array_lit->n_elements)
                 elements[j++] = value_stack[i++];
 
+            // NOTE
+            // maybe array creation should be given it's own function just so we don't have to repeat ourselves
+            // and risk stupid bugs
+
             Value *array_val = job_alloc_value(jp, VALUE_KIND_ARRAY);
             array_val->val.array.n = array_lit->n_elements;
             array_val->val.array.type = array_elem_type;
@@ -7725,16 +7722,9 @@ void typecheck_expr(Job *jp) {
 
             Type *array_type = job_alloc_type(jp, TYPE_KIND_ARRAY);
             array_type->array.of = array_elem_type;
-            array_type->array.count = array_lit->n_elements;
             array_type->array.n = array_lit->n_elements;
-            //TODO the allocated size of the array should be in the bytes field of the type
-            //     use a table for the size of the header
-            if(array_elem_type->kind == TYPE_KIND_ARRAY) {
-                array_type->array.element_stride =
-                    array_elem_type->array.element_stride * array_elem_type->array.n;
-            } else {
-                array_type->array.element_stride = array_elem_type->bytes;
-            }
+            array_type->array.element_stride = array_elem_type->bytes;
+            array_type->bytes = array_type->array.element_stride * array_type->array.n;
 
             array_lit->type_annotation = array_type;
             array_lit->value_annotation = array_val;
@@ -8738,11 +8728,7 @@ void print_sym(Sym sym) {
     printf("value: ");
     print_value(sym.value);
     printf("\n");
-    if(sym.type->kind == TYPE_KIND_ARRAY) {
-        printf("size_in_bytes: %zu\n", sym.type->array.element_stride * sym.type->array.n);
-    } else {
-        printf("size_in_bytes: %zu\n", sym.type->bytes);
-    }
+    printf("size_in_bytes: %zu\n", sym.type->bytes);
 }
 
 //TODO
@@ -8760,7 +8746,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/rule110.jpl";
+    char *path = "test/array_lit.jpl";
     char *test_src_file = LoadFileText(path);
 
     job_runner(test_src_file, path);
