@@ -35,4 +35,10 @@ proc main() {
         f32:[1.0, 2.0],
         [3.0, 4.7],
     ];
+
+    ivar = #run other_proc(int:[7, 14, 21, 28]);
+}
+
+proc other_proc(arr: [4]int) int {
+    return arr[2] ^ arr[0];
 }
