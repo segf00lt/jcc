@@ -1,4 +1,4 @@
-proc main() {
+proc main() int {
     ivar := 35;
     
     array1: [4]int = [1, 2, 3, 4];
@@ -36,9 +36,23 @@ proc main() {
         [3.0, 4.7],
     ];
 
-    ivar = #run other_proc(int:[7, 14, 21, 28]);
+    ivar = #run other_proc([7, 14, 21, 28]);
+
+    array8[1] = [6, 8];
+
+    array1 = make_array(5150);
+
+    return array1[2];
 }
 
 proc other_proc(arr: [4]int) int {
-    return arr[2] ^ arr[0];
+    arr = [7, 8, 9, 10];
+    return arr[3] + arr[0];
 }
+
+proc make_array(i: int) [4]int {
+    array := [1, 2, i, 4];
+    return array;
+}
+
+#run main();

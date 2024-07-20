@@ -401,7 +401,9 @@ struct IRinst {
             u64 reg_src_ptr;
             IRvalue imm;
             u64 offset_reg;
+            u64 byte_offset_imm;
             u64 bytes;
+            bool has_immediate_offset;
             bool has_offset;
             bool immediate;
         } load;
@@ -411,7 +413,9 @@ struct IRinst {
             u64 reg_src;
             IRvalue imm;
             u64 offset_reg;
+            u64 byte_offset_imm;
             u64 bytes;
+            bool has_immediate_offset;
             bool has_offset;
             bool immediate;
         } stor;
@@ -832,12 +836,10 @@ struct Value {
         char *str;
         Type *type;
         struct {
-            Type *type;
             Value **elements;
             u64 n;
         } array;
         struct {
-            Type *type;
             char **member_names;
             Value **members;
             u64 n;
@@ -940,6 +942,8 @@ bool        has_nested_call(AST *ast);
 
 void        do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type);
 
+void        copy_array_data_to_value(Job *jp, Value *v, Type *t, u8 *data);
+
 Arr(AST*)   ir_linearize_expr(Arr(AST*) ir_expr, AST *ast);
 
 void        ir_gen(Job *jp);
@@ -948,6 +952,8 @@ void        ir_gen_statement(Job *jp, AST_statement *ast_statement);
 void        ir_gen_logical_expr(Job *jp, AST *ast);
 void        ir_gen_expr(Job *jp, AST *ast);
 u64         ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array);
+u64         ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array, u64 offset, u64 ptr_reg);
+void        ir_gen_memorycopy(Job *jp, u64 bytes, u64 to_ptr_reg, u64 from_ptr_reg);
 void        ir_run(Job *jp, int procid);
 
 Value*      atom_to_value(Job *jp, AST_atom *atom);
@@ -1635,83 +1641,62 @@ INLINE void print_ir_inst(IRinst inst) {
             break;
 		case IROP_LOAD:
 		case IROP_LOADF:
+            printf("%s ", opstr);
+
+            if(inst.opcode == IROP_LOADF) {
+                if(inst.load.bytes == 8) {
+                    printf("f_%lu, ", inst.load.reg_dest);
+                } else {
+                    printf("f_%lu, ", inst.load.reg_dest);
+                }
+            } else {
+                printf("r_%lu, ", inst.load.reg_dest);
+            }
+
             if(inst.load.immediate) {
                 if(inst.opcode == IROP_LOADF) {
-                    if(inst.load.bytes == 8) {
-                        printf("%s f_%lu, %g, %luB\n",
-                                opstr,
-                                inst.load.reg_dest, inst.load.imm.floating64, inst.load.bytes
-                              );
-                    } else {
-                        printf("%s f_%lu, %f, %luB\n",
-                                opstr,
-                                inst.load.reg_dest, inst.load.imm.floating32, inst.load.bytes
-                              );
-                    }
+                    if(inst.load.bytes == 8)
+                        printf("%g, ", inst.load.imm.floating64);
+                    else
+                        printf("%f, ", inst.load.imm.floating32);
                 } else {
-                    printf("%s r_%lu, %lu, %luB\n",
-                            opstr,
-                            inst.load.reg_dest, inst.load.imm.integer, inst.load.bytes
-                          );
+                    printf("%lu, ", inst.load.imm.integer);
                 }
-            } else if(inst.load.has_offset) {
-                printf("%s r_%lu, ptr_r_%lu, offset_r_%lu, %luB\n",
-                        opstr,
-                        inst.load.reg_dest, inst.load.reg_src_ptr, inst.load.offset_reg, inst.load.bytes
-                      );
             } else {
-                if(inst.opcode == IROP_LOADF) {
-                    printf("%s f_%lu, ptr_r_%lu, %luB\n",
-                            opstr,
-                            inst.load.reg_dest, inst.load.reg_src_ptr, inst.load.bytes
-                          );
-                } else {
-                    printf("%s r_%lu, ptr_r_%lu, %luB\n",
-                            opstr,
-                            inst.load.reg_dest, inst.load.reg_src_ptr, inst.load.bytes
-                          );
-                }
+                printf("ptr_r_%lu, ", inst.load.reg_src_ptr);
             }
-			break;
+
+            if(inst.load.has_offset) {
+                printf("offset_r%lu, ", inst.load.offset_reg);
+            } else if(inst.load.has_immediate_offset) {
+                printf("byte offset imm %lu, ", inst.load.byte_offset_imm);
+            }
+
+            printf("%luB\n", inst.load.bytes);
+            break;
     	case IROP_STOR:
     	case IROP_STORF:
+            printf("%s ptr_r_%lu, ", opstr, inst.stor.reg_dest_ptr);
+            if(inst.stor.has_offset) printf("offset_r_%lu, ", inst.stor.offset_reg);
+            else if(inst.stor.has_immediate_offset) printf("byte offset imm %lu, ", inst.stor.byte_offset_imm);
             if(inst.stor.immediate) {
                 if(inst.opcode == IROP_STORF) {
                     if(inst.stor.bytes == 8) {
-                        printf("%s ptr_r_%lu, %g, %luB\n",
-                                opstr,
-                                inst.stor.reg_dest_ptr, inst.stor.imm.floating64, inst.stor.bytes
-                              );
+                        printf("%g, ", inst.stor.imm.floating64);
                     } else {
-                        printf("%s ptr_r_%lu, %f, %luB\n",
-                                opstr,
-                                inst.stor.reg_dest_ptr, inst.stor.imm.floating32, inst.stor.bytes
-                              );
+                        printf("%f, ", inst.stor.imm.floating32);
                     }
                 } else {
-                    printf("%s ptr_r_%lu, %lu, %luB\n",
-                            opstr,
-                            inst.stor.reg_dest_ptr, inst.stor.imm.integer, inst.stor.bytes
-                          );
+                    printf("%lu, ", inst.stor.imm.integer);
                 }
-            } else if(inst.stor.has_offset) {
-                printf("%s ptr_r_%lu, offset_r_%lu, r_%lu, %luB\n",
-                        opstr,
-                        inst.stor.reg_dest_ptr, inst.stor.offset_reg, inst.stor.reg_src, inst.stor.bytes
-                      );
             } else {
                 if(inst.opcode == IROP_STORF) {
-                    printf("%s ptr_r_%lu, f_%lu, %luB\n",
-                            opstr,
-                            inst.stor.reg_dest_ptr, inst.stor.reg_src, inst.stor.bytes
-                          );
+                    printf("f_%lu, ", inst.stor.reg_src);
                 } else {
-                    printf("%s ptr_r_%lu, r_%lu, %luB\n",
-                            opstr,
-                            inst.stor.reg_dest_ptr, inst.stor.reg_src, inst.stor.bytes
-                          );
+                    printf("r_%lu, ", inst.stor.reg_src);
                 }
             }
+            printf("%luB\n", inst.stor.bytes);
 			break;
 		case IROP_GETLOCAL:
 		case IROP_GETGLOBAL:
@@ -3371,6 +3356,39 @@ void ir_gen(Job *jp) {
 
         u64 local_offset = 0;
 
+        int non_scalar_returns = 0;
+
+        for(AST_retdecl *r = ast_proc->rets; r; r = r->next) {
+            AST_expr_base *expr = (AST_expr_base*)(r->expr);
+            if(TYPE_KIND_IS_NOT_SCALAR(expr->value_annotation->val.type->kind)) {
+                assert(expr->value_annotation->val.type->kind == TYPE_KIND_ARRAY);
+                IRinst inst_read = {
+                    .opcode = IROP_GETARG,
+                    .getport = {
+                        .reg_dest = 0,
+                        .bytes = 8,
+                        .port = non_scalar_returns,
+                        .c_call = ast_proc->c_call,
+                    },
+                };
+
+                IRinst inst_write = {
+                    .opcode = IROP_SETLOCAL,
+                    .setvar = {
+                        .offset = local_offset,
+                        .reg_src = 0,
+                        .bytes = 8,
+                    },
+                };
+
+                arrpush(jp->instructions, inst_read);
+                arrpush(jp->instructions, inst_write);
+
+                local_offset += 8;
+                non_scalar_returns++;
+            }
+        }
+
         for(AST_paramdecl *p = ast_proc->params; p; p = p->next) {
             Sym *p_sym = p->symbol_annotation;
             p_sym->segment_offset = local_offset;
@@ -3386,7 +3404,7 @@ void ir_gen(Job *jp) {
                         .getport = {
                             .reg_dest = 0,
                             .bytes = 8,
-                            .port = p->index,
+                            .port = non_scalar_returns + p->index,
                             .c_call = ast_proc->c_call,
                         },
                     };
@@ -3411,7 +3429,7 @@ void ir_gen(Job *jp) {
                     .getport = {
                         .reg_dest = 0,
                         .bytes = p_bytes,
-                        .port = p->index,
+                        .port = non_scalar_returns + p->index,
                         .c_call = ast_proc->c_call,
                     },
                 };
@@ -3508,10 +3526,8 @@ void ir_run(Job *jp, int procid) {
         inst = procedure[pc];
         imask = 0;
 
-        /*
         printf("%lu: ", pc);
         print_ir_inst(inst);
-        */
 
         switch(inst.opcode) {
             default:
@@ -3638,20 +3654,39 @@ void ir_run(Job *jp, int procid) {
                     interp.iregs[inst.load.reg_dest] = imask & inst.load.imm.integer;
                 } else {
                     u8 *ptr = (u8*)(interp.iregs[inst.load.reg_src_ptr]);
-                    u64 offset = (inst.load.has_offset) ? interp.iregs[inst.load.offset_reg] : 0;
-                    switch(inst.load.bytes) {
-                        case 1:
-                            interp.iregs[inst.load.reg_dest] = ptr[offset];
-                            break;
-                        case 2:
-                            interp.iregs[inst.load.reg_dest] = ((u16*)ptr)[offset];
-                            break;
-                        case 4:
-                            interp.iregs[inst.load.reg_dest] = ((u32*)ptr)[offset];
-                            break;
-                        case 8:
-                            interp.iregs[inst.load.reg_dest] = ((u64*)ptr)[offset];
-                            break;
+                    u64 offset = 0;
+                    if(inst.load.has_immediate_offset) {
+                        offset = inst.load.byte_offset_imm;
+                        switch(inst.load.bytes) {
+                            case 1:
+                                interp.iregs[inst.load.reg_dest] = ptr[offset];
+                                break;
+                            case 2:
+                                interp.iregs[inst.load.reg_dest] = *(u16*)(ptr + offset);
+                                break;
+                            case 4:
+                                interp.iregs[inst.load.reg_dest] = *(u32*)(ptr + offset);
+                                break;
+                            case 8:
+                                interp.iregs[inst.load.reg_dest] = *(u64*)(ptr + offset);
+                                break;
+                        }
+                    } else if(inst.load.has_offset) {
+                        offset = interp.iregs[inst.load.offset_reg];
+                        switch(inst.load.bytes) {
+                            case 1:
+                                interp.iregs[inst.load.reg_dest] = ptr[offset];
+                                break;
+                            case 2:
+                                interp.iregs[inst.load.reg_dest] = ((u16*)ptr)[offset];
+                                break;
+                            case 4:
+                                interp.iregs[inst.load.reg_dest] = ((u32*)ptr)[offset];
+                                break;
+                            case 8:
+                                interp.iregs[inst.load.reg_dest] = ((u64*)ptr)[offset];
+                                break;
+                        }
                     }
                 }
                 break;
@@ -3659,20 +3694,40 @@ void ir_run(Job *jp, int procid) {
                 {
                     u64 src_value = inst.stor.immediate ? inst.stor.imm.integer : interp.iregs[inst.stor.reg_src];
                     u8 *ptr = (u8*)(interp.iregs[inst.stor.reg_dest_ptr]);
-                    u64 offset = (inst.stor.has_offset) ? interp.iregs[inst.stor.offset_reg] : 0;
-                    switch(inst.stor.bytes) {
-                        case 1:
-                            ptr[offset] = (u8)src_value;
-                            break;
-                        case 2:
-                            ((u16*)ptr)[offset] = (u16)src_value;
-                            break;
-                        case 4:
-                            ((u32*)ptr)[offset] = (u32)src_value;
-                            break;
-                        case 8:
-                            ((u64*)ptr)[offset] = (u64)src_value;
-                            break;
+                    u64 offset = 0;
+
+                    if(inst.stor.has_immediate_offset) {
+                        offset = inst.stor.byte_offset_imm;
+                        switch(inst.stor.bytes) {
+                            case 1:
+                                ptr[offset] = (u8)src_value;
+                                break;
+                            case 2:
+                                *(u16*)(ptr + offset) = (u16)src_value;
+                                break;
+                            case 4:
+                                *(u32*)(ptr + offset) = (u32)src_value;
+                                break;
+                            case 8:
+                                *(u64*)(ptr + offset) = (u64)src_value;
+                                break;
+                        }
+                    } else if(inst.stor.has_offset) {
+                        offset = interp.iregs[inst.stor.offset_reg];
+                        switch(inst.stor.bytes) {
+                            case 1:
+                                ptr[offset] = (u8)src_value;
+                                break;
+                            case 2:
+                                ((u16*)ptr)[offset] = (u16)src_value;
+                                break;
+                            case 4:
+                                ((u32*)ptr)[offset] = (u32)src_value;
+                                break;
+                            case 8:
+                                ((u64*)ptr)[offset] = (u64)src_value;
+                                break;
+                        }
                     }
                 }
                 break;
@@ -3698,14 +3753,26 @@ void ir_run(Job *jp, int procid) {
             case IROP_STORF:
                 if(inst.stor.bytes == 8) {
                     f64 src_value = inst.stor.immediate ? inst.stor.imm.floating64 : interp.f64regs[inst.stor.reg_src];
-                    f64 *ptr = (f64*)(interp.iregs[inst.stor.reg_dest_ptr]);
-                    u64 offset = (inst.stor.has_offset) ? interp.iregs[inst.stor.offset_reg] : 0;
-                    ptr[offset] = src_value;
+                    if(inst.stor.has_immediate_offset) {
+                        u64 offset = inst.stor.byte_offset_imm;
+                        u8 *ptr = (u8*)(interp.iregs[inst.stor.reg_dest_ptr]);
+                        *(f64*)(ptr + offset) = src_value;
+                    } else if(inst.stor.has_offset) {
+                        u64 offset = interp.iregs[inst.stor.offset_reg];
+                        f64 *ptr = (f64*)(interp.iregs[inst.stor.reg_dest_ptr]);
+                        ptr[offset] = src_value;
+                    }
                 } else {
                     f32 src_value = inst.stor.immediate ? inst.stor.imm.floating32 : interp.f32regs[inst.stor.reg_src];
-                    f32 *ptr = (f32*)(interp.iregs[inst.stor.reg_dest_ptr]);
-                    u64 offset = (inst.stor.has_offset) ? interp.iregs[inst.stor.offset_reg] : 0;
-                    ptr[offset] = src_value;
+                    if(inst.stor.has_immediate_offset) {
+                        u64 offset = inst.stor.byte_offset_imm;
+                        u8 *ptr = (u8*)(interp.iregs[inst.stor.reg_dest_ptr]);
+                        *(f32*)(ptr + offset) = src_value;
+                    } else if(inst.stor.has_offset) {
+                        u64 offset = interp.iregs[inst.stor.offset_reg];
+                        f32 *ptr = (f32*)(interp.iregs[inst.stor.reg_dest_ptr]);
+                        ptr[offset] = src_value;
+                    }
                 }
                 break;
             case IROP_CALCPTROFFSET:
@@ -3927,17 +3994,11 @@ void ir_run(Job *jp, int procid) {
     }
 }
 
-//TODO array literals
+void copy_array_data_to_value(Job *jp, Value *v, Type *t, u8 *data) {
+    UNIMPLEMENTED;
+}
+
 /*
- * we need more information than what is available to this procedure
- * assignment of array literals to arrays is more complicated when we consider
- * arrays of arbitrary dimension. You need to know about both sides of
- * the assignment
- *
- * multidimensional arrays can only be static size and can only be assigned to static arrays
- * arrays views can take unidimensional arrays to allow for functions that don't care what
- * kind of memory is backing the array
- *
  * generate each expression and write it to local (or global) data then return the offset
  *
  * for initializing a dynamic array from an array literal we add a copy, I can't be bothered to
@@ -3992,7 +4053,7 @@ u64 ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array
 
             for(AST_expr_list *elem = ast_array->elements; elem; elem = elem->next) {
                 AST_expr_base *expr_base = (AST_expr_base*)(elem->expr);
-                if(expr_base->value_annotation == NULL) {
+                if(expr_base->value_annotation == NULL || expr_base->value_annotation->kind == VALUE_KIND_NIL) {
                     inst.setvar.immediate = false;
                     ir_gen_expr(jp, elem->expr);
                     (*regp)--;
@@ -4043,6 +4104,136 @@ u64 ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array
     return offset;
 }
 
+u64 ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array, u64 offset, u64 ptr_reg) {
+    assert(array_type->kind == TYPE_KIND_ARRAY);
+    assert(array_type->kind == ast_array->type_annotation->kind);
+
+    assert(array_type->bytes == array_type->array.element_stride * array_type->array.n);
+    u64 expected_size = array_type->bytes;
+
+    if(array_type->array.of->kind == TYPE_KIND_ARRAY) {
+        for(AST_expr_list *elem = ast_array->elements; elem; elem = elem->next) {
+            offset = ir_gen_copy_array_literal(jp, array_type->array.of, (AST_array_literal*)(elem->expr), offset, ptr_reg);
+        }
+    } else {
+        if(TYPE_KIND_IS_NOT_SCALAR(array_type->array.of->kind)) {
+            UNIMPLEMENTED;
+        } else {
+            u64 stride = array_type->array.element_stride;
+
+            u64 *regp = &(jp->reg_alloc);
+
+            IRinst inst = {
+                .opcode = IROP_STOR,
+                .stor = {
+                    .reg_dest_ptr = ptr_reg,
+                    .byte_offset_imm = offset,
+                    .bytes = stride,
+                    .has_immediate_offset = true,
+                },
+            };
+
+            if(TYPE_KIND_IS_FLOAT(array_type->array.of->kind)) {
+                regp = &(jp->float_reg_alloc);
+
+                inst = (IRinst) {
+                    .opcode = IROP_STORF,
+                        .stor = {
+                            .reg_dest_ptr = ptr_reg,
+                            .byte_offset_imm = offset,
+                            .bytes = stride,
+                            .has_immediate_offset = true,
+                        },
+                };
+            }
+
+            for(AST_expr_list *elem = ast_array->elements; elem; elem = elem->next) {
+                AST_expr_base *expr_base = (AST_expr_base*)(elem->expr);
+                if(expr_base->value_annotation == NULL || expr_base->value_annotation->kind == VALUE_KIND_NIL) {
+                    inst.setvar.immediate = false;
+                    ir_gen_expr(jp, elem->expr);
+                    (*regp)--;
+                    inst.stor.reg_src = *regp;
+                } else {
+                    inst.stor.immediate = true;
+                    if(array_type->array.of->kind == TYPE_KIND_F64) {
+                        UNIMPLEMENTED; //TODO implement f64
+                    } else if(array_type->array.of->kind >= TYPE_KIND_FLOAT) {
+                        //TODO implicit casts should be resolved in the typechecker
+                        //TODO overhaul typechecking and implement number type
+                        if(expr_base->value_annotation->kind <= VALUE_KIND_UINT) {
+                            assert(expr_base->value_annotation->kind != VALUE_KIND_UINT); // uint shouldn't implicitly cast
+                            assert(expr_base->value_annotation->kind != VALUE_KIND_NIL);
+                            inst.stor.imm.floating32 = (f32)(expr_base->value_annotation->val.integer);
+                        } else {
+                            inst.stor.imm.floating32 = expr_base->value_annotation->val.floating;
+                        }
+                    } else {
+                        inst.stor.imm.integer = expr_base->value_annotation->val.integer;
+                    }
+                }
+                arrpush(jp->instructions, inst);
+                inst.stor.byte_offset_imm += stride;
+                offset += stride;
+            }
+        }
+    }
+
+    u64 cur_offset = offset;
+
+    //NOTE this assumes that the initial offset passed was 0
+    for(u64 step = 8; cur_offset < expected_size; cur_offset += step) {
+        while(cur_offset + step > expected_size) step >>= 1;
+        IRinst inst =
+            (IRinst) {
+                .opcode = IROP_STOR,
+                .stor = {
+                    .reg_dest_ptr = ptr_reg,
+                    .byte_offset_imm = cur_offset,
+                    .bytes = step,
+                    .has_immediate_offset = true,
+                    .immediate = true,
+                },
+            };
+        arrpush(jp->instructions, inst);
+    }
+
+    return expected_size;
+}
+
+void ir_gen_memorycopy(Job *jp, u64 bytes, u64 to_ptr_reg, u64 from_ptr_reg) {
+    IRinst inst;
+
+    for(u64 step = 8, offset = 0; offset < bytes; offset += step) {
+        while(offset + step > bytes) step >>= 1;
+        inst =
+            (IRinst) {
+                .opcode = IROP_LOAD,
+                .load = {
+                    .reg_dest = jp->reg_alloc,
+                    .reg_src_ptr = from_ptr_reg,
+                    .byte_offset_imm = offset,
+                    .bytes = step,
+                    .has_immediate_offset = true,
+                },
+            };
+        arrpush(jp->instructions, inst);
+
+        inst =
+            (IRinst) {
+                .opcode = IROP_STOR,
+                .stor = {
+                    .reg_dest_ptr = to_ptr_reg,
+                    .reg_src = jp->reg_alloc,
+                    .byte_offset_imm = offset,
+                    .bytes = step,
+                    .has_immediate_offset = true,
+                },
+            };
+        arrpush(jp->instructions, inst);
+    }
+}
+
 INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
     IRinst inst = {0};
     IRinst inst_read = {0};
@@ -4054,13 +4245,44 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
     u64 read_reg = 0;
 
     if(ast_statement->right == NULL && ast_statement->assign_op == 0) {
-        //NOTE statements are assumed to have an effect at this point
+        //TODO make sure statements have an effect at this point
         ir_gen_expr(jp, ast_statement->left);
         return;
     }
 
     if(((AST_expr_base*)(ast_statement->left))->type_annotation && TYPE_KIND_IS_NOT_SCALAR((((AST_expr_base*)ast_statement->left))->type_annotation->kind)) {
-        UNIMPLEMENTED;
+        assert(ast_statement->assign_op == '=' && ast_statement->right);
+
+        Type *left_type = ((AST_expr_base*)(ast_statement->left))->type_annotation;
+        Type *right_type = ((AST_expr_base*)(ast_statement->right))->type_annotation;
+
+        if(left_type->kind == TYPE_KIND_ARRAY) {
+            if(ast_statement->right->kind == AST_KIND_array_literal) {
+                ir_gen_expr(jp, ast_statement->left);
+                ir_gen_copy_array_literal(jp, left_type, (AST_array_literal*)(ast_statement->right), 0, jp->reg_alloc - 1);
+                jp->reg_alloc--;
+                assert(jp->reg_alloc == 0);
+                //printf("offset = %lu\n", offset);
+                return;
+            } else {
+                assert(right_type->kind == TYPE_KIND_ARRAY);
+                //int i = arrlen(jp->instructions);
+                ir_gen_expr(jp, ast_statement->right);
+                ir_gen_expr(jp, ast_statement->left);
+                assert(jp->reg_alloc == 2);
+                ir_gen_memorycopy(jp, left_type->bytes, jp->reg_alloc - 1, jp->reg_alloc - 2);
+                jp->reg_alloc -= 2;
+                assert(jp->reg_alloc == 0);
+                //while(i < arrlen(jp->instructions)) {
+                //    printf("%i: ", i);
+                //    print_ir_inst(jp->instructions[i]);
+                //    ++i;
+                //}
+                //assert(0);
+            }
+        } else {
+            UNIMPLEMENTED;
+        }
         
         //if(ast_statement->right && ast_statement->right->kind == AST_KIND_array_literal) {
         //    UNIMPLEMENTED;
@@ -4718,11 +4940,75 @@ void ir_gen_block(Job *jp, AST *ast) {
                     AST_returnstatement *ast_return = (AST_returnstatement*)ast;
                     Type *proc_type = jp->cur_proc_type;
                     u64 i = 0;
+                    int non_scalar_returns = 0;
                     for(AST_expr_list *expr_list = ast_return->expr_list; expr_list; expr_list = expr_list->next) {
                         Type *return_type = proc_type->proc.ret.types[i];
 
                         if(TYPE_KIND_IS_NOT_SCALAR(return_type->kind)) {
-                            UNIMPLEMENTED;
+                            if(return_type->kind == TYPE_KIND_ARRAY) {
+                                if(expr_list->expr->kind == AST_KIND_array_literal) {
+                                    assert(jp->float_reg_alloc == 0);
+                                    assert(jp->reg_alloc == 0);
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = IROP_GETLOCAL,
+                                            .getvar = {
+                                                .reg_dest = 0,
+                                                .offset = non_scalar_returns << 3,
+                                                .bytes = 8,
+                                            },
+                                        };
+                                    arrpush(jp->instructions, inst);
+                                    jp->reg_alloc++;
+                                    ir_gen_copy_array_literal(jp, return_type, (AST_array_literal*)(expr_list->expr), 0, 0);
+                                    jp->reg_alloc--;
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = IROP_SETRET,
+                                            .setport = {
+                                                .port = i,
+                                                .bytes = 8,
+                                                .reg_src = 0,
+                                                .c_call = proc_type->proc.c_call,
+                                            },
+                                        };
+                                    arrpush(jp->instructions, inst);
+                                } else {
+                                    assert(jp->float_reg_alloc == 0);
+                                    assert(jp->reg_alloc == 0);
+                                    ir_gen_expr(jp, expr_list->expr);
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = IROP_GETLOCAL,
+                                            .getvar = {
+                                                .reg_dest = jp->reg_alloc++,
+                                                .offset = non_scalar_returns << 3,
+                                                .bytes = 8,
+                                            },
+                                        };
+                                    arrpush(jp->instructions, inst);
+                                    ir_gen_memorycopy(jp, return_type->bytes, jp->reg_alloc - 1, jp->reg_alloc - 2);
+                                    jp->reg_alloc--;
+                                    assert(jp->reg_alloc == 1);
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = IROP_SETRET,
+                                            .setport = {
+                                                .port = i,
+                                                .bytes = 8,
+                                                .reg_src = jp->reg_alloc,
+                                                .c_call = proc_type->proc.c_call,
+                                            },
+                                        };
+                                    jp->reg_alloc--;
+                                    assert(jp->reg_alloc == 0);
+                                    arrpush(jp->instructions, inst);
+                                }
+                            } else {
+                                UNIMPLEMENTED;
+                            }
+
+                            non_scalar_returns++;
                         } else {
                             ir_gen_expr(jp, expr_list->expr);
 
@@ -5818,6 +6104,25 @@ void ir_gen_expr(Job *jp, AST *ast) {
             bool params_passed[arrlen(params)];
             for(int i = 0; i < STATICARRLEN(params_passed); ++i) params_passed[i] = false;
 
+            //TODO allocate space for non scalar (struct, array) return values here
+
+            /* NOTE
+             * here we allocate local data for the return values of nested procedure calls
+             * and varargs arrays
+             */
+            arrpush(jp->local_offset, arrlast(jp->local_offset));
+
+            u64 non_scalar_return_addrs[callee_type->proc.ret.n];
+            int non_scalar_return_count = 0;
+
+            for(int i = 0; i < callee_type->proc.ret.n; ++i) {
+                Type *t = callee_type->proc.ret.types[i];
+                if(TYPE_KIND_IS_NOT_SCALAR(t->kind)) {
+                    non_scalar_return_addrs[non_scalar_return_count++] = arrlast(jp->local_offset);
+                    arrlast(jp->local_offset) += t->bytes;
+                }
+            }
+
             for(AST_param *p = ast_call->params; p; p = p->next) {
                 p->has_nested_call = has_nested_call(p->value);
 
@@ -5854,14 +6159,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 params_passed[i] = true;
             }
 
-            //TODO allocate space for non scalar (struct, array) return values here
-
-            /* NOTE
-             * here we allocate local data for the return values of nested procedure calls
-             * and varargs arrays
-             */
-            arrpush(jp->local_offset, arrlast(jp->local_offset));
-
+            //TODO this is error prone, need a better way of saving the registers
             Arr(u64) iregs_saved = NULL;
             Arr(u64) fregs_saved = NULL;
             Arr(u64) register_save_offsets = NULL;
@@ -5979,39 +6277,14 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 }
             }
             
+            //TODO finish passing the return address through port
             while(arrlen(params) > 0) {
                 AST_param *p = arrpop(params);
 
                 if(p->has_nested_call) {
                     if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
                         UNIMPLEMENTED;
-                        if(p->type_annotation->kind == TYPE_KIND_ARRAY) {
-                            /*
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_GETLOCAL,
-                                    .getvar = {
-                                        .reg_dest = jp->reg_alloc,
-                                        .offset = arrpop(nested_call_param_offsets),
-                                        .bytes = p->type_annotation->bytes,
-                                    },
-                                };
-                            arrpush(jp->instructions, inst);
-
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_SETARG,
-                                    .setport = {
-                                        .port = p->index,
-                                        .bytes = 8,
-                                        .reg_src = jp->reg_alloc,
-                                    },
-                                };
-                            arrpush(jp->instructions, inst);
-                            */
-                        } else {
-                            UNIMPLEMENTED;
-                        }
+                        //NOTE this is just a memory copy
                     } else {
                         IRop opcode1 = IROP_GETLOCAL;
                         IRop opcode2 = IROP_SETARG;
@@ -6037,7 +6310,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                             (IRinst) {
                                 .opcode = opcode2,
                                 .setport = {
-                                    .port = p->index,
+                                    .port = non_scalar_return_count + p->index,
                                     .bytes = p->type_annotation->bytes,
                                     .reg_src = reg,
                                 },
@@ -6067,7 +6340,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                 (IRinst) {
                                     .opcode = IROP_SETARG,
                                     .setport = {
-                                        .port = p->index,
+                                        .port = non_scalar_return_count + p->index,
                                         .bytes = 8,
                                         .reg_src = jp->reg_alloc,
                                     },
@@ -6096,7 +6369,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                             (IRinst) {
                                 .opcode = opcode,
                                 .setport = {
-                                    .port = p->index,
+                                    .port = non_scalar_return_count + p->index,
                                     .bytes = p->type_annotation->bytes,
                                     .reg_src = reg,
                                 },
@@ -6104,6 +6377,29 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         arrpush(jp->instructions, inst);
                     }
                 }
+            }
+
+            for(int i = 0; i < non_scalar_return_count; ++i) {
+                u64 offset = non_scalar_return_addrs[i];
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_ADDRLOCAL,
+                        .addrvar = {
+                            .reg_dest = jp->reg_alloc,
+                            .offset = offset,
+                        },
+                    };
+                arrpush(jp->instructions, inst);
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_SETARG,
+                        .setport = {
+                            .port = i,
+                            .bytes = 8,
+                            .reg_src = jp->reg_alloc,
+                        },
+                    };
+                arrpush(jp->instructions, inst);
             }
 
             inst =
@@ -6117,6 +6413,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 };
             arrpush(jp->instructions, inst);
 
+            //TODO this might be wrong
             if(arrlen(iregs_saved) > 0) jp->reg_alloc = arrlast(iregs_saved) + 1;
             if(arrlen(fregs_saved) > 0) jp->float_reg_alloc = arrlast(fregs_saved) + 1;
 
@@ -6150,10 +6447,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
             arrfree(fregs_saved);
             arrfree(iregs_saved);
 
-            /* NOTE
-             * here we allocate local data for the return values of nested procedure calls
-             * and varargs arrays
-             */
+            /* here we free local data for the return values of nested procedure calls and varargs arrays */
             if(arrlast(jp->local_offset) > jp->max_local_offset) jp->max_local_offset = arrlast(jp->local_offset);
             arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
 
@@ -6161,7 +6455,17 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 continue;
 
             if(TYPE_KIND_IS_NOT_SCALAR(return_type->kind)) {
-                UNIMPLEMENTED;
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_GETRET,
+                        .getport = {
+                            .reg_dest = jp->reg_alloc++,
+                            .bytes = 8,
+                            .port = 0,
+                            .c_call = false, //TODO c_call
+                        },
+                    };
+                arrpush(jp->instructions, inst);
             } else {
                 IRop opcode;
                 u64 reg_dest;
@@ -7848,7 +8152,7 @@ void typecheck_expr(Job *jp) {
 
             Value *array_val = job_alloc_value(jp, VALUE_KIND_ARRAY);
             array_val->val.array.n = array_lit->n_elements;
-            array_val->val.array.type = array_elem_type;
+            //array_val->val.array.type = array_elem_type;
             array_val->val.array.elements = elements;
 
             arrsetlen(type_stack, arrlen(type_stack) - array_lit->n_elements);
@@ -8089,6 +8393,10 @@ void typecheck_expr(Job *jp) {
                     switch(t->kind) {
                         default:
                             UNREACHABLE;
+                        case TYPE_KIND_ARRAY:
+                            v->kind = VALUE_KIND_ARRAY;
+                            copy_array_data_to_value(jp, v, t, (u8*)(void*)(jp->interp.ports[i].integer));
+                            break;
                         case TYPE_KIND_BOOL:
                             v->kind = VALUE_KIND_BOOL;
                             v->val.boolean = (bool)(jp->interp.ports[i].integer);
@@ -8096,7 +8404,6 @@ void typecheck_expr(Job *jp) {
                         case TYPE_KIND_CHAR:
                             v->kind = VALUE_KIND_CHAR;
                             v->val.character = (char)(jp->interp.ports[i].integer);
-                            return_value_array[i] = v;
                             break;
                         case TYPE_KIND_S8:
                         case TYPE_KIND_S16:
@@ -8886,7 +9193,6 @@ void print_sym(Sym sym) {
 //TODO return arrays from procedures
 //TODO static array initialization and assignment need to be improved
 //TODO dynamic arrays and views
-//TODO pass arrays to procedures
 //TODO structs
 //TODO pass structs to procedures
 //TODO C interop
