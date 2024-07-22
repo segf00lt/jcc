@@ -5523,6 +5523,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
                 if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind)) {
                     printf("result_type = %s\n", job_type_to_str(jp, result_type));
+                    //TODO array values
                     UNIMPLEMENTED;
                 } else if(result_type->kind == TYPE_KIND_F64) {
                     opcode = IROP_LOADF;
