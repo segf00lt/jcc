@@ -944,6 +944,8 @@ void        do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type);
 
 void        copy_array_data_to_value(Job *jp, Value *v, Type *t, u8 *data);
 
+Value*      make_empty_array_value(Job *jp, Type *t);
+
 Arr(AST*)   ir_linearize_expr(Arr(AST*) ir_expr, AST *ast);
 
 void        ir_gen(Job *jp);
@@ -954,6 +956,7 @@ void        ir_gen_expr(Job *jp, AST *ast);
 u64         ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array);
 u64         ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array, u64 offset, u64 ptr_reg);
 void        ir_gen_memorycopy(Job *jp, u64 bytes, u64 to_ptr_reg, u64 from_ptr_reg);
+u64         ir_gen_array_from_value(Job *jp, Type *array_type, Value *v);
 void        ir_run(Job *jp, int procid);
 
 Value*      atom_to_value(Job *jp, AST_atom *atom);
@@ -1538,6 +1541,145 @@ bool all_paths_return(Job *jp, AST *ast) {
     }
 
     return true;
+}
+
+Value* make_empty_array_value(Job *jp, Type *t) {
+    Value *v = job_alloc_value(jp, VALUE_KIND_ARRAY);
+    v->val.array.n = t->array.n;
+    v->val.array.elements = job_alloc_scratch(jp, sizeof(Value*) * t->array.n);
+    if(t->array.of->kind == TYPE_KIND_ARRAY) {
+        for(int i = 0; i < t->array.n; ++i)
+            v->val.array.elements[i] = make_empty_array_value(jp, t->array.of);
+    } else {
+        Valuekind kind;
+
+        switch(t->array.of->kind) {
+            default:
+                UNREACHABLE;
+            case TYPE_KIND_BOOL:
+                kind = VALUE_KIND_BOOL;
+                break;
+            case TYPE_KIND_CHAR:
+                kind = VALUE_KIND_CHAR;
+                break;
+            case TYPE_KIND_S8:
+            case TYPE_KIND_S16:
+            case TYPE_KIND_S32:
+            case TYPE_KIND_S64:
+            case TYPE_KIND_INT:
+                kind = VALUE_KIND_INT;
+                break;
+            case TYPE_KIND_U8:
+            case TYPE_KIND_U16:
+            case TYPE_KIND_U32:
+            case TYPE_KIND_U64:
+                kind = VALUE_KIND_UINT;
+                break;
+            case TYPE_KIND_FLOAT:
+            case TYPE_KIND_F32:
+                kind = VALUE_KIND_FLOAT;
+                break;
+            case TYPE_KIND_F64:
+                UNIMPLEMENTED;
+                break;
+        }
+
+        for(int i = 0; i < t->array.n; ++i)
+            v->val.array.elements[i] = job_alloc_value(jp, kind);
+    }
+
+    return v;
+}
+
+u64 ir_gen_array_from_value(Job *jp, Type *array_type, Value *v) {
+    assert(array_type->kind == TYPE_KIND_ARRAY);
+    assert(v->kind == VALUE_KIND_ARRAY);
+
+    u64 offset = arrlast(jp->local_offset);
+    assert(array_type->bytes == array_type->array.element_stride * array_type->array.n);
+    u64 expected_size = array_type->bytes;
+
+    if(array_type->array.of->kind == TYPE_KIND_ARRAY) {
+        for(int i = 0; i < v->val.array.n; ++i) {
+            ir_gen_array_from_value(jp, array_type->array.of, v->val.array.elements[i]);
+        }
+    } else {
+        arrlast(jp->local_offset) += expected_size;
+
+        if(TYPE_KIND_IS_NOT_SCALAR(array_type->array.of->kind)) {
+            UNIMPLEMENTED;
+        } else {
+            u64 stride = array_type->array.element_stride;
+
+            //u64 *regp = &(jp->reg_alloc);
+
+            IRinst inst = {
+                .opcode = IROP_SETLOCAL,
+                .setvar = {
+                    .offset = offset,
+                    .bytes = stride,
+                },
+            };
+
+            if(TYPE_KIND_IS_FLOAT(array_type->array.of->kind)) {
+                //regp = &(jp->float_reg_alloc);
+
+                inst = (IRinst) {
+                    .opcode = IROP_SETLOCALF,
+                    .setvar = {
+                        .offset = offset,
+                        .bytes = stride,
+                    },
+                };
+            }
+
+            for(int i = 0; i < v->val.array.n; ++i) {
+                Value *elem = v->val.array.elements[i];
+                assert(elem->kind != VALUE_KIND_NIL);
+
+                inst.setvar.immediate = true;
+                if(array_type->array.of->kind == TYPE_KIND_F64) {
+                    UNIMPLEMENTED; //TODO implement f64
+                } else if(array_type->array.of->kind >= TYPE_KIND_FLOAT) {
+                    //TODO implicit casts should be resolved in the typechecker
+                    //TODO overhaul typechecking and implement number type
+                    if(elem->kind <= VALUE_KIND_UINT) {
+                        assert(elem->kind != VALUE_KIND_UINT); // uint shouldn't implicitly cast
+                        assert(elem->kind != VALUE_KIND_NIL);
+                        inst.setvar.imm.floating32 = (f32)(elem->val.integer);
+                    } else {
+                        inst.setvar.imm.floating32 = elem->val.floating;
+                    }
+                } else {
+                    inst.setvar.imm.integer = elem->val.integer;
+                }
+
+                arrpush(jp->instructions, inst);
+                inst.setvar.offset += stride;
+            }
+        }
+    }
+
+    u64 cur_offset = arrlast(jp->local_offset);
+    u64 expected_offset = offset + expected_size;
+
+    for(u64 step = 8; cur_offset < expected_offset; cur_offset += step) {
+        while(cur_offset + step > expected_offset) step >>= 1;
+        IRinst inst =
+            (IRinst) {
+                .opcode = IROP_SETLOCAL,
+                .setvar = {
+                    .offset = cur_offset,
+                    .bytes = step,
+                    .immediate = true,
+                },
+            };
+        arrpush(jp->instructions, inst);
+    }
+
+    arrlast(jp->local_offset) = expected_offset;
+
+    return offset;
 }
 
 INLINE void print_ir_inst(IRinst inst) {
@@ -3995,7 +4137,24 @@ void ir_run(Job *jp, int procid) {
 }
 
 void copy_array_data_to_value(Job *jp, Value *v, Type *t, u8 *data) {
-    UNIMPLEMENTED;
+    assert(t->kind = TYPE_KIND_ARRAY); 
+    assert(v->kind = VALUE_KIND_ARRAY);
+    assert(t->array.n == v->val.array.n);
+
+    if(t->array.of->kind == TYPE_KIND_ARRAY) {
+        for(int i = 0; i < t->array.n; ++i) {
+            copy_array_data_to_value(jp, v->val.array.elements[i], t->array.of, data + i * t->array.element_stride);
+        }
+    } else {
+        if(TYPE_KIND_IS_NOT_SCALAR(t->array.of->kind)) {
+            UNIMPLEMENTED;
+        } else {
+            for(int i = 0; i < t->array.n; ++i) {
+                memcpy((void*)(&(v->val.array.elements[i]->val)), data + i * t->array.element_stride, t->array.element_stride);
+            }
+        }
+    }
+
 }
 
 /*
@@ -5514,6 +5673,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
             if(node->value_annotation && node->value_annotation->kind != VALUE_KIND_NIL) {
                 Type *result_type = node->type_annotation;
+                Value *result_value = node->value_annotation;
 
                 assert(result_type->kind != TYPE_KIND_VOID);
 
@@ -5523,32 +5683,49 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
                 if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind)) {
                     printf("result_type = %s\n", job_type_to_str(jp, result_type));
-                    //TODO array values
-                    UNIMPLEMENTED;
-                } else if(result_type->kind == TYPE_KIND_F64) {
-                    opcode = IROP_LOADF;
-                    imm.floating64 = node->value_annotation->val.dfloating;
-                    reg_destp = &(jp->float_reg_alloc);
-                } else if(result_type->kind >= TYPE_KIND_FLOAT) {
-                    opcode = IROP_LOADF;
-                    imm.floating32 = node->value_annotation->val.floating;
-                    reg_destp = &(jp->float_reg_alloc);
+                    if(result_type->kind == TYPE_KIND_ARRAY) {
+                        u64 array_offset = ir_gen_array_from_value(jp, result_type, result_value);
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_ADDRLOCAL,
+                                .addrvar = {
+                                    .reg_dest = jp->reg_alloc++,
+                                    .offset = array_offset,
+                                },
+                            };
+
+                        arrpush(jp->instructions, inst);
+                        arrpush(type_stack, result_type);
+                        continue;
+                    } else {
+                        UNIMPLEMENTED;
+                    }
+                } else {
+                    if(result_type->kind == TYPE_KIND_F64) {
+                        opcode = IROP_LOADF;
+                        imm.floating64 = result_value->val.dfloating;
+                        reg_destp = &(jp->float_reg_alloc);
+                    } else if(result_type->kind >= TYPE_KIND_FLOAT) {
+                        opcode = IROP_LOADF;
+                        imm.floating32 = result_value->val.floating;
+                        reg_destp = &(jp->float_reg_alloc);
+                    }
+
+                    inst =
+                        (IRinst) {
+                            .opcode = opcode,
+                            .load = {
+                                .reg_dest = (*reg_destp)++,
+                                .bytes = result_type->bytes,
+                                .imm = imm,
+                                .immediate = true,
+                            },
+                        };
+
+                    arrpush(jp->instructions, inst);
+                    arrpush(type_stack, result_type);
+                    continue;
                 }
-
-                inst =
-                    (IRinst) {
-                        .opcode = opcode,
-                        .load = {
-                            .reg_dest = (*reg_destp)++,
-                            .bytes = result_type->bytes,
-                            .imm = imm,
-                            .immediate = true,
-                        },
-                    };
-
-                arrpush(type_stack, result_type);
-                arrpush(jp->instructions, inst);
-                continue;
             }
 
             if(node->token == TOKEN_AND || node->token == TOKEN_OR || node->token == '!') {
@@ -6057,31 +6234,49 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
                 if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind)) {
                     printf("result_type = %s\n", job_type_to_str(jp, result_type));
-                    UNIMPLEMENTED;
-                } else if(result_type->kind == TYPE_KIND_F64) {
-                    opcode = IROP_LOADF;
-                    imm.floating64 = result_value->val.dfloating;
-                    reg_destp = &(jp->float_reg_alloc);
-                } else if(result_type->kind >= TYPE_KIND_FLOAT) {
-                    opcode = IROP_LOADF;
-                    imm.floating32 = result_value->val.floating;
-                    reg_destp = &(jp->float_reg_alloc);
+                    if(result_type->kind == TYPE_KIND_ARRAY) {
+                        u64 array_offset = ir_gen_array_from_value(jp, result_type, result_value);
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_ADDRLOCAL,
+                                .addrvar = {
+                                    .reg_dest = jp->reg_alloc++,
+                                    .offset = array_offset,
+                                },
+                            };
+
+                        arrpush(jp->instructions, inst);
+                        arrpush(type_stack, result_type);
+                        continue;
+                    } else {
+                        UNIMPLEMENTED;
+                    }
+                } else {
+                    if(result_type->kind == TYPE_KIND_F64) {
+                        opcode = IROP_LOADF;
+                        imm.floating64 = result_value->val.dfloating;
+                        reg_destp = &(jp->float_reg_alloc);
+                    } else if(result_type->kind >= TYPE_KIND_FLOAT) {
+                        opcode = IROP_LOADF;
+                        imm.floating32 = result_value->val.floating;
+                        reg_destp = &(jp->float_reg_alloc);
+                    }
+
+                    inst =
+                        (IRinst) {
+                            .opcode = opcode,
+                            .load = {
+                                .reg_dest = (*reg_destp)++,
+                                .bytes = result_type->bytes,
+                                .imm = imm,
+                                .immediate = true,
+                            },
+                        };
+
+                    arrpush(jp->instructions, inst);
+                    arrpush(type_stack, result_type);
+                    continue;
                 }
-
-                inst =
-                    (IRinst) {
-                        .opcode = opcode,
-                        .load = {
-                            .reg_dest = (*reg_destp)++,
-                            .bytes = result_type->bytes,
-                            .imm = imm,
-                            .immediate = true,
-                        },
-                    };
-
-                arrpush(type_stack, result_type);
-                arrpush(jp->instructions, inst);
-                continue;
             }
 
 
@@ -8389,13 +8584,18 @@ void typecheck_expr(Job *jp) {
 
                 for(u64 i = 0; i < proc_type->proc.ret.n; ++i) {
                     Type *t = proc_type->proc.ret.types[i];
-                    Value *v = job_alloc_value(jp, VALUE_KIND_NIL);
+                    Value *v;
+
+                    if(t->kind == TYPE_KIND_ARRAY) {
+                        v = make_empty_array_value(jp, t);
+                    } else {
+                        v = job_alloc_value(jp, VALUE_KIND_NIL);
+                    }
 
                     switch(t->kind) {
                         default:
                             UNREACHABLE;
                         case TYPE_KIND_ARRAY:
-                            v->kind = VALUE_KIND_ARRAY;
                             copy_array_data_to_value(jp, v, t, (u8*)(void*)(jp->interp.ports[i].integer));
                             break;
                         case TYPE_KIND_BOOL:

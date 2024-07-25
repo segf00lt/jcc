@@ -40,7 +40,7 @@ proc main() int {
 
     array8[1] = [6, 8];
 
-    array1 = make_array(5150);
+    array1 = #run make_array(5150);
 
     return array1[2];
 }
