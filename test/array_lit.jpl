@@ -42,12 +42,28 @@ proc main() int {
 
     array1 = #run make_array(5150);
 
-    return array1[2];
+    mat := make_matrix(3);
+    
+    mat2: [3][2]int = ---;
+
+    mat2 = mat;
+//    mat2[2][0] = 0;
+
+//    return array1[2] + mat[2][0] * mat2[2][0];
+    return array1[2] + mat[2][0];
 }
 
 proc other_proc(arr: [4]int) int {
     arr = [7, 8, 9, 10];
     return arr[3] + arr[0];
+}
+
+proc make_matrix(x: int) [3][2]int {
+    return [
+            [x, x * 2],
+            [x * 3, x * 4],
+            [x * 5, x * 6],
+    ];
 }
 
 proc make_array(i: int) [4]int {

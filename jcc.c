@@ -4331,24 +4331,22 @@ u64 ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_
                         inst.stor.imm.integer = expr_base->value_annotation->val.integer;
                     }
                 }
-                arrpush(jp->instructions, inst);
-                inst.stor.byte_offset_imm += stride;
+                inst.stor.byte_offset_imm = offset;
                 offset += stride;
+                arrpush(jp->instructions, inst);
             }
         }
     }
 
-    u64 cur_offset = offset;
-
     //NOTE this assumes that the initial offset passed was 0
-    for(u64 step = 8; cur_offset < expected_size; cur_offset += step) {
-        while(cur_offset + step > expected_size) step >>= 1;
+    for(u64 step = 8; offset < expected_size; offset += step) {
+        while(offset + step > expected_size) step >>= 1;
         IRinst inst =
             (IRinst) {
                 .opcode = IROP_STOR,
                 .stor = {
                     .reg_dest_ptr = ptr_reg,
-                    .byte_offset_imm = cur_offset,
+                    .byte_offset_imm = offset,
                     .bytes = step,
                     .has_immediate_offset = true,
                     .immediate = true,
@@ -4357,7 +4355,7 @@ u64 ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_
         arrpush(jp->instructions, inst);
     }
 
-    return expected_size;
+    return offset;
 }
 
 void ir_gen_memorycopy(Job *jp, u64 bytes, u64 to_ptr_reg, u64 from_ptr_reg) {
@@ -5226,10 +5224,28 @@ void ir_gen_block(Job *jp, AST *ast) {
                     if(TYPE_KIND_IS_NOT_SCALAR(var_type->kind)) {
                         if(var_type->kind == TYPE_KIND_ARRAY) {
                             if(ast_vardecl->init) {
-                                assert(ast_vardecl->init->kind == AST_KIND_array_literal);
-                                AST_array_literal *array_literal = (AST_array_literal*)(ast_vardecl->init);
-                                u64 array_data_offset = ir_gen_array_literal(jp, var_type, array_literal);
-                                assert(array_data_offset == sym->segment_offset);
+                                if(ast_vardecl->init->kind == AST_KIND_array_literal) {
+                                    AST_array_literal *array_literal = (AST_array_literal*)(ast_vardecl->init);
+                                    u64 array_data_offset = ir_gen_array_literal(jp, var_type, array_literal);
+                                    assert(array_data_offset == sym->segment_offset);
+                                } else {
+                                    u64 offset = arrlast(jp->local_offset);
+                                    arrlast(jp->local_offset) += var_type->bytes;
+                                    ir_gen_expr(jp, ast_vardecl->init);
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = IROP_ADDRLOCAL,
+                                            .addrvar = {
+                                                .reg_dest = jp->reg_alloc++,
+                                                .offset = offset,
+                                            },
+                                        };
+                                    arrpush(jp->instructions, inst);
+                                    assert(jp->reg_alloc == 2);
+                                    ir_gen_memorycopy(jp, var_type->bytes, jp->reg_alloc - 1, jp->reg_alloc - 2);
+                                    jp->reg_alloc -= 2;
+                                    assert(jp->reg_alloc == 0);
+                                }
                             } else {
                                 u64 array_data_offset = sym->segment_offset;
                                 assert(var_type->bytes == var_type->array.element_stride * var_type->array.n);
@@ -6356,6 +6372,16 @@ void ir_gen_expr(Job *jp, AST *ast) {
             }
 
             //TODO this is error prone, need a better way of saving the registers
+            //
+            // The problem here is that it is expected that any registers being used
+            // are in use within the expression. This means that if the left hand side
+            // of an assignment is generated before the right registers that shouldn't be
+            // saved, will.
+            // My idea is to save the values of jp->reg_alloc and jp->float_reg_alloc to
+            // local variables that will store the lowest register in use, then we check
+            // if the registers being saved are higher than what we saved as the lower bound
+            // then we don't save them. I think we can guarantee that each nested call expression
+            // won't need to have the outer registers saved as well.
             Arr(u64) iregs_saved = NULL;
             Arr(u64) fregs_saved = NULL;
             Arr(u64) register_save_offsets = NULL;
@@ -6473,7 +6499,6 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 }
             }
             
-            //TODO finish passing the return address through port
             while(arrlen(params) > 0) {
                 AST_param *p = arrpop(params);
 
@@ -9391,7 +9416,6 @@ void print_sym(Sym sym) {
     printf("size_in_bytes: %u\n", sym.type->bytes);
 }
 
-//TODO return arrays from procedures
 //TODO static array initialization and assignment need to be improved
 //TODO dynamic arrays and views
 //TODO structs
