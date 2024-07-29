@@ -17,4 +17,4 @@ To build just run `make`. To run the compiler `./jcc`. At the moment I keep it h
 of the tests in depending what I'm adding so if you'd like to run a different test just go to the bottom of
 `jcc.c` and change the file path.
 
-Only non-standard dependency you need is [raylib](https://github.com/raysan5/raylib) for `LoadFileText()`, but this will be removed soon.
+Only non-standard dependency you need is [raylib](https://github.com/raysan5/raylib), but this will be removed soon.
