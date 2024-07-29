@@ -1,0 +1,25 @@
+proc foo(size: u64, f: float) int #foreign "foo";
+
+proc read(fd: s32, buf: *void, bytes: size_t) size_t #system;
+proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
+proc putchar(c: s32) s32 #system;
+
+size_t :: u64;
+
+STDIN  :: 0;
+STDOUT :: 1;
+STDERR :: 2;
+
+proc main() bool {
+    buf: [2048]char;
+
+    bytes_read := read(STDIN, cast(*void)buf.data, buf.count);
+    bytes_written := write(STDOUT, cast(*void)buf.data, buf.count);
+
+    if bytes_written == bytes_read return 1;
+    else return 0;
+}
+
+#run foo(12, 4.3);
+
+#run main();

@@ -72,6 +72,8 @@ INLINE void arena_init_full(Arena *a, bool cannot_grow, size_t initial_block_byt
 }
 
 INLINE void* arena_alloc(Arena *a, size_t bytes) {
+    if(bytes == 0) return NULL;
+
     if(bytes + a->pos >= a->block_sizes[a->cur_block]) {
         if(a->cannot_grow) {
             fprintf(stderr, "arena_alloc: arena cannot grow so malloc(%zu) bytes\n", bytes);

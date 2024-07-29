@@ -18,7 +18,7 @@
     X(RUN_DIRECTIVE,                  "#run")\
     X(IF_DIRECTIVE,                    "#if")\
     X(FOREIGN_DIRECTIVE,          "#foreign")\
-    X(FOREIGN_LIB_DIRECTIVE,  "#foreign_lib")\
+    X(SYSTEM_DIRECTIVE,            "#system")\
     X(C_CALL_DIRECTIVE,            "#c_call")\
     X(INLINE_DIRECTIVE,            "#inline")\
     X(PROC,                           "proc")\

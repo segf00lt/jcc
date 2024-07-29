@@ -1,42 +1,8 @@
-
 #run rule110(#run fib(#run fib(8)));
 
 proc rule110(N: int) void {
     buf2: [D]bool = ---;
 
-/*
-    buf1: [(buf2.count / 2) + (D >> 1)]bool = ---;
-    buf1[0] = 1;
-    buf1[1] = 1;
-    buf1[2] = 0;
-    buf1[3] = 1;
-    buf1[4] = 0;
-    buf1[5] = 0;
-    buf1[6] = 0;
-    buf1[7] = 0;
-    buf1[8] = 1;
-    buf1[9] = 0;
-    buf1[10] = 0;
-    buf1[11] = 1;
-    buf1[12] = 0;
-    buf1[13] = 0;
-    buf1[14] = 0;
-    buf1[15] = 1;
-    buf1[16] = 0;
-    buf1[17] = 0;
-    buf1[18] = 0;
-    buf1[19] = 0;
-    buf1[20] = 0;
-    buf1[21] = 1;
-    buf1[22] = 0;
-    buf1[23] = 0;
-    buf1[24] = 0;
-    buf1[25] = 0;
-    buf1[26] = 0;
-    buf1[27] = 0;
-    buf1[28] = 1;
-    buf1[29] = 1;
-    */
     buf1: [(buf2.count / 2) + (D >> 1)]bool = [
           1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1,
     ];
@@ -55,6 +21,10 @@ proc rule110(N: int) void {
     rules[7] = 0;
 
     N += fib(8);
+
+    print_char(10);
+    print_int(N);
+    print_char(10);
 
     while generation_loop: N > 0 || 0 {
         defer N--;
@@ -85,10 +55,62 @@ proc rule110(N: int) void {
         tape = next_tape;
         next_tape = tmp;
     }
+
+    i := 0;
+    
+    while i < D - 1 {
+        defer i++;
+        if tape[i] print_char(49);
+        else       print_char(48);
+        print_char(32);
+    }
+
+    if tape[i] print_char(49);
+    else       print_char(48);
+    print_char(10);
+    print_char(10);
 }
 
+size_t :: u64;
+
+proc print_int(n: int) {
+    buf: [64]char = ---;
+    reversed_buf: [buf.count]char = ---;
+
+    i := 0;
+
+    c := n % 10 + 48;
+    n /= 10;
+    buf[i] = c;
+    i++;
+
+    while n > 0 {
+        c = n % 10 + 48;
+        n /= 10;
+        buf[i] = c;
+        i++;
+    }
+
+    j := 0;
+
+    while i > 0 {
+        i--;
+        reversed_buf[j] = buf[i];
+        j++;
+    }
+
+    write(STDOUT, cast(*void)reversed_buf.data, reversed_buf.count);
+}
+
+proc print_char(c: char) {
+    buf := [c];
+    write(STDOUT, cast(*void)buf.data, buf.count);
+}
+
+proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
+
 proc test2(x: int) {
-    //x = fib(x);
+    x = fib(x);
     return;
 }
 
@@ -103,9 +125,13 @@ proc fib2(n: int) int {
 }
 
 proc test(x: int) int {
-    //x = fib(x);
+    x = fib(x);
     return x + 1;
 }
 
 D :: 30;
+
+STDIN  :: 0;
+STDOUT :: 1;
+STDERR :: 2;
 
