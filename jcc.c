@@ -4541,7 +4541,7 @@ void ir_run(Job *jp, int procid) {
                     interp.f64regs[inst.typeconv.to_reg] = (f64)(imask & interp.iregs[inst.typeconv.from_reg]);
                 } else {
                     imask = (inst.typeconv.from_bytes < 8)
-                        ? ((1LU << (inst.typeconv.from_bytes << 3)) - 1LU)
+                        ? ((1LU << (inst.typeconv.from_bytes << 3LU)) - 1LU)
                         : (u64)(-1);
                     interp.f32regs[inst.typeconv.to_reg] = (f32)(imask & interp.iregs[inst.typeconv.from_reg]);
                 }
