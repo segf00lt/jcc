@@ -1138,6 +1138,7 @@ void job_init_allocator_ast(Job *jp) {
     jp->allocator.active.ast = true;
 }
 
+//TODO jobs can't die because of errors
 void job_die(Job *jp) {
     jp->id = -1;
 
@@ -4117,11 +4118,6 @@ void ir_run(Job *jp, int procid) {
         inst = procedure[pc];
         imask = 0;
 
-        if(procid == 1)
-            PASS;
-        if(inst.opcode == IROP_DIV)
-            PASS;
-
         /*
         printf("%lu: ", pc);
         print_ir_inst(inst);
@@ -4206,8 +4202,9 @@ void ir_run(Job *jp, int procid) {
                 continue;
             case IROP_CALL:
                 if(inst.call.is_foreign) {
-                    //UNIMPLEMENTED;
                     u64 new_procid = inst.call.id_imm;
+                    if(new_procid == 3)
+                        PASS;
                     if(!inst.call.immediate) new_procid = interp.iregs[inst.call.id_reg];
                     IR_foreign_proc foreign_proc = hmget(foreign_procedure_table, new_procid);
                     foreign_proc(&interp);
@@ -4247,8 +4244,8 @@ void ir_run(Job *jp, int procid) {
             case IROP_LOAD:
                 if(inst.load.immediate) {
                     imask = (inst.load.bytes < 8)
-                        ? ((1 << (inst.load.bytes << 3)) - 1)
-                        : (u64)(-1);
+                        ? ((u64)((1LU << (inst.load.bytes << 3LU)) - 1LU))
+                        : ((u64)(-1));
                     interp.iregs[inst.load.reg_dest] = imask & inst.load.imm.integer;
                 } else {
                     u8 *ptr = (u8*)(interp.iregs[inst.load.reg_src_ptr]);
@@ -4478,7 +4475,7 @@ void ir_run(Job *jp, int procid) {
                     if(inst.setport.port >= arrlen(interp.ports))
                         arrsetlen(interp.ports, inst.setport.port + 1);
                     imask = (inst.setport.bytes < 8)
-                        ? ((1 << (inst.setport.bytes << 3)) - 1)
+                        ? ((1LU << (inst.setport.bytes << 3LU)) - 1LU)
                         : (u64)(-1);
                     interp.ports[inst.setport.port].integer = imask & interp.iregs[inst.setport.reg_src];
                 }
@@ -4489,7 +4486,7 @@ void ir_run(Job *jp, int procid) {
                     if(inst.getport.port >= arrlen(interp.ports))
                         arrsetlen(interp.ports, inst.getport.port + 1);
                     imask = (inst.getport.bytes < 8)
-                        ? ((1 << (inst.getport.bytes << 3)) - 1)
+                        ? ((1LU << (inst.getport.bytes << 3LU)) - 1LU)
                         : (u64)(-1);
                     interp.iregs[inst.getport.reg_dest] = imask & interp.ports[inst.getport.port].integer;
                 }
@@ -4539,12 +4536,12 @@ void ir_run(Job *jp, int procid) {
             case IROP_ITOF:
                 if(inst.typeconv.to_bytes == 8) {
                     imask = (inst.typeconv.from_bytes < 8)
-                        ? ((1 << (inst.typeconv.from_bytes << 3)) - 1)
+                        ? ((1LU << (inst.typeconv.from_bytes << 3LU)) - 1LU)
                         : (u64)(-1);
                     interp.f64regs[inst.typeconv.to_reg] = (f64)(imask & interp.iregs[inst.typeconv.from_reg]);
                 } else {
                     imask = (inst.typeconv.from_bytes < 8)
-                        ? ((1 << (inst.typeconv.from_bytes << 3)) - 1)
+                        ? ((1LU << (inst.typeconv.from_bytes << 3)) - 1LU)
                         : (u64)(-1);
                     interp.f32regs[inst.typeconv.to_reg] = (f32)(imask & interp.iregs[inst.typeconv.from_reg]);
                 }
@@ -4561,12 +4558,12 @@ void ir_run(Job *jp, int procid) {
             case IROP_FTOI:
                 if(inst.typeconv.from_bytes == 8) {
                     imask = (inst.typeconv.to_bytes < 8)
-                        ? ((1 << (inst.typeconv.to_bytes << 3)) - 1)
+                        ? ((1LU << (inst.typeconv.to_bytes << 3LU)) - 1LU)
                         : (u64)(-1);
                     interp.iregs[inst.typeconv.to_reg] = imask & (u64)(interp.f64regs[inst.typeconv.from_reg]);
                 } else {
                     imask = (inst.typeconv.to_bytes < 8)
-                        ? ((1 << (inst.typeconv.to_bytes << 3)) - 1)
+                        ? ((1LU << (inst.typeconv.to_bytes << 3LU)) - 1LU)
                         : (u64)(-1);
                     interp.iregs[inst.typeconv.to_reg] = imask & (u64)(interp.f32regs[inst.typeconv.from_reg]);
                 }
@@ -4574,7 +4571,7 @@ void ir_run(Job *jp, int procid) {
             case IROP_ITOI:
                 {
                     imask = (inst.typeconv.to_bytes < 8)
-                        ? ((1 << (inst.typeconv.to_bytes << 3)) - 1)
+                        ? ((1LU << (inst.typeconv.to_bytes << 3LU)) - 1LU)
                         : (u64)(-1);
                     interp.iregs[inst.typeconv.to_reg] = imask & interp.iregs[inst.typeconv.from_reg];
                 }
@@ -5543,7 +5540,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                     arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
 
                     printf("jp->reg_alloc %d\n", jp->reg_alloc);
-                    //assert(jp->reg_alloc == 0);
+                    assert(jp->reg_alloc == 0);
                     assert(jp->float_reg_alloc == 0);
 
                     ast = ast_block->next;
@@ -5804,6 +5801,9 @@ void ir_gen_block(Job *jp, AST *ast) {
                         ir_gen_statement(jp, ast_statement);
                         ast = ast_statement->next;
                     }
+
+                    jp->reg_alloc = 0;
+                    jp->float_reg_alloc = 0;
                 }
                 break;
             case AST_KIND_continuestatement:
@@ -7597,6 +7597,13 @@ void job_runner(char *src, char *src_path) {
                             if(ast_statement->right == NULL && ast_statement->assign_op == 0) {
                                 jp->step = TYPECHECK_STEP_NONE;
                                 arrlast(jp->tree_pos_stack) = ast_statement->next;
+
+                                if(type_error_in_statement) {
+                                    job_report_all_messages(jp);
+                                    job_die(jp);
+                                    ++i;
+                                }
+
                                 continue;
                             } else if(ast_statement->assign_op == TOKEN_PLUSPLUS || ast_statement->assign_op == TOKEN_MINUSMINUS) {
                                 assert(ast_statement->right == NULL);
@@ -7884,6 +7891,7 @@ void job_runner(char *src, char *src_path) {
                 shput(name_graph, jp->handling_name, jp->waiting_on_name);
                 shput(job_graph, jp->handling_name, jp);
             } else {
+                printf("here\n");
                 job_error(jp, arrlast(jp->tree_pos_stack)->loc, "undeclared identifier '%s'", jp->waiting_on_name);
                 job_report_all_messages(jp);
             }
@@ -8896,7 +8904,7 @@ void typecheck_expr(Job *jp) {
                 assert(s);
                 assert(s->name);
                 if(s->ready_to_run == false) {
-                    printf("here\n");
+                    //printf("here\n");
                     jp->state = JOB_STATE_WAIT;
                     jp->waiting_on_name = s->name;
                     break;
@@ -8915,6 +8923,8 @@ void typecheck_expr(Job *jp) {
 
             assert(arrlen(type_stack) == arrlen(value_stack));
 
+            if(callp->n_params == 0)
+                PASS;
             if(proc_type->proc.has_defaults && callp->n_params < proc_type->proc.first_default_param) {
                 job_error(jp, callp->base.loc, "not enough parameters in call");
                 return;

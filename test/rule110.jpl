@@ -69,6 +69,8 @@ proc rule110(N: int) void {
     else       print_char(48);
     print_char(10);
     print_char(10);
+    putchar(52);
+    putchar();
 }
 
 size_t :: u64;
@@ -106,6 +108,8 @@ proc print_char(c: char) {
     buf := [c];
     write(STDOUT, cast(*void)buf.data, buf.count);
 }
+
+proc putchar(c: s32) s32 #system;
 
 proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
 
