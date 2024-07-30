@@ -575,6 +575,7 @@ struct Sym {
     Loc_info loc;
     Jobid declared_by;
     int procid;
+    bool job_encountered_error : 1;
     bool ready_to_run : 1;
     bool is_system : 1;
     bool is_foreign : 1;
@@ -1138,7 +1139,6 @@ void job_init_allocator_ast(Job *jp) {
     jp->allocator.active.ast = true;
 }
 
-//TODO jobs can't die because of errors
 void job_die(Job *jp) {
     jp->id = -1;
 
@@ -1151,14 +1151,18 @@ void job_die(Job *jp) {
     arrfree(jp->type_stack);
     arrfree(jp->expr);
 
-    arena_destroy(&jp->allocator.scratch);
-    pool_destroy(&jp->allocator.value);
-    pool_destroy(&jp->allocator.sym);
-    pool_destroy(&(jp->allocator.type));
+    if(jp->state == JOB_STATE_ERROR) {
+        jp->symbol->job_encountered_error = true;
+    } else {
+        arena_destroy(&jp->allocator.scratch);
+        pool_destroy(&jp->allocator.value);
+        pool_destroy(&jp->allocator.sym);
+        pool_destroy(&(jp->allocator.type));
 
 #define X(x) pool_destroy(&(jp->allocator.ast_##x));
-    ASTKINDS
+        ASTKINDS
 #undef X
+    }
 }
 
 Value* job_alloc_value(Job *jp, Valuekind kind) {
@@ -7599,6 +7603,7 @@ void job_runner(char *src, char *src_path) {
                                 arrlast(jp->tree_pos_stack) = ast_statement->next;
 
                                 if(type_error_in_statement) {
+                                    jp->state = JOB_STATE_ERROR;
                                     job_report_all_messages(jp);
                                     job_die(jp);
                                     ++i;
@@ -7624,6 +7629,7 @@ void job_runner(char *src, char *src_path) {
                                 arrlast(jp->tree_pos_stack) = ast_statement->next;
 
                                 if(type_error_in_statement) {
+                                    jp->state = JOB_STATE_ERROR;
                                     job_report_all_messages(jp);
                                     job_die(jp);
                                     ++i;
@@ -7661,6 +7667,7 @@ void job_runner(char *src, char *src_path) {
                             }
 
                             if(type_error_in_statement) {
+                                jp->state = JOB_STATE_ERROR;
                                 job_report_all_messages(jp);
                                 job_die(jp);
                                 ++i;
@@ -7891,7 +7898,6 @@ void job_runner(char *src, char *src_path) {
                 shput(name_graph, jp->handling_name, jp->waiting_on_name);
                 shput(job_graph, jp->handling_name, jp);
             } else {
-                printf("here\n");
                 job_error(jp, arrlast(jp->tree_pos_stack)->loc, "undeclared identifier '%s'", jp->waiting_on_name);
                 job_report_all_messages(jp);
             }
@@ -8904,9 +8910,14 @@ void typecheck_expr(Job *jp) {
                 assert(s);
                 assert(s->name);
                 if(s->ready_to_run == false) {
-                    //printf("here\n");
-                    jp->state = JOB_STATE_WAIT;
-                    jp->waiting_on_name = s->name;
+                    if(s->job_encountered_error) {
+                        job_error(jp, callp->callee->loc,
+                                "'%s' could not compile because of an error",
+                                s->name);
+                    } else {
+                        jp->state = JOB_STATE_WAIT;
+                        jp->waiting_on_name = s->name;
+                    }
                     break;
                 }
             } else {

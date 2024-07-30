@@ -109,7 +109,7 @@ proc print_char(c: char) {
     write(STDOUT, cast(*void)buf.data, buf.count);
 }
 
-proc putchar(c: s32) s32 #system;
+proc putchar(c: s32 = 10) s32 #system;
 
 proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
 
