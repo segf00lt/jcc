@@ -4682,9 +4682,15 @@ void ir_run(Job *jp, int procid) {
                 break;
             case IROP_SETLOCALF:
                 if(inst.setvar.bytes == 8)
-                    *(f64*)(local_base + inst.setvar.offset) = interp.f64regs[inst.setvar.reg_src];
+                    *(f64*)(local_base + inst.setvar.offset) =
+                        inst.setvar.immediate
+                        ? inst.setvar.imm.floating64
+                        : interp.f64regs[inst.setvar.reg_src];
                 else
-                    *(f32*)(local_base + inst.setvar.offset) = interp.f32regs[inst.setvar.reg_src];
+                    *(f32*)(local_base + inst.setvar.offset) =
+                        inst.setvar.immediate
+                        ? inst.setvar.imm.floating32
+                        : interp.f32regs[inst.setvar.reg_src];
                 break;
             case IROP_GETGLOBALF:
                 if(inst.getvar.bytes == 8)
@@ -4694,9 +4700,15 @@ void ir_run(Job *jp, int procid) {
                 break;
             case IROP_SETGLOBALF:
                 if(inst.setvar.bytes == 8)
-                    *(f64*)(interp.global_segment + inst.setvar.offset) = interp.f64regs[inst.setvar.reg_src];
+                    *(f64*)(interp.global_segment + inst.setvar.offset) =
+                        inst.setvar.immediate
+                        ? inst.setvar.imm.floating64
+                        : interp.f64regs[inst.setvar.reg_src];
                 else
-                    *(f32*)(interp.global_segment + inst.setvar.offset) = interp.f32regs[inst.setvar.reg_src];
+                    *(f32*)(interp.global_segment + inst.setvar.offset) =
+                        inst.setvar.immediate
+                        ? inst.setvar.imm.floating32
+                        : interp.f32regs[inst.setvar.reg_src];
                 break;
             case IROP_SETARGF:
             case IROP_SETRETF:
@@ -4997,6 +5009,7 @@ u64 ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_
 void ir_gen_memorycopy(Job *jp, u64 bytes, u64 to_ptr_reg, u64 from_ptr_reg) {
     IRinst inst;
 
+    jp->reg_alloc++;
     for(u64 step = 8, offset = 0; offset < bytes; offset += step) {
         while(offset + step > bytes) step >>= 1;
         inst =
@@ -5025,6 +5038,7 @@ void ir_gen_memorycopy(Job *jp, u64 bytes, u64 to_ptr_reg, u64 from_ptr_reg) {
             };
         arrpush(jp->instructions, inst);
     }
+    jp->reg_alloc--;
 }
 
 INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
@@ -5866,14 +5880,13 @@ void ir_gen_block(Job *jp, AST *ast) {
                                         (IRinst) {
                                             .opcode = IROP_GETLOCAL,
                                             .getvar = {
-                                                .reg_dest = jp->reg_alloc++,
+                                                .reg_dest = jp->reg_alloc,
                                                 .offset = non_scalar_returns << 3,
                                                 .bytes = 8,
                                             },
                                         };
                                     arrpush(jp->instructions, inst);
-                                    ir_gen_memorycopy(jp, ret_type->bytes, jp->reg_alloc - 1, jp->reg_alloc - 2);
-                                    jp->reg_alloc--;
+                                    ir_gen_memorycopy(jp, ret_type->bytes, jp->reg_alloc, jp->reg_alloc - 1);
                                     assert(jp->reg_alloc == 1);
                                     inst =
                                         (IRinst) {
@@ -5972,9 +5985,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                                                 },
                                             };
                                         arrpush(jp->instructions, inst);
-                                        jp->reg_alloc++;
-                                        ir_gen_memorycopy(jp, ret_type->bytes, jp->reg_alloc - 1, jp->reg_alloc - 2);
-                                        jp->reg_alloc--;
+                                        ir_gen_memorycopy(jp, ret_type->bytes, jp->reg_alloc, jp->reg_alloc - 1);
                                         inst =
                                             (IRinst) {
                                                 .opcode = IROP_SETRET,
@@ -6065,14 +6076,14 @@ void ir_gen_block(Job *jp, AST *ast) {
                                         (IRinst) {
                                             .opcode = IROP_ADDRLOCAL,
                                             .addrvar = {
-                                                .reg_dest = jp->reg_alloc++,
+                                                .reg_dest = jp->reg_alloc,
                                                 .offset = offset,
                                             },
                                         };
                                     arrpush(jp->instructions, inst);
-                                    assert(jp->reg_alloc == 2);
-                                    ir_gen_memorycopy(jp, var_type->bytes, jp->reg_alloc - 1, jp->reg_alloc - 2);
-                                    jp->reg_alloc -= 2;
+                                    assert(jp->reg_alloc == 1);
+                                    ir_gen_memorycopy(jp, var_type->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+                                    jp->reg_alloc--;
                                     assert(jp->reg_alloc == 0);
                                 }
                             } else {
@@ -6113,84 +6124,121 @@ void ir_gen_block(Job *jp, AST *ast) {
                             }
 
                             if(ast_vardecl->init) {
-                                AST_expr_base *expr_base = (AST_expr_base*)(ast_vardecl->init);
-                                Type *init_type = expr_base->type_annotation;
+                                if(ast_vardecl->init->kind == AST_KIND_array_literal) {
+                                    AST_array_literal *array_literal = (AST_array_literal*)(ast_vardecl->init);
+                                    u64 array_data_offset = ir_gen_array_literal(jp, array_literal->type_annotation, array_literal);
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = IROP_ADDRLOCAL,
+                                            .addrvar = {
+                                                .reg_dest = 0,
+                                                .offset = array_data_offset,
+                                            },
+                                        };
+                                    arrpush(jp->instructions, inst);
 
-                                if(init_type->kind == TYPE_KIND_ARRAY_VIEW) {
-                                    ir_gen_expr(jp, ast_vardecl->init);
-                                    assert(jp->reg_alloc == 1);
-                                    jp->reg_alloc = 0;
-                                    inst =
-                                        (IRinst) {
-                                            .opcode = IROP_LOAD,
-                                            .load = {
-                                                .reg_dest = jp->reg_alloc + 1,
-                                                .reg_src_ptr = jp->reg_alloc,
-                                                .bytes = 8,
-                                            }
-                                        };
-                                    arrpush(jp->instructions, inst);
-                                    inst =
-                                        (IRinst) {
-                                            .opcode = IROP_LOAD,
-                                            .load = {
-                                                .reg_dest = jp->reg_alloc + 2,
-                                                .reg_src_ptr = jp->reg_alloc,
-                                                .bytes = 8,
-                                                .byte_offset_imm = 8,
-                                                .has_immediate_offset = true,
-                                            }
-                                        };
-                                    arrpush(jp->instructions, inst);
                                     inst =
                                         (IRinst) {
                                             .opcode = IROP_SETLOCAL,
                                             .setvar = {
                                                 .offset = sym->segment_offset,
-                                                .reg_src = jp->reg_alloc + 1,
+                                                .reg_src = 0,
                                                 .bytes = 8,
                                             },
                                         };
                                     arrpush(jp->instructions, inst);
+
                                     inst =
                                         (IRinst) {
                                             .opcode = IROP_SETLOCAL,
                                             .setvar = {
                                                 .offset = sym->segment_offset + 8,
-                                                .reg_src = jp->reg_alloc + 2,
-                                                .bytes = 8,
-                                            },
-                                        };
-                                    arrpush(jp->instructions, inst);
-                                } else if(init_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
-                                    UNIMPLEMENTED;
-                                } else if(init_type->kind == TYPE_KIND_ARRAY) {
-                                    ir_gen_expr(jp, ast_vardecl->init);
-                                    assert(jp->reg_alloc == 1);
-                                    jp->reg_alloc = 0;
-                                    inst =
-                                        (IRinst) {
-                                            .opcode = IROP_SETLOCAL,
-                                            .setvar = {
-                                                .offset = sym->segment_offset,
-                                                .reg_src = jp->reg_alloc,
-                                                .bytes = 8,
-                                            },
-                                        };
-                                    arrpush(jp->instructions, inst);
-                                    inst =
-                                        (IRinst) {
-                                            .opcode = IROP_SETLOCAL,
-                                            .setvar = {
-                                                .offset = sym->segment_offset + 8,
-                                                .imm.integer = init_type->array.n,
+                                                .imm.integer = array_literal->type_annotation->array.n,
                                                 .bytes = 8,
                                                 .immediate = true,
                                             },
                                         };
                                     arrpush(jp->instructions, inst);
                                 } else {
-                                    UNREACHABLE;
+                                    AST_expr_base *expr_base = (AST_expr_base*)(ast_vardecl->init);
+                                    Type *init_type = expr_base->type_annotation;
+
+                                    if(init_type->kind == TYPE_KIND_ARRAY_VIEW) {
+                                        ir_gen_expr(jp, ast_vardecl->init);
+                                        assert(jp->reg_alloc == 1);
+                                        jp->reg_alloc = 0;
+                                        inst =
+                                            (IRinst) {
+                                                .opcode = IROP_LOAD,
+                                                .load = {
+                                                    .reg_dest = jp->reg_alloc + 1,
+                                                    .reg_src_ptr = jp->reg_alloc,
+                                                    .bytes = 8,
+                                                }
+                                            };
+                                        arrpush(jp->instructions, inst);
+                                        inst =
+                                            (IRinst) {
+                                                .opcode = IROP_LOAD,
+                                                .load = {
+                                                    .reg_dest = jp->reg_alloc + 2,
+                                                    .reg_src_ptr = jp->reg_alloc,
+                                                    .bytes = 8,
+                                                    .byte_offset_imm = 8,
+                                                    .has_immediate_offset = true,
+                                                }
+                                            };
+                                        arrpush(jp->instructions, inst);
+                                        inst =
+                                            (IRinst) {
+                                                .opcode = IROP_SETLOCAL,
+                                                .setvar = {
+                                                    .offset = sym->segment_offset,
+                                                    .reg_src = jp->reg_alloc + 1,
+                                                    .bytes = 8,
+                                                },
+                                            };
+                                        arrpush(jp->instructions, inst);
+                                        inst =
+                                            (IRinst) {
+                                                .opcode = IROP_SETLOCAL,
+                                                .setvar = {
+                                                    .offset = sym->segment_offset + 8,
+                                                    .reg_src = jp->reg_alloc + 2,
+                                                    .bytes = 8,
+                                                },
+                                            };
+                                        arrpush(jp->instructions, inst);
+                                    } else if(init_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+                                        UNIMPLEMENTED;
+                                    } else if(init_type->kind == TYPE_KIND_ARRAY) {
+                                        ir_gen_expr(jp, ast_vardecl->init);
+                                        assert(jp->reg_alloc == 1);
+                                        jp->reg_alloc = 0;
+                                        inst =
+                                            (IRinst) {
+                                                .opcode = IROP_SETLOCAL,
+                                                .setvar = {
+                                                    .offset = sym->segment_offset,
+                                                    .reg_src = jp->reg_alloc,
+                                                    .bytes = 8,
+                                                },
+                                            };
+                                        arrpush(jp->instructions, inst);
+                                        inst =
+                                            (IRinst) {
+                                                .opcode = IROP_SETLOCAL,
+                                                .setvar = {
+                                                    .offset = sym->segment_offset + 8,
+                                                    .imm.integer = init_type->array.n,
+                                                    .bytes = 8,
+                                                    .immediate = true,
+                                                },
+                                            };
+                                        arrpush(jp->instructions, inst);
+                                    } else {
+                                        UNREACHABLE;
+                                    }
                                 }
                             }
                         } else {

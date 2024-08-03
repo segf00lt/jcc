@@ -124,7 +124,6 @@ proc main() {
 
     arr_f: [4]float;
 
-    //TODO something wrong with returning views from procedures I think
     vf := multiples_of_PI(PI, arr_f);
     vf2: []float = arr_f;
     putchar();
@@ -135,6 +134,12 @@ proc main() {
     print_int(cast(int)arr_f.count);
     putchar();
     putchar();
+    test_float(vf);
+    test_float(vf2);
+    vf3: []float = [2.3, 41.2];
+    print_float(vf3[0]);
+    putchar();
+    vf = vf3;
     test_float(vf);
     //print_float(arr_f[0]);
     //putchar();
