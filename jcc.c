@@ -173,6 +173,8 @@
     X(FSUB,     -)                      \
     X(FMUL,     *)                      \
     X(FDIV,     /)                      \
+
+#define IR_FLOAT_CMPOPS                 \
     X(FEQ,     ==)                      \
     X(FNE,     !=)                      \
     X(FLE,     <=)                      \
@@ -186,6 +188,7 @@
     IR_INT_BINOPS                       \
     IR_INT_UNOPS                        \
     IR_FLOAT_BINOPS                     \
+    IR_FLOAT_CMPOPS                     \
     IR_FLOAT_UNOPS                      \
     X(IF,            _)                 \
     X(IFZ,           _)                 \
@@ -964,6 +967,7 @@ void        linearize_expr(Job *jp, AST **astpp);
 bool        is_lvalue(AST *ast);
 bool        all_paths_return(Job *jp, AST *ast);
 bool        has_nested_call(AST *ast);
+void        add_implicit_casts(Job *jp, AST *ast);
 
 void        do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type);
 
@@ -1040,6 +1044,7 @@ void        global_scope_enter(Job *jp, Sym *sym);
 
 void        print_sym(Sym sym);
 void        print_ir_inst(IRinst inst);
+void        print_ast_expr(AST *expr, int indent);
 
 /* globals */
 
@@ -1588,6 +1593,60 @@ bool has_nested_call(AST *ast) {
     }
 
     return false;
+}
+
+void add_implicit_casts(Job *jp, AST *ast) {
+    if(!ast) return;
+
+    //if(ast->kind == AST_KIND_atom) return;
+
+    if(ast->kind == AST_KIND_expr) {
+        AST_expr *expr = (AST_expr*)ast;
+
+        if(expr->left == NULL) return;
+        if(expr->right == NULL) return;
+
+        if(expr->left->kind != AST_KIND_atom) add_implicit_casts(jp, expr->left);
+        if(expr->right->kind != AST_KIND_atom) add_implicit_casts(jp, expr->right);
+
+        Type *left = ((AST_expr_base*)(expr->left))->type_annotation;
+        Type *right = ((AST_expr_base*)(expr->right))->type_annotation;
+
+        if(left == NULL) return;
+        if(right == NULL) return;
+
+        if(TYPE_KIND_IS_FLOAT(left->kind) && !TYPE_KIND_IS_FLOAT(right->kind)) {
+            assert(right->kind <= TYPE_KIND_INT);
+            AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+            cast_expr->token = TOKEN_CAST;
+            cast_expr->left = NULL;
+            cast_expr->type_annotation = left;
+            cast_expr->right = expr->right;
+            expr->right = (AST*)cast_expr;
+        } else if(!TYPE_KIND_IS_FLOAT(left->kind) && TYPE_KIND_IS_FLOAT(right->kind)) {
+            assert(left->kind <= TYPE_KIND_INT);
+            AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+            cast_expr->token = TOKEN_CAST;
+            cast_expr->left = NULL;
+            cast_expr->type_annotation = right;
+            cast_expr->right = expr->left;
+            expr->left = (AST*)cast_expr;
+        }
+
+    } else {
+        return;
+    }
+
+    //} else if(ast->kind == AST_KIND_array_literal) {
+    //    PASS;
+    //} else if(ast->kind == AST_KIND_param) {
+    //    PASS;
+    //} else if(ast->kind == AST_KIND_call || ast->kind == AST_KIND_run_directive) {
+    //    PASS;
+    //} else {
+    //    print_ast_expr(ast, 0);
+    //    UNREACHABLE;
+    //}
 }
 
 bool all_paths_return(Job *jp, AST *ast) {
@@ -4149,6 +4208,7 @@ void ir_gen_foreign_proc_x64(Job *jp) {
 
 void ir_run(Job *jp, int procid) {
     IRmachine interp = jp->interp;
+    //TODO view.count is being copied incorrectly
 
     // NOTE
     // we assume the necessary setup to run has already been done
@@ -4230,6 +4290,23 @@ void ir_run(Job *jp, int procid) {
                 } \
                 break;
                 IR_FLOAT_BINOPS;
+#undef X
+#define X(opcode, opsym) \
+            case IROP_##opcode:\
+                               \
+                if(inst.arith.operand_bytes[0] == 8) { \
+                    interp.iregs[inst.arith.reg[0]] = \
+                    (bool)(interp.f64regs[inst.arith.reg[1]] opsym \
+                    (inst.arith.immediate ? inst.arith.imm.floating64 \
+                    : interp.f64regs[inst.arith.reg[2]])); \
+                } else { \
+                    interp.iregs[inst.arith.reg[0]] = \
+                    (bool)(interp.f32regs[inst.arith.reg[1]] opsym \
+                    (inst.arith.immediate ? inst.arith.imm.floating32 \
+                    : interp.f32regs[inst.arith.reg[2]])); \
+                } \
+                break;
+                IR_FLOAT_CMPOPS;
 #undef X
 #define X(opcode, opsym) \
             case IROP_##opcode: \
@@ -5812,7 +5889,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     assert(jp->reg_alloc == 0);
                                     arrpush(jp->instructions, inst);
                                 }
-                            } else {
+                            } else if(ret_type->kind == TYPE_KIND_ARRAY_VIEW || ret_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
                                 if(expr_list->expr->kind == AST_KIND_array_literal) {
                                     job_error(jp, expr_list->base.loc, "can't return local array literal as array view");
                                     return;
@@ -5879,27 +5956,42 @@ void ir_gen_block(Job *jp, AST *ast) {
                                             };
                                         arrpush(jp->instructions, inst);
                                     } else {
+                                        //TODO too much implicit state
                                         assert(expr_type->kind == TYPE_KIND_ARRAY_VIEW);
                                         assert(jp->float_reg_alloc == 0);
                                         assert(jp->reg_alloc == 0);
                                         ir_gen_expr(jp, expr_list->expr);
                                         assert(jp->reg_alloc == 1);
-                                        jp->reg_alloc--;
-                                        assert(jp->reg_alloc == 0);
                                         inst =
                                             (IRinst) {
                                                 .opcode = IROP_GETLOCAL,
                                                 .getvar = {
-                                                    .reg_dest = jp->reg_alloc + 1,
+                                                    .reg_dest = jp->reg_alloc,
                                                     .offset = non_scalar_returns << 3,
                                                     .bytes = 8,
                                                 },
                                             };
                                         arrpush(jp->instructions, inst);
-                                        ir_gen_memorycopy(jp, ret_type->bytes, jp->reg_alloc + 1, jp->reg_alloc);
+                                        jp->reg_alloc++;
+                                        ir_gen_memorycopy(jp, ret_type->bytes, jp->reg_alloc - 1, jp->reg_alloc - 2);
+                                        jp->reg_alloc--;
+                                        inst =
+                                            (IRinst) {
+                                                .opcode = IROP_SETRET,
+                                                .setport = {
+                                                    .port = i,
+                                                    .bytes = 8,
+                                                    .reg_src = jp->reg_alloc,
+                                                    .c_call = proc_type->proc.c_call,
+                                                },
+                                            };
+                                        arrpush(jp->instructions, inst);
+                                        jp->reg_alloc--;
                                         assert(jp->reg_alloc == 0);
                                     }
                                 }
+                            } else {
+                                UNIMPLEMENTED;
                             }
 
                             non_scalar_returns++;
@@ -6836,40 +6928,68 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         (*result_regp)++;
                         break;
                     case '[':
-                        if(a_type->kind == TYPE_KIND_ARRAY && result_type->kind == TYPE_KIND_ARRAY) {
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_MUL,
-                                    .arith = {
-                                        .operand_bytes = { 8, b_bytes, 8 },
-                                        .reg = { b_reg, b_reg },
-                                        .imm.integer = a_type->array.element_stride,
-                                        .immediate = true,
-                                    },
-                                };
-                            arrpush(jp->instructions, inst);
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_ADD,
-                                    .arith = {
-                                        .operand_bytes = { 8, 8, 8 },
-                                        .reg = { *result_regp, a_reg, b_reg },
-                                    },
-                                };
-                            arrpush(jp->instructions, inst);
-                        } else if(TYPE_KIND_IS_FLOAT(result_type->kind)) {
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_LOADF,
-                                    .load = {
-                                        .reg_dest = *result_regp,
-                                        .reg_src_ptr = a_reg,
-                                        .offset_reg = b_reg,
-                                        .bytes = result_type->bytes,
-                                        .has_indirect_offset = true,
-                                    },
-                                };
-                            arrpush(jp->instructions, inst);
+                        assert(b_type->kind <= TYPE_KIND_INT);
+
+                        //TODO array bounds checking
+                        if(a_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+                            UNIMPLEMENTED;
+                        } else if(a_type->kind == TYPE_KIND_ARRAY) {
+                            if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind)) {
+                                if(result_type->kind == TYPE_KIND_ARRAY_VIEW) {
+                                    UNIMPLEMENTED;
+                                } else if(result_type->kind == TYPE_KIND_ARRAY) {
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = IROP_MUL,
+                                            .arith = {
+                                                .operand_bytes = { 8, b_bytes, 8 },
+                                                .reg = { b_reg, b_reg },
+                                                .imm.integer = a_type->array.element_stride,
+                                                .immediate = true,
+                                            },
+                                        };
+                                    arrpush(jp->instructions, inst);
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = IROP_ADD,
+                                            .arith = {
+                                                .operand_bytes = { 8, 8, 8 },
+                                                .reg = { *result_regp, a_reg, b_reg },
+                                            },
+                                        };
+                                    arrpush(jp->instructions, inst);
+                                } else {
+                                    UNIMPLEMENTED;
+                                }
+
+                            } else if(TYPE_KIND_IS_FLOAT(result_type->kind)) {
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_LOADF,
+                                        .load = {
+                                            .reg_dest = *result_regp,
+                                            .reg_src_ptr = a_reg,
+                                            .offset_reg = b_reg,
+                                            .bytes = result_type->bytes,
+                                            .has_indirect_offset = true,
+                                        },
+                                    };
+                                arrpush(jp->instructions, inst);
+                            } else {
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_LOAD,
+                                        .load = {
+                                            .reg_dest = *result_regp,
+                                            .reg_src_ptr = a_reg,
+                                            .offset_reg = b_reg,
+                                            .bytes = result_type->bytes,
+                                            .has_indirect_offset = true,
+                                        },
+                                    };
+                                arrpush(jp->instructions, inst);
+                            }
+
                         } else if(a_type->kind == TYPE_KIND_ARRAY_VIEW) {
                             inst =
                                 (IRinst) {
@@ -6881,35 +7001,72 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                     },
                                 };
                             arrpush(jp->instructions, inst);
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_LOAD,
-                                    .load = {
-                                        .reg_dest = *result_regp,
-                                        .reg_src_ptr = a_reg,
-                                        .offset_reg = b_reg,
-                                        .bytes = result_type->bytes,
-                                        .has_indirect_offset = true,
-                                    },
-                                };
-                            arrpush(jp->instructions, inst);
-                        } else if(a_type->kind == TYPE_KIND_POINTER || a_type->kind == TYPE_KIND_ARRAY) {
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_LOAD,
-                                    .load = {
-                                        .reg_dest = *result_regp,
-                                        .reg_src_ptr = a_reg,
-                                        .offset_reg = b_reg,
-                                        .bytes = result_type->bytes,
-                                        .has_indirect_offset = true,
-                                    },
-                                };
-                            arrpush(jp->instructions, inst);
+
+                            if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind)) {
+                                UNIMPLEMENTED;
+                            } else if(TYPE_KIND_IS_FLOAT(result_type->kind)) {
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_LOADF,
+                                        .load = {
+                                            .reg_dest = *result_regp,
+                                            .reg_src_ptr = a_reg,
+                                            .offset_reg = b_reg,
+                                            .bytes = result_type->bytes,
+                                            .has_indirect_offset = true,
+                                        },
+                                    };
+                                arrpush(jp->instructions, inst);
+                            } else {
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_LOAD,
+                                        .load = {
+                                            .reg_dest = *result_regp,
+                                            .reg_src_ptr = a_reg,
+                                            .offset_reg = b_reg,
+                                            .bytes = result_type->bytes,
+                                            .has_indirect_offset = true,
+                                        },
+                                    };
+                                arrpush(jp->instructions, inst);
+                            }
                         } else {
-                            UNREACHABLE;
+                            assert(a_type->kind == TYPE_KIND_POINTER);
+
+                            if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind)) {
+                                UNIMPLEMENTED;
+                            } else if(TYPE_KIND_IS_FLOAT(result_type->kind)) {
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_LOADF,
+                                        .load = {
+                                            .reg_dest = *result_regp,
+                                            .reg_src_ptr = a_reg,
+                                            .offset_reg = b_reg,
+                                            .bytes = result_type->bytes,
+                                            .has_indirect_offset = true,
+                                        },
+                                    };
+                                arrpush(jp->instructions, inst);
+                            } else {
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_LOAD,
+                                        .load = {
+                                            .reg_dest = *result_regp,
+                                            .reg_src_ptr = a_reg,
+                                            .offset_reg = b_reg,
+                                            .bytes = result_type->bytes,
+                                            .has_indirect_offset = true,
+                                        },
+                                    };
+                                arrpush(jp->instructions, inst);
+                            }
                         }
+
                         (*result_regp)++;
+
                         break;
                     case '+':
                         if(a_type->kind == TYPE_KIND_POINTER) {
@@ -8314,7 +8471,8 @@ void job_runner(char *src, char *src_path) {
                     break;
                 case PIPE_STAGE_IR:
                     {
-                        printf("%s IR generation in progress\n", jp->handling_name);
+                        Sym *handling_sym = global_scope_lookup(jp, jp->handling_name);
+                        printf("procid %lu, %s IR generation in progress\n", handling_sym->procid, jp->handling_name);
 
                         ir_gen(jp);
 
@@ -8332,7 +8490,6 @@ void job_runner(char *src, char *src_path) {
                             continue;
                         }
 
-                        Sym *handling_sym = global_scope_lookup(jp, jp->handling_name);
                         for(int i = 0; i < hmget(procedure_lengths, handling_sym->procid); ++i) {
                             printf("%i: ",i);
                             print_ir_inst(hmget(procedure_table, handling_sym->procid)[i]);
@@ -9683,6 +9840,12 @@ void typecheck_expr(Job *jp) {
         }
     }
 
+    if(jp->state != JOB_STATE_WAIT && jp->state != JOB_STATE_ERROR) {
+        assert(jp->state == JOB_STATE_READY);
+        AST *expr_root = arrlast(jp->expr)[0];
+        add_implicit_casts(jp, expr_root);
+    }
+
     jp->value_stack = value_stack;
     jp->type_stack = type_stack;
     jp->expr = expr;
@@ -10432,6 +10595,11 @@ void print_sym(Sym sym) {
 //TODO directives (#load, #import, #assert, etc)
 //TODO allow variables in inner scopes to be named the same as vars in outer scopes
 //TODO prevent shadowing of global constants
+
+//TODO floating point refactor (implicit casts)
+//TODO too much implicit state
+//     A lot of the code generator depends on the current value of jp->reg_alloc,
+//     this is becoming flimsy and we need a better way of allocating registers
 int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));

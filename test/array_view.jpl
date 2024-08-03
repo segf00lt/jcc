@@ -11,7 +11,29 @@ proc test(v: []int) {
     putchar();
 }
 
-proc print_float(f: float);
+proc print_float(f: float) {
+    if f < 0 {
+        putchar(45);
+        f = -f;
+    }
+
+    i := cast(int)f;
+    print_int(i);
+    f -= cast(float)i;
+
+    putchar(46);
+
+    if f > 0 {
+        while f > 0 {
+            f *= 10.0;
+            i = cast(int)f;
+            putchar(48 + i);
+            f -= cast(float)i;
+        }
+    } else {
+        putchar(48);
+    }
+}
 
 proc give_back_bigger(a: []int, b: []int) []int {
     if a.count > b.count return a;
@@ -72,6 +94,11 @@ proc main() {
     test(v);
     v = arr;
     test(v);
+    putchar();
+    putchar();
+    print_int(cast(int)v.count);
+    putchar();
+    putchar();
     v = int:[7, 7, 7, 3, 5, 1, 2];
     test(v);
     arr2 := [0, 0, 0, 1];
@@ -82,10 +109,71 @@ proc main() {
     big_view := give_back_bigger(arr, mat[2]);
     big_view[0] = 5150;
     test(big_view);
+    putchar();
+    putchar();
+    print_int(cast(int)big_view.count);
+    putchar();
     big_view[2] = big_view[0];
     print_int(big_view[2]);
     putchar();
     test(big_view);
+
+    PI := 3.14159;
+    print_float(PI);
+    putchar();
+
+    arr_f: [4]float;
+
+    //TODO something wrong with returning views from procedures I think
+    vf := multiples_of_PI(PI, arr_f);
+    vf2: []float = arr_f;
+    putchar();
+    print_int(cast(int)vf2.count);
+    putchar();
+    print_int(cast(int)vf.count);
+    putchar();
+    print_int(cast(int)arr_f.count);
+    putchar();
+    putchar();
+    test_float(vf);
+    //print_float(arr_f[0]);
+    //putchar();
+    //print_float(arr_f[1]);
+    //putchar();
+    //print_float(vf[2]);
+    //putchar();
+    //print_float(vf[3]);
+    //putchar();
+    dkajsh := 4534;
+    //print_float(vf[1]);
+    //putchar();
+    //print_float(vf[2]);
+    //putchar();
+    //print_float(vf[3]);
+    //putchar();
+    //test_float(vf);
+}
+
+proc multiples_of_PI(PI: float, arr: []float) []float {
+    i: u64 = 0;
+    while i < arr.count {
+        arr[i] = PI * cast(float)(i + 1);
+        i++;
+    }
+
+    return arr;
+}
+
+proc test_float(vf: []float) {
+    i: u64 = 0;
+    while i < vf.count {
+        //print_float(vf.data[i]);
+        if i % 2 == 0 print_float(vf.data[i]);
+        else print_float(vf[i]);
+        putchar(32);
+        i++;
+    }
+    putchar();
 }
 
 proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
