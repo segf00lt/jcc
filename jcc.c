@@ -3722,7 +3722,9 @@ void ir_gen(Job *jp) {
 
         if(sym->ir_generated) {
             for(int i = 0; i < arrlen(jp->run_dependencies); ++i) {
-                if(jp->run_dependencies[i]->ready_to_run == false) {
+                //TODO more structured dependency checking to avoid bugs like not compiling recursive procs
+                Sym *dep = jp->run_dependencies[i];
+                if(dep != sym && dep->ready_to_run == false) {
                     jp->state = JOB_STATE_WAIT;
                     return;
                 }
@@ -3900,7 +3902,8 @@ void ir_gen(Job *jp) {
         sym->ir_generated = true;
 
         for(int i = 0; i < arrlen(jp->run_dependencies); ++i) {
-            if(jp->run_dependencies[i]->ready_to_run == false) {
+            Sym *dep = jp->run_dependencies[i];
+            if(dep != sym && dep->ready_to_run == false) {
                 jp->state = JOB_STATE_WAIT;
                 return;
             }
@@ -5263,7 +5266,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                             };
                         arrpush(jp->instructions, inst);
                     } else {
-                        assert(array_type->kind == TYPE_KIND_ARRAY);
+                        assert(array_type->kind == TYPE_KIND_ARRAY || array_type->kind == TYPE_KIND_POINTER);
                     }
 
                     ir_gen_expr(jp, left_expr->right);
@@ -10632,12 +10635,12 @@ void print_sym(Sym sym) {
     printf("size_in_bytes: %u\n", sym.type->bytes);
 }
 
+//TODO C interop
 //TODO static array initialization and assignment need to be improved
 //TODO dynamic arrays and views
 //TODO structs
 //TODO pass structs to procedures
 //TODO varargs and runtime type info
-//TODO C interop
 //TODO for loops on arrays
 //TODO output assembly
 //TODO directives (#load, #import, #assert, etc)
@@ -10648,11 +10651,12 @@ void print_sym(Sym sym) {
 //TODO too much implicit state
 //     A lot of the code generator depends on the current value of jp->reg_alloc,
 //     this is becoming flimsy and we need a better way of allocating registers
+
 int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/array_view.jpl";
+    char *path = "test/rule110.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 
