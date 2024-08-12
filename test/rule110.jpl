@@ -7,7 +7,10 @@ proc rule110(N: int) void {
           1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1,
     ];
 
-    tape := buf1.data;
+    //tape := buf1.data;
+    //tape := cast(*bool)buf1;
+    test: []bool = buf1;
+    tape := cast(*bool)test;
     next_tape := buf2.data;
 
     rules: [8]int = ---;

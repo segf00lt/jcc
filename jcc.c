@@ -236,6 +236,8 @@
 
 #define TYPE_KIND_IS_FLOAT(kind) (kind >= TYPE_KIND_FLOAT && kind <= TYPE_KIND_F64)
 
+#define TYPE_KIND_IS_ARRAY_LIKE(kind) (kind >= TYPE_KIND_ARRAY && kind <= TYPE_KIND_ARRAY_VIEW)
+
 
 typedef struct Scope_entry* Scope;
 typedef int    Jobid;
@@ -4211,8 +4213,6 @@ void ir_gen_foreign_proc_x64(Job *jp) {
 
 void ir_run(Job *jp, int procid) {
     IRmachine interp = jp->interp;
-    //TODO view.count is being copied incorrectly
-
     // NOTE
     // we assume the necessary setup to run has already been done
     // data is put in and extracted from the IRmachine elsewhere
@@ -6828,7 +6828,36 @@ void ir_gen_expr(Job *jp, AST *ast) {
                     default:
                         UNREACHABLE;
                     case TOKEN_CAST:
-                        if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind) || TYPE_KIND_IS_NOT_SCALAR(operand_type->kind)) {
+                        if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind) && TYPE_KIND_IS_NOT_SCALAR(operand_type->kind)) {
+                            UNIMPLEMENTED;
+                        } else if(result_type->kind == TYPE_KIND_POINTER && TYPE_KIND_IS_ARRAY_LIKE(operand_type->kind)) {
+                            if(operand_type->kind == TYPE_KIND_ARRAY_VIEW) {
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_LOAD,
+                                        .load = {
+                                            .reg_dest = *reg_destp,
+                                            .reg_src_ptr = *reg_srcp,
+                                            .bytes = 8,
+                                        },
+                                    };
+                                arrpush(jp->instructions, inst);
+                            } else if(operand_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+                                UNIMPLEMENTED;
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_LOAD,
+                                        .load = {
+                                            .reg_dest = *reg_destp,
+                                            .reg_src_ptr = *reg_srcp,
+                                            .bytes = 8,
+                                        },
+                                    };
+                                arrpush(jp->instructions, inst);
+                            } else {
+                                assert(operand_type->kind == TYPE_KIND_ARRAY);
+                            }
+                        } else if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind) || TYPE_KIND_IS_NOT_SCALAR(operand_type->kind)) {
                             UNIMPLEMENTED;
                         } else {
                             inst =
@@ -9238,6 +9267,14 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
                 job_error(jp, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
                 return builtin_type+TYPE_KIND_VOID;
             } else if(a->kind == TYPE_KIND_POINTER) {
+                if(TYPE_KIND_IS_ARRAY_LIKE(b->kind)) {
+                    if(types_are_same(a->pointer.to, b->array.of)) {
+                        return a;
+                    }
+                    job_error(jp, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
+                    return builtin_type+TYPE_KIND_VOID;
+                }
+
                 if(a->pointer.to->kind == TYPE_KIND_VOID || b->pointer.to->kind == TYPE_KIND_VOID)
                     return a;
                 if(a->pointer.to->kind == TYPE_KIND_VOID && b->kind > TYPE_KIND_VOID && b->kind < TYPE_KIND_FLOAT)
@@ -10640,7 +10677,8 @@ void print_sym(Sym sym) {
 //TODO dynamic arrays and views
 //TODO structs
 //TODO pass structs to procedures
-//TODO varargs and runtime type info
+//TODO runtime type info
+//TODO varargs
 //TODO for loops on arrays
 //TODO output assembly
 //TODO directives (#load, #import, #assert, etc)
