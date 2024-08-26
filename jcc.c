@@ -22,32 +22,6 @@
     X(WAIT)                             \
     X(ERROR)                            \
 
-#define TYPECHECK_STEPS                 \
-    X(NONE)                             \
-    X(VARDECL_BEGIN)                    \
-    X(VARDECL_BIND_TYPE)                \
-    X(VARDECL_INITIALIZE)               \
-    X(VARDECL_END)                      \
-    X(PROCDECL_BEGIN)                   \
-    X(PROCDECL_PARAMS_BEGIN)            \
-    X(PROCDECL_PARAMS_BIND_TYPE)        \
-    X(PROCDECL_PARAMS_INITIALIZE)       \
-    X(PROCDECL_PARAMS_END)              \
-    X(PROCDECL_RETURN_VALUES)           \
-    X(PROCDECL_BODY)                    \
-    X(PROCDECL_END)                     \
-    X(STRUCTDECL_BEGIN)                 \
-    X(STRUCTDECL_PARAMS_BEGIN)          \
-    X(STRUCTDECL_PARAMS_BIND_TYPE)      \
-    X(STRUCTDECL_PARAMS_INITIALIZE)     \
-    X(STRUCTDECL_PARAMS_END)            \
-    X(STRUCTDECL_BODY)                  \
-    X(STRUCTDECL_END)                   \
-    X(STATEMENT_BEGIN)                  \
-    X(STATEMENT_LEFT)                   \
-    X(STATEMENT_RIGHT)                  \
-    X(STATEMENT_END)                    \
-
 #define ASTKINDS                        \
     X(ifstatement)                      \
     X(switchstatement)                  \
@@ -512,7 +486,6 @@ struct Job {
 
     Pipe_stage           pipe_stage;
     Job_state            state;
-    Typecheck_step       step; //TODO we can get rid of this
 
     char                *handling_name;
     char                *waiting_on_name;
@@ -734,6 +707,8 @@ struct AST_vardecl {
     bool uninitialized;
     AST *type;
     AST *init;
+    bool checked_type;
+    bool checked_init;
 };
 
 struct AST_paramdecl {
@@ -744,6 +719,8 @@ struct AST_paramdecl {
     AST *type;
     AST *init;
     int index;
+    bool checked_type;
+    bool checked_init;
 };
 
 struct AST_retdecl {
@@ -751,6 +728,7 @@ struct AST_retdecl {
     AST_retdecl *next;
     AST *expr;
     int index;
+    bool checked_expr;
 };
 
 struct AST_ifstatement {
@@ -825,6 +803,8 @@ struct AST_statement {
     Token assign_op;
     AST *left;
     AST *right;
+    bool checked_left;
+    bool checked_right;
 };
 
 struct AST_procdecl {
@@ -846,6 +826,9 @@ struct AST_procdecl {
     int n_params;
     int n_rets;
     AST *body;
+    bool checked_params;
+    bool checked_rets;
+    bool visited;
 };
 
 struct Value {
@@ -8022,8 +8005,7 @@ void job_runner(char *src, char *src_path) {
 
                         if(ast->kind == AST_KIND_vardecl) {
                             AST_vardecl *ast_vardecl = (AST_vardecl*)ast;
-                            if(jp->step == TYPECHECK_STEP_NONE)
-                                jp->step = TYPECHECK_STEP_VARDECL_BEGIN + 1;
+
                             typecheck_vardecl(jp);
 
                             if(jp->state == JOB_STATE_WAIT) {
@@ -8041,8 +8023,6 @@ void job_runner(char *src, char *src_path) {
                             }
 
                             arrlast(jp->tree_pos_stack) = ast_vardecl->next;
-
-                            jp->step = TYPECHECK_STEP_NONE;
                         } else if(ast->kind == AST_KIND_structdecl || ast->kind == AST_KIND_uniondecl) {
                             UNIMPLEMENTED;
                             //TODO structs and unions
@@ -8082,8 +8062,6 @@ void job_runner(char *src, char *src_path) {
                             //jp->in_record_scope = true;
                             //ast_struct->visited = true;
                             //arrpush(jp->tree_pos_stack, ast_struct->body);
-
-                            //jp->step = TYPECHECK_STEP_NONE;
                         } else if(ast->kind == AST_KIND_procdecl) {
                             AST_procdecl *ast_procdecl = (AST_procdecl*)ast;
 
@@ -8104,9 +8082,9 @@ void job_runner(char *src, char *src_path) {
                                 break;
                             }
 
-                            if(jp->step == TYPECHECK_STEP_NONE) {
+                            if(ast_procdecl->visited == false) {
                                 arrpush(jp->scopes, NULL);
-                                jp->step = TYPECHECK_STEP_PROCDECL_BEGIN + 1;
+                                ast_procdecl->visited = true;
                             }
                             typecheck_procdecl(jp);
 
@@ -8134,7 +8112,6 @@ void job_runner(char *src, char *src_path) {
                                 arrpush(jp->tree_pos_stack, ast_block->down);
                             }
 
-                            jp->step = TYPECHECK_STEP_NONE;
                         } else if(ast->kind == AST_KIND_block) {
                             AST_block *ast_block = (AST_block*)ast;
 
@@ -8191,8 +8168,6 @@ void job_runner(char *src, char *src_path) {
 
                             arrpush(jp->tree_pos_stack, ast_if->body);
 
-                            jp->step = TYPECHECK_STEP_NONE;
-
                         } else if(ast->kind == AST_KIND_whilestatement) {
                             AST_whilestatement *ast_while = (AST_whilestatement*)ast;
 
@@ -8222,8 +8197,6 @@ void job_runner(char *src, char *src_path) {
 
                             arrlast(jp->tree_pos_stack) = ast_while->next;
                             arrpush(jp->tree_pos_stack, ast_while->body);
-
-                            jp->step = TYPECHECK_STEP_NONE;
 
                         } else if(ast->kind == AST_KIND_forstatement) {
                             AST_forstatement *ast_for = (AST_forstatement*)ast;
@@ -8260,8 +8233,6 @@ void job_runner(char *src, char *src_path) {
                             arrlast(jp->tree_pos_stack) = ast_for->next;
                             arrpush(jp->tree_pos_stack, ast_for->body);
 
-                            jp->step = TYPECHECK_STEP_NONE;
-
                         } else if(ast->kind == AST_KIND_switchstatement) {
                             UNIMPLEMENTED;
                         } else if(ast->kind == AST_KIND_continuestatement) {
@@ -8270,14 +8241,9 @@ void job_runner(char *src, char *src_path) {
                             arrlast(jp->tree_pos_stack) = ((AST_breakstatement*)ast)->next;
                         } else if(ast->kind == AST_KIND_statement) {
                             AST_statement *ast_statement = (AST_statement*)ast;
-                            if(jp->step == TYPECHECK_STEP_NONE)
-                                jp->step = TYPECHECK_STEP_STATEMENT_LEFT;
-
-                            assert(jp->step >= TYPECHECK_STEP_STATEMENT_BEGIN && jp->step <= TYPECHECK_STEP_STATEMENT_END);
-
                             bool type_error_in_statement = false;
 
-                            if(jp->step == TYPECHECK_STEP_STATEMENT_LEFT) {
+                            if(ast_statement->checked_left == false) {
                                 if(arrlen(jp->expr) == 0) {
                                     linearize_expr(jp, &ast_statement->left);
                                 }
@@ -8308,11 +8274,10 @@ void job_runner(char *src, char *src_path) {
                                     jp->state = JOB_STATE_READY;
                                 }
 
-                                jp->step = TYPECHECK_STEP_STATEMENT_RIGHT;
+                                ast_statement->checked_left = true;
                             }
 
                             if(ast_statement->right == NULL && ast_statement->assign_op == 0) {
-                                jp->step = TYPECHECK_STEP_NONE;
                                 arrlast(jp->tree_pos_stack) = ast_statement->next;
 
                                 if(type_error_in_statement) {
@@ -8337,8 +8302,6 @@ void job_runner(char *src, char *src_path) {
                                             job_type_to_str(jp, type_right),
                                             job_type_to_str(jp, type_left));
 
-                                jp->step = TYPECHECK_STEP_NONE;
-
                                 arrlast(jp->tree_pos_stack) = ast_statement->next;
 
                                 if(type_error_in_statement) {
@@ -8356,7 +8319,7 @@ void job_runner(char *src, char *src_path) {
                             assert(ast_statement->assign_op == '=' ||
                                   (ast_statement->assign_op >= TOKEN_PLUSEQUAL && ast_statement->assign_op <= TOKEN_XOREQUAL));
 
-                            if(jp->step == TYPECHECK_STEP_STATEMENT_RIGHT) {
+                            if(ast_statement->checked_right == false) {
                                 if(arrlen(jp->expr) == 0) {
                                     linearize_expr(jp, &ast_statement->right);
                                 }
@@ -8376,7 +8339,7 @@ void job_runner(char *src, char *src_path) {
 
                                 type_error_in_statement = (jp->state == JOB_STATE_ERROR);
 
-                                jp->step = TYPECHECK_STEP_STATEMENT_END;
+                                ast_statement->checked_right = true;
                             }
 
                             if(type_error_in_statement) {
@@ -8405,7 +8368,6 @@ void job_runner(char *src, char *src_path) {
                                 ++i;
                                 continue;
                             }
-                            jp->step = TYPECHECK_STEP_NONE;
 
                             arrlast(jp->tree_pos_stack) = ast_statement->next;
 
@@ -8493,7 +8455,6 @@ void job_runner(char *src, char *src_path) {
 
                             arrlast(jp->tree_pos_stack) = ast_return->next;
 
-                            jp->step = TYPECHECK_STEP_NONE;
                         } else if(ast->kind == AST_KIND_run_directive) {
                             AST_run_directive *ast_run = (AST_run_directive*)ast;
                             assert(ast_run->next == NULL);
@@ -9259,7 +9220,6 @@ Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
                     return a;
                 job_error(jp, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
                 return builtin_type+TYPE_KIND_VOID;
-            //TODO casting an array to a pointer should do the same as array.data
             } else if(a->kind == TYPE_KIND_ARRAY_VIEW) {
                 if((b->kind >= TYPE_KIND_ARRAY && b->kind <= TYPE_KIND_ARRAY_VIEW && types_are_same(a->array.of, b->array.of)) ||
                    (b->kind == TYPE_KIND_POINTER && b->pointer.to->kind == TYPE_KIND_VOID))
@@ -10249,7 +10209,6 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
 //}
 
 void typecheck_procdecl(Job *jp) {
-    assert(jp->step > TYPECHECK_STEP_PROCDECL_BEGIN && jp->step < TYPECHECK_STEP_PROCDECL_END);
     AST_procdecl *ast = (AST_procdecl*)arrlast(jp->tree_pos_stack);
     assert(ast->base.kind == AST_KIND_procdecl);
 
@@ -10264,7 +10223,7 @@ void typecheck_procdecl(Job *jp) {
     }
     Type *proc_type = jp->proc_type;
 
-    if(jp->step >= TYPECHECK_STEP_PROCDECL_PARAMS_BEGIN && jp->step <= TYPECHECK_STEP_PROCDECL_PARAMS_END) {
+    if(ast->checked_params == false) {
         u64 n = proc_type->proc.param.n;
 
         if(n == 0) {
@@ -10275,15 +10234,12 @@ void typecheck_procdecl(Job *jp) {
             proc_type->proc.param.values = (Value**)job_alloc_scratch(jp, sizeof(Value*) * n);
         }
 
-        if(jp->step == TYPECHECK_STEP_PROCDECL_PARAMS_BEGIN)
-            jp->step = TYPECHECK_STEP_PROCDECL_PARAMS_BIND_TYPE;
-
         for(AST_paramdecl *p = jp->cur_paramdecl; p; p = p->next) {
             proc_type->proc.param.names[p->index] = p->name;
 
             bool initialize = (p->init != NULL);
 
-            if(jp->step == TYPECHECK_STEP_PROCDECL_PARAMS_BIND_TYPE) {
+            if(p->checked_type == false) {
                 if(arrlen(jp->expr) == 0) {
                     linearize_expr(jp, &p->type);
                 }
@@ -10302,11 +10258,10 @@ void typecheck_procdecl(Job *jp) {
                 arrsetlen(jp->expr, 0);
                 jp->expr_pos = 0;
 
-                if(initialize)
-                    jp->step = TYPECHECK_STEP_PROCDECL_PARAMS_INITIALIZE;
+                p->checked_type = true;
             }
 
-            if(initialize && jp->step == TYPECHECK_STEP_PROCDECL_PARAMS_INITIALIZE) {
+            if(initialize && p->checked_init == false) {
                 if(arrlen(jp->expr) == 0) {
                     linearize_expr(jp, &p->init);
                 }
@@ -10325,7 +10280,7 @@ void typecheck_procdecl(Job *jp) {
                 arrsetlen(jp->expr, 0);
                 jp->expr_pos = 0;
 
-                jp->step = TYPECHECK_STEP_PROCDECL_PARAMS_BIND_TYPE;
+                p->checked_init = true;
             }
 
             Type *bind_type = ((AST_expr*)(p->type))->value_annotation->val.type;
@@ -10389,11 +10344,10 @@ void typecheck_procdecl(Job *jp) {
             p->symbol_annotation = symp;
         }
 
-        if(jp->step == TYPECHECK_STEP_PROCDECL_PARAMS_BIND_TYPE)
-            jp->step = TYPECHECK_STEP_PROCDECL_RETURN_VALUES;
+        ast->checked_params = true;
     }
 
-    if(jp->step == TYPECHECK_STEP_PROCDECL_RETURN_VALUES) {
+    if(ast->checked_rets == false) {
         u64 n = proc_type->proc.ret.n;
 
         if(n == 0) {
@@ -10425,6 +10379,8 @@ void typecheck_procdecl(Job *jp) {
             Type *ret_type = ((AST_expr*)(r->expr))->value_annotation->val.type;
             proc_type->proc.ret.types[r->index] = ret_type;
         }
+
+        ast->checked_rets = true;
     }
 
     if(ast->n_rets > 0 && ast->body && !all_paths_return(jp, ast->body)) {
@@ -10476,7 +10432,6 @@ void typecheck_procdecl(Job *jp) {
 }
 
 void typecheck_vardecl(Job *jp) {
-    assert(jp->step > TYPECHECK_STEP_VARDECL_BEGIN && jp->step < TYPECHECK_STEP_VARDECL_END);
     AST_vardecl *ast = (AST_vardecl*)arrlast(jp->tree_pos_stack);
     assert(ast->base.kind == AST_KIND_vardecl);
 
@@ -10487,9 +10442,9 @@ void typecheck_vardecl(Job *jp) {
     bool initialize = (ast->init != NULL);
     bool is_top_level = (arrlen(jp->tree_pos_stack) == 1);
 
-    if(infer_type) jp->step = TYPECHECK_STEP_VARDECL_INITIALIZE;
+    if(infer_type) ast->checked_type = true;
 
-    if(jp->step == TYPECHECK_STEP_VARDECL_BIND_TYPE) {
+    if(ast->checked_type == false) {
         if(arrlen(jp->expr) == 0) {
             linearize_expr(jp, &ast->type);
         }
@@ -10503,12 +10458,12 @@ void typecheck_vardecl(Job *jp) {
         arrsetlen(jp->expr, 0);
         jp->expr_pos = 0;
 
-        jp->step = TYPECHECK_STEP_VARDECL_INITIALIZE;
+        ast->checked_type = true;
     }
 
-    if(!initialize) jp->step = TYPECHECK_STEP_VARDECL_END;
+    if(!initialize) ast->checked_init = true;
 
-    if(jp->step == TYPECHECK_STEP_VARDECL_INITIALIZE) {
+    if(ast->checked_init == false) {
         if(arrlen(jp->expr) == 0) {
             linearize_expr(jp, &ast->init);
         }
@@ -10522,7 +10477,7 @@ void typecheck_vardecl(Job *jp) {
         arrsetlen(jp->expr, 0);
         jp->expr_pos = 0;
 
-        jp->step = TYPECHECK_STEP_VARDECL_END;
+        ast->checked_init = true;
     }
 
     if(jp->state == JOB_STATE_ERROR) return;
@@ -10694,7 +10649,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/rule110.jpl";
+    char *path = "test/foreign_proc.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 
