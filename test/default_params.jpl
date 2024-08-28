@@ -16,4 +16,4 @@ proc fib(n: int = 7) int {
 }
 
 arr := int:[1, 2, 3];
-bob := Bob:{ .i = 1, .x = 2, .t = 3};
+//bob := Bob:{ .i = 1, .x = 2, .t = 3};

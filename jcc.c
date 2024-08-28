@@ -518,7 +518,7 @@ struct Job {
     /* expressions */
     Arr(Value*)          value_stack;
     Arr(Type*)           type_stack;
-    Arr(AST**)           expr;
+    Arr(AST*)            expr;
     u64                  expr_pos;
 
     Type                *proc_type;
@@ -526,7 +526,7 @@ struct Job {
     AST_retdecl         *cur_retdecl;
 
     /* return statement */
-    Arr(AST**)           expr_list;
+    Arr(AST*)            expr_list;
     u64                  expr_list_pos;
 
     /* code generation */
@@ -947,7 +947,7 @@ char*       job_type_to_str(Job *jp, Type *t);
 char*       job_type_to_ctype_str(Job *jp, Type *t);
 IRlabel     job_label_lookup(Job *jp, char *name);
 bool        job_label_create(Job *jp, IRlabel label);
-void        linearize_expr(Job *jp, AST **astpp);
+void        linearize_expr(Job *jp, AST *astpp);
 
 bool        is_lvalue(AST *ast);
 bool        all_paths_return(Job *jp, AST *ast);
@@ -8138,7 +8138,7 @@ void job_runner(char *src, char *src_path) {
                             AST_ifstatement *ast_if = (AST_ifstatement*)ast;
 
                             if(arrlen(jp->expr) == 0) {
-                                linearize_expr(jp, &ast_if->condition);
+                                linearize_expr(jp, ast_if->condition);
                             }
                             typecheck_expr(jp);
 
@@ -8172,7 +8172,7 @@ void job_runner(char *src, char *src_path) {
                             AST_whilestatement *ast_while = (AST_whilestatement*)ast;
 
                             if(arrlen(jp->expr) == 0) {
-                                linearize_expr(jp, &ast_while->condition);
+                                linearize_expr(jp, ast_while->condition);
                             }
                             typecheck_expr(jp);
 
@@ -8202,7 +8202,7 @@ void job_runner(char *src, char *src_path) {
                             AST_forstatement *ast_for = (AST_forstatement*)ast;
 
                             if(arrlen(jp->expr) == 0) {
-                                linearize_expr(jp, &ast_for->expr);
+                                linearize_expr(jp, ast_for->expr);
                             }
                             typecheck_expr(jp);
                             Type *for_expr_type = ((AST_expr*)(ast_for->expr))->type_annotation;
@@ -8245,7 +8245,7 @@ void job_runner(char *src, char *src_path) {
 
                             if(ast_statement->checked_left == false) {
                                 if(arrlen(jp->expr) == 0) {
-                                    linearize_expr(jp, &ast_statement->left);
+                                    linearize_expr(jp, ast_statement->left);
                                 }
                                 typecheck_expr(jp);
 
@@ -8321,7 +8321,7 @@ void job_runner(char *src, char *src_path) {
 
                             if(ast_statement->checked_right == false) {
                                 if(arrlen(jp->expr) == 0) {
-                                    linearize_expr(jp, &ast_statement->right);
+                                    linearize_expr(jp, ast_statement->right);
                                 }
                                 typecheck_expr(jp);
 
@@ -8380,7 +8380,7 @@ void job_runner(char *src, char *src_path) {
                             //     Arr(AST**) for jp->expr
                             if(arrlen(jp->expr_list) == 0) {
                                 for(AST_expr_list *list = ast_return->expr_list; list; list = list->next) {
-                                    arrpush(jp->expr_list, &list->expr);
+                                    arrpush(jp->expr_list, list->expr);
                                 }
                                 jp->expr_list_pos = 0;
                             }
@@ -8419,7 +8419,7 @@ void job_runner(char *src, char *src_path) {
                                 arrsetlen(jp->expr, 0);
                                 jp->expr_pos = 0;
 
-                                AST_expr *ret_expr = *(AST_expr**)(jp->expr_list[expr_list_pos]);
+                                AST_expr *ret_expr = (AST_expr*)(jp->expr_list[expr_list_pos]);
 
                                 Type *ret_expr_type = ret_expr->type_annotation;
                                 Type *expect_type = cur_proc_type->proc.ret.types[expr_list_pos];
@@ -8460,7 +8460,7 @@ void job_runner(char *src, char *src_path) {
                             assert(ast_run->next == NULL);
 
                             if(arrlen(jp->expr) == 0)
-                                linearize_expr(jp, &ast);
+                                linearize_expr(jp, ast);
                             typecheck_expr(jp);
 
                             if(jp->state == JOB_STATE_WAIT) {
@@ -9402,16 +9402,16 @@ void typecheck_expr(Job *jp) {
     assert(jp->expr && arrlen(jp->expr) > 0);
     Arr(Value*) value_stack = jp->value_stack;
     Arr(Type*) type_stack = jp->type_stack;
-    Arr(AST**) expr = jp->expr;
+    Arr(AST*) expr = jp->expr;
     u64 pos = jp->expr_pos;
 
     for(; pos < arrlen(expr); ++pos) {
-        ASTkind kind = expr[pos][0]->kind;
+        ASTkind kind = expr[pos]->kind;
 
         if(jp->state == JOB_STATE_ERROR) return;
 
         if(kind == AST_KIND_atom) {
-            AST_atom *atom = (AST_atom*)expr[pos][0];
+            AST_atom *atom = (AST_atom*)expr[pos];
             if(atom->token == TOKEN_IDENT) {
                 Sym *sym = NULL;
                 sym = job_scope_lookup(jp, atom->text);
@@ -9450,7 +9450,7 @@ void typecheck_expr(Job *jp) {
                 arrpush(value_stack, v);
             }
         } else if(kind == AST_KIND_expr) {
-            AST_expr *node = (AST_expr*)(expr[pos][0]);
+            AST_expr *node = (AST_expr*)(expr[pos]);
 
             Type *result_type = NULL;
             Value *result_value = NULL;
@@ -9524,7 +9524,7 @@ void typecheck_expr(Job *jp) {
             if(jp->state == JOB_STATE_ERROR)
                 break;
         } else if(kind == AST_KIND_array_literal) {
-            AST_array_literal *array_lit = (AST_array_literal*)(expr[pos][0]);
+            AST_array_literal *array_lit = (AST_array_literal*)(expr[pos]);
             Type *array_elem_type = NULL;
             u64 i = 0;
 
@@ -9583,7 +9583,7 @@ void typecheck_expr(Job *jp) {
             arrpush(type_stack, array_type);
             arrpush(value_stack, array_val);
         } else if(kind == AST_KIND_param) {
-            AST_param *paramp = (AST_param*)expr[pos][0];
+            AST_param *paramp = (AST_param*)expr[pos];
             Value *v = arrpop(value_stack);
             Value *new_v = job_alloc_value(jp, v->kind);
             *new_v = *v;
@@ -9598,7 +9598,7 @@ void typecheck_expr(Job *jp) {
 
             AST_call *callp;
             if(run_at_compile_time) {
-                AST_run_directive *ast_run = (AST_run_directive*)expr[pos][0];
+                AST_run_directive *ast_run = (AST_run_directive*)expr[pos];
                 callp = ast_run->call_to_run;
                 Sym *s = ((AST_atom*)(callp->callee))->symbol_annotation;
                 assert(s);
@@ -9615,7 +9615,7 @@ void typecheck_expr(Job *jp) {
                     break;
                 }
             } else {
-                callp = (AST_call*)expr[pos][0];
+                callp = (AST_call*)expr[pos];
             }
 
             Type *proc_type = arrpop(type_stack);
@@ -9878,7 +9878,7 @@ void typecheck_expr(Job *jp) {
                     }
                 }
 
-                expr[pos][0] = (AST*)callp;
+                expr[pos] = (AST*)callp;
 
             } else if(!is_call_expr) {
                 arrpush(value_stack, builtin_value+VALUE_KIND_NIL);
@@ -9890,7 +9890,7 @@ void typecheck_expr(Job *jp) {
 
     if(jp->state != JOB_STATE_WAIT && jp->state != JOB_STATE_ERROR) {
         assert(jp->state == JOB_STATE_READY);
-        AST *expr_root = arrlast(jp->expr)[0];
+        AST *expr_root = arrlast(jp->expr);
         add_implicit_casts(jp, expr_root);
     }
 
@@ -9900,42 +9900,41 @@ void typecheck_expr(Job *jp) {
     jp->expr_pos = pos;
 }
 
-//TODO use AST* instead of AST**
-void linearize_expr(Job *jp, AST **astpp) {
-    if(!*astpp) return;
+void linearize_expr(Job *jp, AST *ast) {
+    if(!ast) return;
 
-    if(astpp[0]->kind == AST_KIND_expr) {
-        AST_expr *expr = (AST_expr*)*astpp;
-        linearize_expr(jp, &expr->left);
-        if(expr->token != '.') linearize_expr(jp, &expr->right);
-        arrpush(jp->expr, astpp);
-    } else if(astpp[0]->kind == AST_KIND_atom) {
-        arrpush(jp->expr, astpp);
-    } else if(astpp[0]->kind == AST_KIND_array_literal) {
-        AST_array_literal *array_lit = (AST_array_literal*)(astpp[0]);
+    if(ast->kind == AST_KIND_expr) {
+        AST_expr *expr = (AST_expr*)ast;
+        linearize_expr(jp, expr->left);
+        if(expr->token != '.') linearize_expr(jp, expr->right);
+        arrpush(jp->expr, ast);
+    } else if(ast->kind == AST_KIND_atom) {
+        arrpush(jp->expr, ast);
+    } else if(ast->kind == AST_KIND_array_literal) {
+        AST_array_literal *array_lit = (AST_array_literal*)ast;
         for(AST_expr_list *list = array_lit->elements; list; list = list->next) {
-            linearize_expr(jp, &list->expr);
+            linearize_expr(jp, list->expr);
         }
 
-        linearize_expr(jp, &array_lit->type);
+        linearize_expr(jp, array_lit->type);
 
-        arrpush(jp->expr, astpp);
-    } else if(astpp[0]->kind == AST_KIND_param) {
-        AST_param *param = (AST_param*)(astpp[0]);
-        linearize_expr(jp, &param->value);
-        arrpush(jp->expr, astpp);
-        linearize_expr(jp, (AST**)&param->next);
-    } else if(astpp[0]->kind == AST_KIND_call || astpp[0]->kind == AST_KIND_run_directive) {
+        arrpush(jp->expr, ast);
+    } else if(ast->kind == AST_KIND_param) {
+        AST_param *param = (AST_param*)ast;
+        linearize_expr(jp, param->value);
+        arrpush(jp->expr, ast);
+        linearize_expr(jp, (AST*)param->next);
+    } else if(ast->kind == AST_KIND_call || ast->kind == AST_KIND_run_directive) {
         AST_call *callp;
-        if(astpp[0]->kind == AST_KIND_run_directive) {
-            AST_run_directive *ast_run = (AST_run_directive*)(astpp[0]);
+        if(ast->kind == AST_KIND_run_directive) {
+            AST_run_directive *ast_run = (AST_run_directive*)ast;
             callp = ast_run->call_to_run;
         } else {
-            callp = (AST_call*)(astpp[0]);
+            callp = (AST_call*)ast;
         }
-        linearize_expr(jp, (AST**)&callp->params);
-        linearize_expr(jp, &callp->callee);
-        arrpush(jp->expr, astpp);
+        linearize_expr(jp, (AST*)(callp->params));
+        linearize_expr(jp, callp->callee);
+        arrpush(jp->expr, ast);
     } else {
         UNIMPLEMENTED;
     }
@@ -10013,6 +10012,8 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
         UNREACHABLE;
     } else if(ast->kind == AST_KIND_call) {
         arrpush(ir_expr, ast);
+    } else if(ast->kind == AST_KIND_run_directive) {
+        arrpush(ir_expr, (AST*)(((AST_run_directive*)ast)->call_to_run));
     } else {
         UNIMPLEMENTED;
     }
@@ -10241,7 +10242,7 @@ void typecheck_procdecl(Job *jp) {
 
             if(p->checked_type == false) {
                 if(arrlen(jp->expr) == 0) {
-                    linearize_expr(jp, &p->type);
+                    linearize_expr(jp, p->type);
                 }
                 typecheck_expr(jp);
 
@@ -10263,7 +10264,7 @@ void typecheck_procdecl(Job *jp) {
 
             if(initialize && p->checked_init == false) {
                 if(arrlen(jp->expr) == 0) {
-                    linearize_expr(jp, &p->init);
+                    linearize_expr(jp, p->init);
                 }
                 typecheck_expr(jp);
 
@@ -10358,7 +10359,7 @@ void typecheck_procdecl(Job *jp) {
 
         for(AST_retdecl *r = jp->cur_retdecl; r; r = r->next) {
             if(arrlen(jp->expr) == 0) {
-                linearize_expr(jp, &r->expr);
+                linearize_expr(jp, r->expr);
             }
             typecheck_expr(jp);
 
@@ -10446,7 +10447,7 @@ void typecheck_vardecl(Job *jp) {
 
     if(ast->checked_type == false) {
         if(arrlen(jp->expr) == 0) {
-            linearize_expr(jp, &ast->type);
+            linearize_expr(jp, ast->type);
         }
         typecheck_expr(jp);
 
@@ -10465,7 +10466,7 @@ void typecheck_vardecl(Job *jp) {
 
     if(ast->checked_init == false) {
         if(arrlen(jp->expr) == 0) {
-            linearize_expr(jp, &ast->init);
+            linearize_expr(jp, ast->init);
         }
         typecheck_expr(jp);
 
@@ -10627,12 +10628,13 @@ void print_sym(Sym sym) {
     printf("size_in_bytes: %u\n", sym.type->bytes);
 }
 
-//TODO C interop
-//TODO static array initialization and assignment need to be improved
-//TODO dynamic arrays and views
+//TODO floating point refactor (implicit casts)
 //TODO structs
 //TODO pass structs to procedures
+//TODO static array initialization and assignment need to be improved
+//TODO dynamic arrays and views
 //TODO runtime type info
+//TODO full C interop
 //TODO varargs
 //TODO for loops on arrays
 //TODO output assembly
@@ -10640,7 +10642,6 @@ void print_sym(Sym sym) {
 //TODO allow variables in inner scopes to be named the same as vars in outer scopes
 //TODO prevent shadowing of global constants
 
-//TODO floating point refactor (implicit casts)
 //TODO too much implicit state
 //     A lot of the code generator depends on the current value of jp->reg_alloc,
 //     this is becoming flimsy and we need a better way of allocating registers
@@ -10649,7 +10650,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/foreign_proc.jpl";
+    char *path = "test/default_params.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 
