@@ -1144,7 +1144,9 @@ void job_die(Job *jp) {
     arrfree(jp->expr);
 
     if(jp->state == JOB_STATE_ERROR) {
-        jp->symbol->job_encountered_error = true;
+        if(jp->symbol) {
+            jp->symbol->job_encountered_error = true;
+        }
     } else {
         arena_destroy(&jp->allocator.scratch);
         pool_destroy(&jp->allocator.value);
@@ -3931,7 +3933,12 @@ void ir_gen_foreign_proc_x64(Job *jp) {
             return;
         }
 
+#if defined(__MACH__)
         dynamic_lib_path = job_tprint(jp, "%s/lib%s.dylib", foreign_lib_str, foreign_lib_str);
+#else
+        dynamic_lib_path = job_tprint(jp, "%s/lib%s.so", foreign_lib_str, foreign_lib_str);
+#endif
+
         static_lib_path = job_tprint(jp, "%s/lib%s.a", foreign_lib_str, foreign_lib_str);
         header_path = job_tprint(jp, "%s/%s.h", foreign_lib_str, foreign_lib_str);
 
@@ -4001,7 +4008,13 @@ void ir_gen_foreign_proc_x64(Job *jp) {
 
     char *wrapper_name = job_tprint(jp, "__jcc__wrap__%s", proc_sym->name);
     char *wrapper_path = job_tprint(jp, "%s.c", wrapper_name);
+
+#if defined(__MACH__)
     char *wrapper_dl_path = job_tprint(jp, "%s.dylib", wrapper_name);
+#else
+    char *wrapper_dl_path = job_tprint(jp, "%s.so", wrapper_name);
+#endif
+
     FILE *wrapper_file = fopen(wrapper_path, "w");
     int has_non_scalar_return =
         (proc_type->proc.ret.n > 0) && TYPE_KIND_IS_NOT_SCALAR(proc_type->proc.ret.types[0]->kind);
@@ -4155,6 +4168,8 @@ void ir_gen_foreign_proc_x64(Job *jp) {
     fclose(wrapper_file);
 
     char *wrapper_compile;
+
+#if defined(__MACH__)
     if(is_system) {
         wrapper_compile = job_tprint(jp,
                 "cc -dynamiclib -o %s %s -install_name @rpath/%s",
@@ -4171,6 +4186,22 @@ void ir_gen_foreign_proc_x64(Job *jp) {
                 wrapper_dl_path,
                 foreign_lib_str);
     }
+#else
+    if(is_system) {
+        wrapper_compile = job_tprint(jp,
+                "cc -shared -o %s %s",
+                wrapper_dl_path,
+                wrapper_path);
+    } else {
+        wrapper_compile = job_tprint(jp,
+                "cc -shared -o %s %s -L'%s' -l'%s' -Wl,-rpath,'%s'",
+                wrapper_dl_path,
+                wrapper_path,
+                foreign_lib_str,
+                foreign_lib_str,
+                foreign_lib_str);
+    }
+#endif
 
     assert(system(wrapper_compile) == 0);
     assert(FileExists(wrapper_dl_path));
@@ -5813,7 +5844,7 @@ void ir_gen_block(Job *jp, AST *ast) {
 
                     arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
 
-                    printf("jp->reg_alloc %d\n", jp->reg_alloc);
+                    printf("jp->reg_alloc %lu\n", jp->reg_alloc);
                     assert(jp->reg_alloc == 0);
                     assert(jp->float_reg_alloc == 0);
 
@@ -8513,7 +8544,7 @@ void job_runner(char *src, char *src_path) {
                 case PIPE_STAGE_IR:
                     {
                         Sym *handling_sym = global_scope_lookup(jp, jp->handling_name);
-                        printf("procid %lu, %s IR generation in progress\n", handling_sym->procid, jp->handling_name);
+                        printf("procid %d, %s IR generation in progress\n", handling_sym->procid, jp->handling_name);
 
                         ir_gen(jp);
 
@@ -10650,7 +10681,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/rule110.jpl";
+    char *path = "test/foreign_proc.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 

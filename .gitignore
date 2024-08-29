@@ -21,6 +21,7 @@ vgcore*
 *.o
 *.a
 *.dylib
+*.so
 a.out
 .project.gf
 rule110
