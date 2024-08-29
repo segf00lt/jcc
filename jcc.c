@@ -4771,8 +4771,8 @@ void ir_run(Job *jp, int procid) {
 }
 
 void copy_array_data_to_value(Job *jp, Value *v, Type *t, u8 *data) {
-    assert(t->kind = TYPE_KIND_ARRAY); 
-    assert(v->kind = VALUE_KIND_ARRAY);
+    assert(t->kind == TYPE_KIND_ARRAY); 
+    assert(v->kind == VALUE_KIND_ARRAY);
     assert(t->array.n == v->val.array.n);
 
     if(t->array.of->kind == TYPE_KIND_ARRAY) {
@@ -10650,7 +10650,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/default_params.jpl";
+    char *path = "test/rule110.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 
