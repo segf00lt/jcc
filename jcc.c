@@ -206,11 +206,15 @@
 
 #define TOKEN_TO_TYPEKIND(t) (Typekind)((t-TOKEN_VOID)+TYPE_KIND_VOID)
 
-#define TYPE_KIND_IS_NOT_SCALAR(kind) (kind >= TYPE_KIND_TYPE && kind != TYPE_KIND_POINTER)
+#define TYPE_KIND_IS_NOT_SCALAR(kind) ((bool)(kind >= TYPE_KIND_TYPE && kind != TYPE_KIND_POINTER))
 
-#define TYPE_KIND_IS_FLOAT(kind) (kind >= TYPE_KIND_FLOAT && kind <= TYPE_KIND_F64)
+#define TYPE_KIND_IS_FLOAT(kind) ((bool)(kind >= TYPE_KIND_FLOAT && kind <= TYPE_KIND_F64))
 
-#define TYPE_KIND_IS_ARRAY_LIKE(kind) (kind >= TYPE_KIND_ARRAY && kind <= TYPE_KIND_ARRAY_VIEW)
+#define TYPE_KIND_IS_INTEGER(kind) ((bool)(kind >= TYPE_KIND_BOOL && kind <= TYPE_KIND_INT))
+
+#define TYPE_KIND_IS_INTEGER_OR_FLOAT(kind) ((bool)(TYPE_KIND_IS_INTEGER(kind) || TYPE_KIND_IS_FLOAT(kind)))
+
+#define TYPE_KIND_IS_ARRAY_LIKE(kind) ((bool)(kind >= TYPE_KIND_ARRAY && kind <= TYPE_KIND_ARRAY_VIEW))
 
 
 typedef struct Scope_entry* Scope;
@@ -590,8 +594,13 @@ struct AST_param {
 
 struct AST_run_directive {
     AST base;
-    AST *next; // used for top level directives
+    Type *type_annotation; /* for use in expressions */
+    Value *value_annotation;
+    Type **type_annotation_list; /* because callables can return multiple values */
+    Value **value_annotation_list;
+    int n_types_returned;
     AST_call *call_to_run;
+    AST *next; // used for top level directives
 };
 
 struct AST_call {
@@ -947,6 +956,7 @@ char*       job_type_to_str(Job *jp, Type *t);
 char*       job_type_to_ctype_str(Job *jp, Type *t);
 IRlabel     job_label_lookup(Job *jp, char *name);
 bool        job_label_create(Job *jp, IRlabel label);
+char*       job_op_token_to_str(Job *jp, Token op);
 void        linearize_expr(Job *jp, AST *astpp);
 
 bool        is_lvalue(AST *ast);
@@ -986,11 +996,8 @@ Value*      evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast);
 void        procedure_table_add(IRinst *proc, int procid, char *name, u64 length, u64 local_segment_size, u64 *jump_table);
 void        foreign_procedure_table_add(IR_foreign_proc proc, int procid, char *name);
 
-//TODO typechecking should be done with a table of some kind, all this branching is a bit lazy
 bool        types_are_same(Type *a, Type *b);
-Type*       typecheck_unary(Job *jp, Type *a, AST_expr *op_ast);
-Type*       typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast);
-Type*       typecheck_assign(Job *jp, Type *a, Type *b, Token op);
+Type*       typecheck_operation(Job *jp, Type *a, Type *b, Token op);
 Type*       typecheck_dot(Job *jp, Type *a, char *field);
 void        typecheck_expr(Job *jp);
 void        typecheck_vardecl(Job *jp);
@@ -1532,6 +1539,28 @@ char* job_type_to_ctype_str(Job *jp, Type *t) {
     char *s = job_alloc_scratch(jp, arrlen(tmp_buf));
     memcpy(s, tmp_buf, arrlen(tmp_buf));
     arrfree(tmp_buf);
+    return s;
+}
+
+INLINE char* job_op_token_to_str(Job *jp, Token op) {
+    assert(op != TOKEN_INVALID);
+
+    char *s = NULL;
+
+    if(op > TOKEN_INVALID) {
+        int n = token_keyword_lengths[op - TOKEN_INVALID];
+        s = job_alloc_scratch(jp, n + 1);
+        int i = 0;
+        while(i < n) {
+            s[i] = token_keywords[op - TOKEN_INVALID][i];
+            i++;
+        }
+        s[i] = 0;
+    } else {
+        s = job_alloc_scratch(jp, 1);
+        *s = (char)op;
+    }
+
     return s;
 }
 
@@ -8322,16 +8351,16 @@ void job_runner(char *src, char *src_path) {
                             } else if(ast_statement->assign_op == TOKEN_PLUSPLUS || ast_statement->assign_op == TOKEN_MINUSMINUS) {
                                 assert(ast_statement->right == NULL);
 
-                                Type *type_left = ((AST_expr*)(ast_statement->left))->type_annotation;
-                                Type *type_right = builtin_type+TYPE_KIND_INT;
+                                Type *type = ((AST_expr*)(ast_statement->left))->type_annotation;
 
-                                Type *t = typecheck_assign(jp, type_left, type_right, ast_statement->assign_op);
+                                Type *t = typecheck_operation(jp, type, NULL, ast_statement->assign_op);
 
-                                if(t->kind == TYPE_KIND_VOID)
+                                if(!t) {
                                     job_error(jp, ast_statement->base.loc,
-                                            "invalid assignment of '%s' to '%s'",
-                                            job_type_to_str(jp, type_right),
-                                            job_type_to_str(jp, type_left));
+                                            "invalid type '%s' to '%s'",
+                                            job_type_to_str(jp, type),
+                                            job_op_token_to_str(jp, ast_statement->assign_op));
+                                }
 
                                 arrlast(jp->tree_pos_stack) = ast_statement->next;
 
@@ -8382,16 +8411,17 @@ void job_runner(char *src, char *src_path) {
                             }
 
                             Type *type_left = ((AST_expr*)(ast_statement->left))->type_annotation;
-                            Type *type_right = ast_statement->right
-                                ? ((AST_expr*)(ast_statement->right))->type_annotation
-                                : NULL;
-                            Type *t = typecheck_assign(jp, type_left, type_right, ast_statement->assign_op);
+                            Type *type_right = NULL;
+                            if(ast_statement->right) type_right = ((AST_expr_base*)(ast_statement->right))->type_annotation;
 
-                            if(t->kind == TYPE_KIND_VOID)
+                            Type *t = typecheck_operation(jp, type_left, type_right, ast_statement->assign_op);
+
+                            if(!t) {
                                 job_error(jp, ast_statement->base.loc,
                                         "invalid assignment of '%s' to '%s'",
                                         job_type_to_str(jp, type_right),
                                         job_type_to_str(jp, type_left));
+                            }
 
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
@@ -8455,13 +8485,14 @@ void job_runner(char *src, char *src_path) {
                                 Type *ret_expr_type = ret_expr->type_annotation;
                                 Type *expect_type = cur_proc_type->proc.ret.types[expr_list_pos];
 
-                                Type *t = typecheck_assign(jp, expect_type, ret_expr_type, '=');
-                                if(t->kind == TYPE_KIND_VOID)
+                                Type *t = typecheck_operation(jp, expect_type, ret_expr_type, '=');
+                                if(!t) {
                                     job_error(jp, ret_expr->base.loc,
                                             "in return from '%s' expected type '%s', got '%s'",
                                             cur_proc_type->proc.name,
                                             job_type_to_str(jp, expect_type),
                                             job_type_to_str(jp, ret_expr_type));
+                                }
                             }
 
                             if(job_needs_to_wait) continue;
@@ -9011,206 +9042,6 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
     return result;
 }
 
-Type* typecheck_unary(Job *jp, Type *a, AST_expr *op_ast) {
-    Token op = op_ast->token;
-
-    switch(op) {
-        default:
-            UNREACHABLE;
-        case '[':
-            if(a->kind != TYPE_KIND_TYPE) {
-                job_error(jp, op_ast->base.loc, "invalid type %s to array declarator", job_type_to_str(jp, a));
-                return builtin_type+TYPE_KIND_VOID;
-            }
-            return builtin_type+TYPE_KIND_TYPE;
-        case '+': case '-':
-            if(a->kind < TYPE_KIND_BOOL || a->kind > TYPE_KIND_F64) {
-                job_error(jp, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
-                return builtin_type+TYPE_KIND_VOID;
-            }
-            return a;
-        case '!':
-            if(a->kind < TYPE_KIND_BOOL || a->kind > TYPE_KIND_INT) {
-                job_error(jp, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
-                return builtin_type+TYPE_KIND_VOID;
-            }
-            return builtin_type+TYPE_KIND_BOOL;
-        case '~':
-            if(a->kind < TYPE_KIND_BOOL || a->kind > TYPE_KIND_INT) {
-                job_error(jp, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
-                return builtin_type+TYPE_KIND_VOID;
-            }
-            return a;
-        case '*':
-            if(a->kind != TYPE_KIND_TYPE) {
-                job_error(jp, op_ast->base.loc, "invalid type %s to pointer declarator", job_type_to_str(jp, a), (char)op);
-                return builtin_type+TYPE_KIND_VOID;
-            }
-            return builtin_type+TYPE_KIND_TYPE;
-        case '>':
-            if(a->kind != TYPE_KIND_POINTER) {
-                job_error(jp, op_ast->base.loc, "invalid type %s to '%c'", job_type_to_str(jp, a), (char)op);
-                return builtin_type+TYPE_KIND_VOID;
-            }
-            return a->pointer.to;
-        case '@':
-            {
-                Type *addr_type = job_alloc_type(jp, TYPE_KIND_POINTER);
-                addr_type->pointer.to = a;
-                return addr_type;
-            }
-    }
-}
-
-Type* typecheck_assign(Job *jp, Type *a, Type *b, Token op) {
-    assert(a->kind != TYPE_KIND_VOID);
-    if(b) assert(b->kind != TYPE_KIND_VOID);
-
-    switch(op) {
-        default:
-            UNREACHABLE;
-        case TOKEN_PLUSPLUS: case TOKEN_MINUSMINUS:
-            if((a->kind < TYPE_KIND_CHAR || a->kind > TYPE_KIND_F64) && a->kind != TYPE_KIND_POINTER)
-                return builtin_type+TYPE_KIND_VOID;
-            if(a->kind == TYPE_KIND_POINTER && a->pointer.to->kind == TYPE_KIND_VOID)
-                return builtin_type+TYPE_KIND_VOID;
-            return a;
-        case '=':
-            if(a->kind < TYPE_KIND_TYPE) {
-                if(b->kind >= TYPE_KIND_TYPE) return builtin_type+TYPE_KIND_VOID;
-
-                if(a->kind == b->kind) return a;
-
-                //TODO prevent int from casting to float, instead add a number type for intlit's
-                if(a->kind >= TYPE_KIND_INT && b->kind == TYPE_KIND_INT) /* integers are very flexible */
-                    return a;
-
-                if(a->kind == TYPE_KIND_F64 && b->kind == TYPE_KIND_F64)
-                    return a;
-
-                if(a->kind <= TYPE_KIND_INT && b->kind == TYPE_KIND_INT)
-                    return a;
-
-                if(a->kind >= TYPE_KIND_FLOAT && a->kind <= TYPE_KIND_F32 && b->kind >= TYPE_KIND_FLOAT && b->kind <= TYPE_KIND_F32)
-                    return a;
-
-                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_U8)
-                    return a;
-                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_CHAR)
-                    return a;
-
-                if(b->kind > a->kind) return builtin_type+TYPE_KIND_VOID;
-                if(b->kind == TYPE_KIND_CHAR) return builtin_type+TYPE_KIND_VOID;
-                if(b->kind == TYPE_KIND_BOOL) return builtin_type+TYPE_KIND_VOID;
-
-                if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
-                    return a;
-
-                return builtin_type+TYPE_KIND_VOID;
-            } else if(a->kind == TYPE_KIND_TYPE && b->kind == TYPE_KIND_TYPE) {
-                return a;
-            } else if(a->kind == TYPE_KIND_ARRAY_VIEW) {
-                if( b->kind < TYPE_KIND_ARRAY || b->kind > TYPE_KIND_ARRAY_VIEW) return builtin_type+TYPE_KIND_VOID;
-                if(a->array.of != b->array.of) return builtin_type+TYPE_KIND_VOID;
-
-                Type *t = typecheck_assign(jp, a->array.of, b->array.of, '=');
-                if(t->kind == TYPE_KIND_VOID) return builtin_type+TYPE_KIND_VOID;
-                return a;
-            } else if(a->kind == TYPE_KIND_ARRAY) {
-                if(a->kind != b->kind) return builtin_type+TYPE_KIND_VOID;
-                if(a->kind == TYPE_KIND_ARRAY && a->array.n < b->array.n) return builtin_type+TYPE_KIND_VOID;
-
-                Type *t = typecheck_assign(jp, a->array.of, b->array.of, '=');
-                if(t->kind == TYPE_KIND_VOID) return builtin_type+TYPE_KIND_VOID;
-                if(a->array.n != b->array.n) return builtin_type+TYPE_KIND_VOID;
-
-                /*
-                if(a->kind == TYPE_KIND_ARRAY && a->array.n > b->array.n) {
-                    b->array.n = a->array.n;
-                }
-                */
-
-                return a;
-            } else if(a->kind == TYPE_KIND_DYNAMIC_ARRAY) {
-                UNIMPLEMENTED;
-            } else if(a->kind == TYPE_KIND_POINTER) {
-                if(b->kind != TYPE_KIND_POINTER)
-                    return builtin_type+TYPE_KIND_VOID;
-                if(b->pointer.to->kind != TYPE_KIND_VOID && !types_are_same(a->pointer.to, b->pointer.to))
-                    return builtin_type+TYPE_KIND_VOID;
-                return a;
-            } else {
-                UNIMPLEMENTED;
-            }
-            break;
-        case TOKEN_PLUSEQUAL: case TOKEN_MINUSEQUAL: case TOKEN_TIMESEQUAL: case TOKEN_DIVEQUAL:
-            if(a->kind < TYPE_KIND_TYPE && b->kind < TYPE_KIND_TYPE) {
-                if(b->kind >= TYPE_KIND_TYPE) return builtin_type+TYPE_KIND_VOID;
-
-                if(a->kind == b->kind) return a;
-
-                if(a->kind >= TYPE_KIND_INT || b->kind == TYPE_KIND_INT) /* integers are very flexible */
-                    return a;
-
-                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_U8)
-                    return a;
-                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_CHAR)
-                    return a;
-
-                if(b->kind > a->kind) return builtin_type+TYPE_KIND_VOID;
-                if(b->kind == TYPE_KIND_CHAR) return builtin_type+TYPE_KIND_VOID;
-                if(b->kind == TYPE_KIND_BOOL) return builtin_type+TYPE_KIND_VOID;
-
-                if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
-                    return a;
-
-                return builtin_type+TYPE_KIND_VOID;
-            } else if(a->kind == TYPE_KIND_POINTER) {
-                if(op != TOKEN_PLUSEQUAL && op != TOKEN_MINUSEQUAL)
-                    return builtin_type+TYPE_KIND_VOID;
-                if(b->kind < TYPE_KIND_BOOL || b->kind > TYPE_KIND_INT)
-                    return builtin_type+TYPE_KIND_VOID;
-                if(a->pointer.to->kind == TYPE_KIND_VOID)
-                    return builtin_type+TYPE_KIND_VOID;
-                return a;
-            } else {
-                return builtin_type+TYPE_KIND_VOID;
-            }
-            break;
-        case TOKEN_MODEQUAL: case TOKEN_ANDEQUAL: case TOKEN_OREQUAL:
-        case TOKEN_LSHIFTEQUAL:
-        case TOKEN_RSHIFTEQUAL:
-        case TOKEN_XOREQUAL:
-            if(a->kind < TYPE_KIND_FLOAT && b->kind < TYPE_KIND_FLOAT) {
-                if(b->kind >= TYPE_KIND_TYPE) return builtin_type+TYPE_KIND_VOID;
-
-                if(a->kind == b->kind) return a;
-
-                if(a->kind >= TYPE_KIND_INT || b->kind == TYPE_KIND_INT) /* integers are very flexible */
-                    return a;
-
-                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_U8)
-                    return a;
-                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_CHAR)
-                    return a;
-
-                if(b->kind > a->kind) return builtin_type+TYPE_KIND_VOID;
-                if(b->kind == TYPE_KIND_CHAR) return builtin_type+TYPE_KIND_VOID;
-                if(b->kind == TYPE_KIND_BOOL) return builtin_type+TYPE_KIND_VOID;
-
-                if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
-                    return a;
-
-                return builtin_type+TYPE_KIND_VOID;
-            } else {
-                return builtin_type+TYPE_KIND_VOID;
-            }
-            break;
-    }
-
-    return builtin_type+TYPE_KIND_VOID;
-}
-
 bool types_are_same(Type *a, Type *b) {
     if(a->kind != b->kind) return false;
 
@@ -9219,8 +9050,11 @@ bool types_are_same(Type *a, Type *b) {
     if(a->kind == TYPE_KIND_POINTER)
         return types_are_same(a->pointer.to, b->pointer.to);
 
-    if(a->kind >= TYPE_KIND_ARRAY && a->kind <= TYPE_KIND_ARRAY_VIEW)
+    if(a->kind == TYPE_KIND_ARRAY)
         return (a->array.n == b->array.n) && types_are_same(a->array.of, b->array.of);
+
+    if(a->kind >= TYPE_KIND_DYNAMIC_ARRAY && a->kind <= TYPE_KIND_ARRAY_VIEW)
+        return types_are_same(a->array.of, b->array.of);
 
     if(a->kind == TYPE_KIND_PROC) {
         UNIMPLEMENTED;
@@ -9231,177 +9065,384 @@ bool types_are_same(Type *a, Type *b) {
     return false;
 }
 
-Type* typecheck_binary(Job *jp, Type *a, Type *b, AST_expr *op_ast) {
-    assert(a->kind != TYPE_KIND_VOID && b->kind != TYPE_KIND_VOID);
-
-    Type *a_save = a;
-    Type *b_save = b;
-    Token op = op_ast->token;
-
-    switch(op) {
-        default:
-            UNREACHABLE;
-        case TOKEN_CAST:
-            if(types_are_same(a, b))
-                return a;
-
-            if(a->kind > TYPE_KIND_VOID && a->kind < TYPE_KIND_TYPE) {
-                if((b->kind > TYPE_KIND_VOID && b->kind < TYPE_KIND_TYPE) ||
-                   (a->kind < TYPE_KIND_FLOAT && b->kind == TYPE_KIND_POINTER && b->pointer.to->kind == TYPE_KIND_VOID))
+Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op) {
+    if(!(a && b)) { /* unary operators */
+        switch(op) {
+            default:
+                UNREACHABLE;
+            case TOKEN_PLUSPLUS: case TOKEN_MINUSMINUS:
+                if(a->kind == TYPE_KIND_BOOL)  return a;
+                if(a->kind == TYPE_KIND_CHAR)  return a;
+                if(a->kind == TYPE_KIND_S8)    return a;
+                if(a->kind == TYPE_KIND_U8)    return a;
+                if(a->kind == TYPE_KIND_S16)   return a;
+                if(a->kind == TYPE_KIND_U16)   return a;
+                if(a->kind == TYPE_KIND_S32)   return a;
+                if(a->kind == TYPE_KIND_U32)   return a;
+                if(a->kind == TYPE_KIND_S64)   return a;
+                if(a->kind == TYPE_KIND_U64)   return a;
+                if(a->kind == TYPE_KIND_INT)   return a;
+                if(a->kind == TYPE_KIND_FLOAT) return a;
+                if(a->kind == TYPE_KIND_F32)   return a;
+                if(a->kind == TYPE_KIND_F64)   return a;
+                if(a->kind == TYPE_KIND_POINTER && a->pointer.to->kind != TYPE_KIND_VOID)
                     return a;
-                job_error(jp, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
-                return builtin_type+TYPE_KIND_VOID;
-            } else if(a->kind == TYPE_KIND_ARRAY_VIEW) {
-                if((b->kind >= TYPE_KIND_ARRAY && b->kind <= TYPE_KIND_ARRAY_VIEW && types_are_same(a->array.of, b->array.of)) ||
-                   (b->kind == TYPE_KIND_POINTER && b->pointer.to->kind == TYPE_KIND_VOID))
-                    return a;
-                job_error(jp, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
-                return builtin_type+TYPE_KIND_VOID;
-            } else if(a->kind == TYPE_KIND_POINTER) {
-                if(TYPE_KIND_IS_ARRAY_LIKE(b->kind)) {
-                    if(types_are_same(a->pointer.to, b->array.of)) {
-                        return a;
-                    }
-                    job_error(jp, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
-                    return builtin_type+TYPE_KIND_VOID;
-                }
-
-                if(a->pointer.to->kind == TYPE_KIND_VOID || b->pointer.to->kind == TYPE_KIND_VOID)
-                    return a;
-                if(a->pointer.to->kind == TYPE_KIND_VOID && b->kind > TYPE_KIND_VOID && b->kind < TYPE_KIND_FLOAT)
-                    return a;
-                job_error(jp, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
-                return builtin_type+TYPE_KIND_VOID;
-            } else {
-                job_error(jp, op_ast->base.loc, "cannot cast '%s' to '%s'", job_type_to_str(jp, b), job_type_to_str(jp, a));
-                return builtin_type+TYPE_KIND_VOID;
-            }
-            break;
-        case '[':
-            if(b->kind < TYPE_KIND_BOOL || b->kind > TYPE_KIND_INT)
-                job_error(jp, op_ast->base.loc,
-                        "expression in square brackets must be a size of integer'");
-
-            if(a->kind == TYPE_KIND_TYPE) {
-                return builtin_type+TYPE_KIND_TYPE;
-            } else {
-                assert("only pointers and array can be subscripted"&&a->kind >= TYPE_KIND_ARRAY && a->kind <= TYPE_KIND_POINTER);
-                if(a->kind == TYPE_KIND_POINTER) {
+                break;
+            case '[':
+                if(a->kind == TYPE_KIND_TYPE) return builtin_type+TYPE_KIND_TYPE;
+                break;
+            case '+': case '-':
+                if(a->kind == TYPE_KIND_BOOL)  return a;
+                if(a->kind == TYPE_KIND_CHAR)  return a;
+                if(a->kind == TYPE_KIND_S8)    return a;
+                if(a->kind == TYPE_KIND_U8)    return a;
+                if(a->kind == TYPE_KIND_S16)   return a;
+                if(a->kind == TYPE_KIND_U16)   return a;
+                if(a->kind == TYPE_KIND_S32)   return a;
+                if(a->kind == TYPE_KIND_U32)   return a;
+                if(a->kind == TYPE_KIND_S64)   return a;
+                if(a->kind == TYPE_KIND_U64)   return a;
+                if(a->kind == TYPE_KIND_INT)   return a;
+                if(a->kind == TYPE_KIND_FLOAT) return a;
+                if(a->kind == TYPE_KIND_F32)   return a;
+                if(a->kind == TYPE_KIND_F64)   return a;
+                break;
+            case '!': case '~':
+                if(a->kind == TYPE_KIND_BOOL)  return a;
+                if(a->kind == TYPE_KIND_CHAR)  return a;
+                if(a->kind == TYPE_KIND_S8)    return a;
+                if(a->kind == TYPE_KIND_U8)    return a;
+                if(a->kind == TYPE_KIND_S16)   return a;
+                if(a->kind == TYPE_KIND_U16)   return a;
+                if(a->kind == TYPE_KIND_S32)   return a;
+                if(a->kind == TYPE_KIND_U32)   return a;
+                if(a->kind == TYPE_KIND_S64)   return a;
+                if(a->kind == TYPE_KIND_U64)   return a;
+                if(a->kind == TYPE_KIND_INT)   return a;
+                break;
+            case '*':
+                if(a->kind == TYPE_KIND_TYPE) return builtin_type+TYPE_KIND_TYPE;
+                break;
+            case '>':
+                if(a->kind == TYPE_KIND_POINTER && a->pointer.to->kind != TYPE_KIND_VOID)
                     return a->pointer.to;
-                } else {
-                    //TODO array bounds checking
-                    return a->array.of;
+                break;
+            case '@':
+                {
+                    Type *t = job_alloc_type(jp, TYPE_KIND_POINTER);
+                    t->pointer.to = a;
+                    return t;
                 }
-            }
-            return builtin_type+TYPE_KIND_VOID;
-            break;
-        case '+': case '-': case '*': case '/':
-            if(a->kind < b->kind) { // commutative
-                Type *tmp = a;
-                a = b;
-                b = tmp;
-            }
-
-            if(a->kind < TYPE_KIND_TYPE && b->kind < TYPE_KIND_TYPE) {
-                if(a->kind >= TYPE_KIND_INT)
-                    return a;
-                if(b->kind == TYPE_KIND_CHAR)
-                    return a;
-                if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
+                break;
+        }
+    } else {
+        switch(op) {
+            case TOKEN_CAST:
+                if(TYPE_KIND_IS_INTEGER_OR_FLOAT(a->kind) && TYPE_KIND_IS_INTEGER_OR_FLOAT(b->kind))
                     return a;
 
-                job_error(jp, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
-                        job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
-                return builtin_type+TYPE_KIND_VOID;
-            } else if(a->kind == TYPE_KIND_POINTER && a->pointer.to->kind != TYPE_KIND_VOID && (op == '+' || op == '-')) {
-                return a;
-            } else {
-                job_error(jp, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
-                        job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
-                return builtin_type+TYPE_KIND_VOID;
-            }
-            break;
-        case '%': case '&': case '|': case '^': case TOKEN_LSHIFT: case TOKEN_RSHIFT:
-            if(a->kind < b->kind) { // commutative
-                Type *tmp = a;
-                a = b;
-                b = tmp;
-            }
+                if(a->kind == TYPE_KIND_POINTER && b->kind == TYPE_KIND_POINTER)
+                    if(a->pointer.to->kind == TYPE_KIND_VOID || b->pointer.to->kind == TYPE_KIND_VOID)
+                        return a;
 
-            if(a->kind < TYPE_KIND_FLOAT && b->kind < TYPE_KIND_FLOAT) {
-                if(a->kind >= TYPE_KIND_INT)
-                    return a;
-                if(b->kind == TYPE_KIND_CHAR)
-                    return a;
-                if(((a->kind ^ b->kind) & 0x1) == 0) /* NOTE the unsigned types are even, signed are odd */
-                    return a;
+                if(a->kind == TYPE_KIND_POINTER && TYPE_KIND_IS_ARRAY_LIKE(b->kind))
+                    if(types_are_same(a->pointer.to, b->array.of) || a->pointer.to->kind == TYPE_KIND_VOID)
+                        return a;
 
-                job_error(jp, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
-                        job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
-                return builtin_type+TYPE_KIND_VOID;
-            } else {
-                job_error(jp, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
-                        job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
-                return builtin_type+TYPE_KIND_VOID;
-            }
-            break;
-        case '>': case '<': case TOKEN_GREATEQUAL: case TOKEN_LESSEQUAL: case TOKEN_EXCLAMEQUAL: case TOKEN_EQUALEQUAL:
-            {
-                Type *result = NULL;
-                if(TYPE_KIND_IS_NOT_SCALAR(a->kind) || TYPE_KIND_IS_NOT_SCALAR(b->kind))
-                    result = builtin_type+TYPE_KIND_VOID;
+                if(a->kind == TYPE_KIND_ARRAY_VIEW && TYPE_KIND_IS_ARRAY_LIKE(b->kind))
+                    if(types_are_same(a->pointer.to, b->array.of))
+                        return a;
+                break;
+            case '[':
+                if(!TYPE_KIND_IS_INTEGER(b->kind))
+                    return NULL;
 
-                if(a->kind < b->kind) { // commutative
+                if(a->kind == TYPE_KIND_TYPE)        return a;
+                if(a->kind == TYPE_KIND_POINTER)     return a->pointer.to;
+                if(TYPE_KIND_IS_ARRAY_LIKE(a->kind)) return a->array.of;
+
+                break;
+            case '%':
+            case '^': case '&': case '|':
+            case TOKEN_LSHIFT: case TOKEN_RSHIFT:
+                if(TYPE_KIND_IS_FLOAT(a->kind) || TYPE_KIND_IS_FLOAT(b->kind))
+                    return NULL;
+            case '*': case '/':
+            case '+': case '-':
+                if(a->kind > b->kind) { /* type commutative */
                     Type *tmp = a;
                     a = b;
                     b = tmp;
                 }
 
-                if(a->kind == TYPE_KIND_F64) {
-                    if(b->kind == TYPE_KIND_INT) //TODO generic number type
-                        result = builtin_type+TYPE_KIND_BOOL;
-                    else if(b->kind != a->kind)
-                        result = builtin_type+TYPE_KIND_VOID;
-                    else
-                        result = builtin_type+TYPE_KIND_BOOL;
-                } else if(a->kind >= TYPE_KIND_FLOAT) {
-                    if(b->kind == TYPE_KIND_INT) //TODO generic number type
-                        result = builtin_type+TYPE_KIND_BOOL;
-                    else if(b->kind != a->kind)
-                        result = builtin_type+TYPE_KIND_VOID;
-                    else
-                        result = builtin_type+TYPE_KIND_BOOL;
-                } else if(a->kind == TYPE_KIND_POINTER) {
-                    if(b->kind != TYPE_KIND_POINTER)
-                        result = builtin_type+TYPE_KIND_VOID;
-                    else
-                        result = builtin_type+TYPE_KIND_BOOL;
-                } else if(a->kind >= TYPE_KIND_S8 && a->kind <= TYPE_KIND_U64) {
-                    if(b->kind < TYPE_KIND_S8 || b->kind > TYPE_KIND_U64)
-                        result = builtin_type+TYPE_KIND_VOID;
-                    else
-                        result = builtin_type+TYPE_KIND_BOOL;
-                } else {
-                    assert(a->kind == TYPE_KIND_BOOL || a->kind == TYPE_KIND_CHAR || a->kind == TYPE_KIND_INT);
-                    if(b->kind == TYPE_KIND_BOOL || b->kind == TYPE_KIND_CHAR || b->kind == TYPE_KIND_INT)
-                        result = builtin_type+TYPE_KIND_BOOL;
-                    else
-                        result = builtin_type+TYPE_KIND_VOID;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_BOOL)      return a;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_CHAR)      return b;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_S8)        return b;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_U8)        return b;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_S16)       return b;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_U16)       return b;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_S32)       return b;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_U32)       return b;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_S64)       return b;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_U64)       return b;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_INT)       return b;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_FLOAT)     return NULL;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_F32)       return NULL;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_F64)       return NULL;
+
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_CHAR)      return builtin_type+TYPE_KIND_CHAR;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_S8)        return b;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_U8)        return b;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_S16)       return b;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_U16)       return b;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_S32)       return b;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_U32)       return b;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_S64)       return b;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_U64)       return b;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_INT)       return b;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_FLOAT)     return NULL;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_F32)       return NULL;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_F64)       return NULL;
+
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_S8)          return a;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_U8)          return b;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_S16)         return b;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_U16)         return b;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_S32)         return b;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_U32)         return b;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_S64)         return b;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_U64)         return b;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_INT)         return b;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_FLOAT)       return NULL;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_F32)         return NULL;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_F64)         return NULL;
+
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_U8)          return a;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_S16)         return builtin_type+TYPE_KIND_U16;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_U16)         return b;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_S32)         return builtin_type+TYPE_KIND_U32;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_U32)         return b;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_S64)         return builtin_type+TYPE_KIND_U64;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_U64)         return b;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_INT)         return b;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_FLOAT)       return NULL;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_F32)         return NULL;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_F64)         return NULL;
+
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_S16)        return a;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_U16)        return b;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_S32)        return b;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_U32)        return b;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_S64)        return b;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_U64)        return b;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_INT)        return b;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_U16)        return a;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_S32)        return builtin_type+TYPE_KIND_U32;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_U32)        return b;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_S64)        return builtin_type+TYPE_KIND_U64;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_U64)        return b;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_INT)        return b;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_S32)        return a;
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_U32)        return b;
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_S64)        return b;
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_U64)        return b;
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_INT)        return b;
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_U32)        return a;
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_S64)        return builtin_type+TYPE_KIND_U64;
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_U64)        return b;
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_INT)        return b;
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_S64)        return a;
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_U64)        return b;
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_INT)        return b;
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_U64)        return a;
+                if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_INT)        return a;
+                if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_INT)        return a;
+                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_FLOAT && b->kind == TYPE_KIND_FLOAT)    return a;
+                if(a->kind == TYPE_KIND_FLOAT && b->kind == TYPE_KIND_F32)      return b;
+                if(a->kind == TYPE_KIND_FLOAT && b->kind == TYPE_KIND_F64)      return NULL;
+
+                if(a->kind == TYPE_KIND_F32 && b->kind == TYPE_KIND_F32)        return a;
+                if(a->kind == TYPE_KIND_F32 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_F64 && b->kind == TYPE_KIND_F64)        return a;
+
+                break;
+            case '<':
+            case '>':
+            case TOKEN_LESSEQUAL:
+            case TOKEN_GREATEQUAL:
+            case TOKEN_EXCLAMEQUAL:
+            case TOKEN_EQUALEQUAL:
+                if(a->kind > b->kind) { /* type commutative */
+                    Type *tmp = a;
+                    a = b;
+                    b = tmp;
                 }
 
-                if(result->kind == TYPE_KIND_VOID)
-                    job_error(jp, op_ast->base.loc, "invalid types '%s' and '%s' to '%c'",
-                            job_type_to_str(jp, a_save), job_type_to_str(jp, b_save), (char)op);
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_S8)        return NULL;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_S16)       return NULL;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_S32)       return NULL;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_S64)       return NULL;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_INT)       return NULL;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_FLOAT)     return NULL;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_F32)       return NULL;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_F64)       return NULL;
 
-                return result;
-            }
-            break;
-        case TOKEN_AND: case TOKEN_OR:
-            if(TYPE_KIND_IS_NOT_SCALAR(a->kind) || TYPE_KIND_IS_NOT_SCALAR(b->kind)) {
-                UNIMPLEMENTED;
-            }
-            return builtin_type+TYPE_KIND_BOOL;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_S8)        return NULL;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_S16)       return NULL;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_S32)       return NULL;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_S64)       return NULL;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_INT)       return NULL;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_FLOAT)     return NULL;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_F32)       return NULL;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_F64)       return NULL;
+
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_U8)          return NULL;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_U16)         return NULL;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_U32)         return NULL;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_U64)         return NULL;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_FLOAT)       return NULL;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_F32)         return NULL;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_F64)         return NULL;
+
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_S16)         return NULL;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_S32)         return NULL;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_S64)         return NULL;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_INT)         return NULL;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_FLOAT)       return NULL;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_F32)         return NULL;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_F64)         return NULL;
+
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_U16)        return NULL;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_U32)        return NULL;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_U64)        return NULL;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_S32)        return NULL;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_S64)        return NULL;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_INT)        return NULL;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_U32)        return NULL;
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_U64)        return NULL;
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_S64)        return NULL;
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_U64)        return NULL;
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_INT)        return NULL;
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_U64)        return NULL;
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_INT)        return NULL;
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_INT)        return NULL;
+                if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_FLOAT && b->kind == TYPE_KIND_F64)      return NULL;
+
+                if(a->kind == TYPE_KIND_F32 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                return builtin_type+TYPE_KIND_BOOL;
+
+                break;
+            case TOKEN_AND:
+            case TOKEN_OR:
+                if(a->kind > b->kind) { /* type commutative */
+                    Type *tmp = a;
+                    a = b;
+                    b = tmp;
+                }
+
+                if(a->kind == TYPE_KIND_STRUCT || b->kind == TYPE_KIND_STRUCT) return NULL;
+                if(a->kind == TYPE_KIND_UNION  || b->kind == TYPE_KIND_UNION)  return NULL;
+
+                return builtin_type+TYPE_KIND_BOOL;
+
+                break;
+            case '=':
+                if(types_are_same(a, b))
+                    return a;
+
+                if(TYPE_KIND_IS_FLOAT(a->kind)   && b->kind == TYPE_KIND_INT)      return a;
+                if(TYPE_KIND_IS_FLOAT(a->kind)   && TYPE_KIND_IS_FLOAT(b->kind))   return a;
+                if(TYPE_KIND_IS_INTEGER(a->kind) && TYPE_KIND_IS_INTEGER(b->kind)) return a;
+
+                if(a->kind == TYPE_KIND_ARRAY && b->kind == TYPE_KIND_ARRAY
+                        && typecheck_operation(jp, a->array.of, b->array.of, '=') && a->array.n == b->array.n)
+                    return a;
+
+                if(a->kind == TYPE_KIND_ARRAY_VIEW && TYPE_KIND_IS_ARRAY_LIKE(b->kind) 
+                        && typecheck_operation(jp, a->array.of, b->array.of, '='))
+                    return a;
+
+                if(a->kind == TYPE_KIND_DYNAMIC_ARRAY && TYPE_KIND_IS_ARRAY_LIKE(b->kind)
+                        && typecheck_operation(jp, a->array.of, b->array.of, '='))
+                    return a;
+
+                break;
+            case TOKEN_PLUSEQUAL: case TOKEN_MINUSEQUAL:
+                if(a->kind == TYPE_KIND_POINTER && TYPE_KIND_IS_INTEGER(b->kind)
+                        && a->pointer.to->kind != TYPE_KIND_VOID)
+                    return a;
+            case TOKEN_TIMESEQUAL: case TOKEN_DIVEQUAL:
+                if(TYPE_KIND_IS_FLOAT(a->kind)   && b->kind == TYPE_KIND_INT)      return a;
+                if(TYPE_KIND_IS_FLOAT(a->kind)   && TYPE_KIND_IS_FLOAT(b->kind))   return a;
+                if(TYPE_KIND_IS_INTEGER(a->kind) && TYPE_KIND_IS_INTEGER(b->kind)) return a;
+                break;
+            case TOKEN_MODEQUAL:
+            case TOKEN_ANDEQUAL: case TOKEN_OREQUAL: case TOKEN_XOREQUAL:
+            case TOKEN_LSHIFTEQUAL: case TOKEN_RSHIFTEQUAL:
+                if(TYPE_KIND_IS_INTEGER(a->kind) && TYPE_KIND_IS_INTEGER(b->kind)) return a;
+                break;
+        }
     }
+
+    return NULL;
 }
 
 Type* typecheck_dot(Job *jp, Type *a, char *field) {
@@ -9489,7 +9530,12 @@ void typecheck_expr(Job *jp) {
             if(!(node->left && node->right)) {
                 Type *a_type = arrpop(type_stack);
 
-                result_type = typecheck_unary(jp, a_type, node);
+                result_type = typecheck_operation(jp, a_type, NULL, node->token);
+                if(!result_type) {
+                    job_error(jp, node->base.loc, "invalid type '%s' to '%s' operator",
+                            job_type_to_str(jp, a_type),
+                            job_op_token_to_str(jp, node->token));
+                }
 
                 Value *a_value = arrpop(value_stack);
 
@@ -9541,7 +9587,13 @@ void typecheck_expr(Job *jp) {
                     node->left = NULL; // the type will already be on the cast
                 }
 
-                result_type = typecheck_binary(jp, a_type, b_type, node);
+                result_type = typecheck_operation(jp, a_type, b_type, node->token);
+                if(!result_type) {
+                    job_error(jp, node->base.loc, "invalid types '%s' and '%s' to '%s' operator",
+                            job_type_to_str(jp, a_type),
+                            job_type_to_str(jp, b_type),
+                            job_op_token_to_str(jp, node->token));
+                }
 
                 result_value = evaluate_binary(jp, a_value, b_value, node);
 
@@ -9574,8 +9626,8 @@ void typecheck_expr(Job *jp) {
             }
 
             for(; i < arrlen(type_stack); ++i) {
-                Type *t = typecheck_assign(jp, array_elem_type, type_stack[i], '=');
-                if(t->kind == TYPE_KIND_VOID) {
+                Type *t = typecheck_operation(jp, array_elem_type, type_stack[i], '=');
+                if(!t) {
                     job_error(jp, array_lit->base.loc,
                             "cannot have element of type '%s' in array literal with element type '%s'",
                             job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
@@ -9627,9 +9679,10 @@ void typecheck_expr(Job *jp) {
 
             bool run_at_compile_time = (kind == AST_KIND_run_directive);
 
-            AST_call *callp;
+            AST_run_directive *ast_run = NULL;
+            AST_call *callp = NULL;
             if(run_at_compile_time) {
-                AST_run_directive *ast_run = (AST_run_directive*)expr[pos];
+                ast_run = (AST_run_directive*)expr[pos];
                 callp = ast_run->call_to_run;
                 Sym *s = ((AST_atom*)(callp->callee))->symbol_annotation;
                 assert(s);
@@ -9679,9 +9732,9 @@ void typecheck_expr(Job *jp) {
                 Type *param_type = type_stack[base_index + i];
                 Type *expected_type = proc_type->proc.param.types[i];
 
-                Type *t = typecheck_assign(jp, expected_type, param_type, '=');
+                Type *t = typecheck_operation(jp, expected_type, param_type, '=');
 
-                if(t->kind == TYPE_KIND_VOID) {
+                if(!t) {
                     if(proc_type->proc.name == NULL) {
                         job_error(jp, callp->base.loc,
                                 "cannot pass type '%s' to parameter of type '%s'",
@@ -9731,15 +9784,16 @@ void typecheck_expr(Job *jp) {
 
                     params_passed[param_index] = 1;
 
-                    Type *t = typecheck_assign(jp, expected_type, param_type, '=');
+                    Type *t = typecheck_operation(jp, expected_type, param_type, '=');
 
-                    if(t->kind == TYPE_KIND_VOID)
+                    if(!t) {
                         job_error(jp, callp->base.loc,
                                 "invalid type '%s' passed to parameter '%s' in call to '%s', expected type '%s'",
                                 job_type_to_str(jp, param_type),
                                 proc_type->proc.param.names[param_index],
                                 proc_type->proc.name,
                                 job_type_to_str(jp, expected_type));
+                    }
                 }
             }
 
@@ -9775,7 +9829,9 @@ void typecheck_expr(Job *jp) {
 
             if(is_call_expr) { /* if the only thing in the expr is a call */
                 assert(arrlen(type_stack) == 0);
+
                 callp->n_types_returned = proc_type->proc.ret.n;
+
                 if(callp->n_types_returned > 0) {
                     callp->type_annotation = proc_type->proc.ret.types[0];
                     callp->type_annotation_list = job_alloc_scratch(jp, sizeof(Type*) * proc_type->proc.ret.n);
@@ -9787,6 +9843,12 @@ void typecheck_expr(Job *jp) {
                 callp->n_types_returned = 1;
                 callp->type_annotation = proc_type->proc.ret.types[0];
                 arrpush(type_stack, proc_type->proc.ret.types[0]);
+            }
+
+            if(ast_run) {
+                ast_run->n_types_returned = callp->n_types_returned;
+                ast_run->type_annotation = callp->type_annotation;
+                ast_run->type_annotation_list = callp->type_annotation_list;
             }
 
             if(run_at_compile_time) {
@@ -9906,6 +9968,11 @@ void typecheck_expr(Job *jp) {
                     } else {
                         callp->value_annotation = return_value_array[0];
                         arrpush(value_stack, return_value_array[0]);
+                    }
+
+                    if(ast_run) {
+                        ast_run->value_annotation = callp->value_annotation;
+                        ast_run->value_annotation_list = callp->value_annotation_list;
                     }
                 }
 
@@ -10327,12 +10394,13 @@ void typecheck_procdecl(Job *jp) {
                     job_error(jp, p->base.loc,
                             "parameter default values must evaluate at compile time");
 
-                Type *t = typecheck_assign(jp, bind_type, init_type, '=');
+                Type *t = typecheck_operation(jp, bind_type, init_type, '=');
 
-                if(t->kind == TYPE_KIND_VOID)
+                if(!t) {
                     job_error(jp, p->base.loc,
                             "invalid assignment of '%s' to parameter of type '%s'",
                             job_type_to_str(jp, init_type), job_type_to_str(jp, bind_type));
+                }
 
                 if(jp->state == JOB_STATE_ERROR) return;
 
@@ -10544,12 +10612,13 @@ void typecheck_vardecl(Job *jp) {
                 init_type->array.n = bind_type->array.n;
             }
 
-            Type *t = typecheck_assign(jp, bind_type, init_type, '=');
+            Type *t = typecheck_operation(jp, bind_type, init_type, '=');
 
-            if(t->kind == TYPE_KIND_VOID)
+            if(!t) {
                 job_error(jp, ast->base.loc,
                         "invalid assignment of '%s' to %s of type '%s'",
                         job_type_to_str(jp, init_type), ast->constant ? "constant" : "variable", job_type_to_str(jp, bind_type));
+            }
 
             if(jp->state == JOB_STATE_ERROR) return;
 
@@ -10681,7 +10750,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/foreign_proc.jpl";
+    char *path = "test/array_lit.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 
