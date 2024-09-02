@@ -10,7 +10,7 @@ proc foo(a: float, b: float) float {
     return vals[i-1];
 }
 
-#run lerp(0.0, 11.0, 0.287);
+#run lerp(0, 11.0, 0.287);
 
 proc lerp(start: float, end: float, t: float) float {
     result := start + t*(end - start);

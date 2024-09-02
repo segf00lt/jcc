@@ -375,13 +375,6 @@ struct IRinst {
             u64 id;
         } label;
 
-        /*
-        struct {
-            u64 reg;
-            u64 bytes;
-        } stack;
-        */
-
         struct {
             u64 reg_dest;
             u64 offset;
@@ -530,7 +523,7 @@ struct Job {
     AST_retdecl         *cur_retdecl;
 
     /* return statement */
-    Arr(AST*)            expr_list;
+    Arr(AST_expr_list*)  expr_list;
     u64                  expr_list_pos;
 
     /* code generation */
@@ -583,13 +576,13 @@ struct AST {
 
 struct AST_param {
     AST base;
-    AST_param *next;
     Type *type_annotation;
     Value *value_annotation;
     char *name;
     AST *value;
     int index;
     bool has_nested_call;
+    AST_param *next;
 };
 
 struct AST_run_directive {
@@ -962,7 +955,7 @@ void        linearize_expr(Job *jp, AST *astpp);
 bool        is_lvalue(AST *ast);
 bool        all_paths_return(Job *jp, AST *ast);
 bool        has_nested_call(AST *ast);
-void        add_implicit_casts(Job *jp, AST *ast);
+void        add_implicit_casts_to_expr(Job *jp, AST *ast);
 
 void        do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type);
 
@@ -1611,10 +1604,8 @@ bool has_nested_call(AST *ast) {
     return false;
 }
 
-void add_implicit_casts(Job *jp, AST *ast) {
+void add_implicit_casts_to_expr(Job *jp, AST *ast) {
     if(!ast) return;
-
-    //if(ast->kind == AST_KIND_atom) return;
 
     if(ast->kind == AST_KIND_expr) {
         AST_expr *expr = (AST_expr*)ast;
@@ -1622,8 +1613,8 @@ void add_implicit_casts(Job *jp, AST *ast) {
         if(expr->left == NULL) return;
         if(expr->right == NULL) return;
 
-        if(expr->left->kind != AST_KIND_atom) add_implicit_casts(jp, expr->left);
-        if(expr->right->kind != AST_KIND_atom) add_implicit_casts(jp, expr->right);
+        if(expr->left->kind != AST_KIND_atom) add_implicit_casts_to_expr(jp, expr->left);
+        if(expr->right->kind != AST_KIND_atom) add_implicit_casts_to_expr(jp, expr->right);
 
         Type *left = ((AST_expr_base*)(expr->left))->type_annotation;
         Type *right = ((AST_expr_base*)(expr->right))->type_annotation;
@@ -7819,6 +7810,40 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                     UNIMPLEMENTED;
                 }
             } else {
+                Type *expect_param_type = callee_type->proc.param.types[p->index];
+
+                if(!types_are_same(expect_param_type, p->type_annotation)) {
+
+                    if(p->value_annotation && p->value_annotation->kind != VALUE_KIND_NIL) {
+                        AST_expr_base *value_expr = (AST_expr_base*)(p->value);
+
+                        value_expr->type_annotation = expect_param_type;
+
+                        if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
+                            UNIMPLEMENTED;
+                        } else {
+                            if(TYPE_KIND_IS_FLOAT(expect_param_type->kind) && TYPE_KIND_IS_INTEGER(p->type_annotation->kind)) {
+                                p->value_annotation->val.floating = (f32)(p->value_annotation->val.integer);
+                            } else if(expect_param_type->kind == TYPE_KIND_F64 && p->type_annotation->kind == TYPE_KIND_FLOAT) {
+                                p->value_annotation->val.dfloating = (f64)(p->value_annotation->val.floating);
+                            }
+                        }
+                    } else {
+                        if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
+                            UNIMPLEMENTED;
+                        } else {
+                            AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+                            cast_expr->token = TOKEN_CAST;
+                            cast_expr->left = NULL;
+                            cast_expr->type_annotation = expect_param_type;
+                            cast_expr->right = p->value;
+                            p->value = (AST*)cast_expr;
+                        }
+                    }
+
+                    p->type_annotation = expect_param_type;
+                }
+
                 ir_gen_expr(jp, p->value);
 
                 IRop opcode;
@@ -8430,6 +8455,15 @@ void job_runner(char *src, char *src_path) {
                                 continue;
                             }
 
+                            if(!types_are_same(type_left, type_right)) {
+                                AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+                                cast_expr->token = TOKEN_CAST;
+                                cast_expr->left = NULL;
+                                cast_expr->type_annotation = type_left;
+                                cast_expr->right = ast_statement->right;
+                                ast_statement->right = (AST*)cast_expr;
+                            }
+
                             arrlast(jp->tree_pos_stack) = ast_statement->next;
 
                         } else if(ast->kind == AST_KIND_returnstatement) {
@@ -8441,7 +8475,7 @@ void job_runner(char *src, char *src_path) {
                             //     Arr(AST**) for jp->expr
                             if(arrlen(jp->expr_list) == 0) {
                                 for(AST_expr_list *list = ast_return->expr_list; list; list = list->next) {
-                                    arrpush(jp->expr_list, list->expr);
+                                    arrpush(jp->expr_list, list);
                                 }
                                 jp->expr_list_pos = 0;
                             }
@@ -8461,8 +8495,10 @@ void job_runner(char *src, char *src_path) {
                             bool job_needs_to_wait = false;
 
                             for(u64 expr_list_pos = jp->expr_list_pos; expr_list_pos < arrlen(jp->expr_list); ++expr_list_pos) {
+                                AST_expr_base *ret_expr = (AST_expr_base*)(jp->expr_list[expr_list_pos]->expr);
+
                                 if(arrlen(jp->expr) == 0) {
-                                    linearize_expr(jp, jp->expr_list[expr_list_pos]);
+                                    linearize_expr(jp, (AST*)ret_expr);
                                 }
                                 typecheck_expr(jp);
 
@@ -8480,8 +8516,6 @@ void job_runner(char *src, char *src_path) {
                                 arrsetlen(jp->expr, 0);
                                 jp->expr_pos = 0;
 
-                                AST_expr *ret_expr = (AST_expr*)(jp->expr_list[expr_list_pos]);
-
                                 Type *ret_expr_type = ret_expr->type_annotation;
                                 Type *expect_type = cur_proc_type->proc.ret.types[expr_list_pos];
 
@@ -8492,6 +8526,15 @@ void job_runner(char *src, char *src_path) {
                                             cur_proc_type->proc.name,
                                             job_type_to_str(jp, expect_type),
                                             job_type_to_str(jp, ret_expr_type));
+                                }
+
+                                if(jp->state != JOB_STATE_ERROR && !types_are_same(expect_type, ret_expr_type)) {
+                                    AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+                                    cast_expr->token = TOKEN_CAST;
+                                    cast_expr->left = NULL;
+                                    cast_expr->type_annotation = expect_type;
+                                    cast_expr->right = (AST*)ret_expr;
+                                    jp->expr_list[expr_list_pos]->expr = (AST*)cast_expr;
                                 }
                             }
 
@@ -9627,12 +9670,24 @@ void typecheck_expr(Job *jp) {
 
             for(; i < arrlen(type_stack); ++i) {
                 Type *t = typecheck_operation(jp, array_elem_type, type_stack[i], '=');
+
                 if(!t) {
                     job_error(jp, array_lit->base.loc,
                             "cannot have element of type '%s' in array literal with element type '%s'",
                             job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
                     break;
                 }
+
+                /*
+                if(!types_are_same(array_elem_type, type_stack[i])) {
+                    AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+                    cast_expr->token = TOKEN_CAST;
+                    cast_expr->left = NULL;
+                    cast_expr->type_annotation = array_elem_type;
+                    cast_expr->right = ast_statement->right;
+                    ast_statement->right = (AST*)cast_expr;
+                }
+                */
             }
 
             Value **elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n_elements);
@@ -9989,7 +10044,7 @@ void typecheck_expr(Job *jp) {
     if(jp->state != JOB_STATE_WAIT && jp->state != JOB_STATE_ERROR) {
         assert(jp->state == JOB_STATE_READY);
         AST *expr_root = arrlast(jp->expr);
-        add_implicit_casts(jp, expr_root);
+        add_implicit_casts_to_expr(jp, expr_root);
     }
 
     jp->value_stack = value_stack;
@@ -10597,10 +10652,6 @@ void typecheck_vardecl(Job *jp) {
 
     if(initialize) {
         //TODO multi-identifier declarations so we can initialize from a function that returns multiple values
-        //if(ast->init->kind == AST_KIND_call) {
-        //    init_type = ((AST_call*)ast->init)->type_annotation_list[0];
-        //} else {
-        //}
         init_value = ((AST_expr*)ast->init)->value_annotation;
         init_type = ((AST_expr*)ast->init)->type_annotation;
 
@@ -10623,10 +10674,10 @@ void typecheck_vardecl(Job *jp) {
             if(jp->state == JOB_STATE_ERROR) return;
 
 
-            if(t->kind >= TYPE_KIND_FLOAT && t->kind <= TYPE_KIND_F64 && init_value->kind == VALUE_KIND_INT) {
+            if(TYPE_KIND_IS_FLOAT(t->kind) && init_value->kind == VALUE_KIND_INT) {
                 init_value->kind = VALUE_KIND_FLOAT;
                 init_value->val.floating = (float)init_value->val.integer;
-            } else if(t->kind >= TYPE_KIND_FLOAT && t->kind <= TYPE_KIND_F64 && init_value->kind == VALUE_KIND_UINT) {
+            } else if(TYPE_KIND_IS_FLOAT(t->kind) && init_value->kind == VALUE_KIND_UINT) {
                 init_value->kind = VALUE_KIND_FLOAT;
                 init_value->val.floating = (float)init_value->val.uinteger;
             }
@@ -10728,7 +10779,7 @@ void print_sym(Sym sym) {
     printf("size_in_bytes: %u\n", sym.type->bytes);
 }
 
-//TODO floating point refactor (implicit casts)
+//TODO implement f64
 //TODO structs
 //TODO pass structs to procedures
 //TODO static array initialization and assignment need to be improved
@@ -10750,7 +10801,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/array_lit.jpl";
+    char *path = "test/test_floats.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 
