@@ -1,0 +1,14 @@
+proc main() {
+    i: f64 = 3;
+    x: f64;
+    x = i * 4.0;
+    z := foo(45, 3.0);
+}
+
+proc foo(x: f64, y: f64) f64 {
+    return x * y + 30;
+}
+
+proc other_foo() f64 {
+    return 1.34 + 3;
+}

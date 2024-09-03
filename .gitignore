@@ -29,3 +29,6 @@ rule110
 .vscode/settings.json
 \\
 __jcc__wrap__*
+help
+help.py
+.vscode/

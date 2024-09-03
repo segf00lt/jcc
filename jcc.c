@@ -84,6 +84,7 @@
     X(INT)                              \
     X(UINT)                             \
     X(FLOAT)                            \
+    X(DFLOAT)                           \
     X(TYPE)                             \
     X(STRING)                           \
     X(ARRAY)                            \
@@ -209,6 +210,8 @@
 #define TYPE_KIND_IS_NOT_SCALAR(kind) ((bool)(kind >= TYPE_KIND_TYPE && kind != TYPE_KIND_POINTER))
 
 #define TYPE_KIND_IS_FLOAT(kind) ((bool)(kind >= TYPE_KIND_FLOAT && kind <= TYPE_KIND_F64))
+
+#define TYPE_KIND_IS_FLOAT32(kind) ((bool)(kind == TYPE_KIND_FLOAT || kind == TYPE_KIND_F32))
 
 #define TYPE_KIND_IS_INTEGER(kind) ((bool)(kind >= TYPE_KIND_BOOL && kind <= TYPE_KIND_INT))
 
@@ -1630,6 +1633,20 @@ void add_implicit_casts_to_expr(Job *jp, AST *ast) {
             cast_expr->type_annotation = left;
             cast_expr->right = expr->right;
             expr->right = (AST*)cast_expr;
+        } else if(left->kind == TYPE_KIND_FLOAT && right->kind == TYPE_KIND_F64) {
+            AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+            cast_expr->token = TOKEN_CAST;
+            cast_expr->left = NULL;
+            cast_expr->type_annotation = right;
+            cast_expr->right = expr->right;
+            expr->left = (AST*)cast_expr;
+        } else if(left->kind == TYPE_KIND_F64 && right->kind == TYPE_KIND_FLOAT) {
+            AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+            cast_expr->token = TOKEN_CAST;
+            cast_expr->left = NULL;
+            cast_expr->type_annotation = left;
+            cast_expr->right = expr->right;
+            expr->right = (AST*)cast_expr;
         } else if(!TYPE_KIND_IS_FLOAT(left->kind) && TYPE_KIND_IS_FLOAT(right->kind)) {
             assert(left->kind <= TYPE_KIND_INT);
             AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
@@ -2123,6 +2140,14 @@ INLINE void print_ir_inst(IRinst inst) {
 			break;
         case IROP_FTOB:
             printf("%s r_%lu %luB, f_%lu %luB\n",
+                    opstr,
+                    inst.typeconv.to_reg,
+                    inst.typeconv.to_bytes,
+                    inst.typeconv.from_reg,
+                    inst.typeconv.from_bytes);
+			break;
+        case IROP_FTOF:
+            printf("%s f_%lu %luB, f_%lu %luB\n",
                     opstr,
                     inst.typeconv.to_reg,
                     inst.typeconv.to_bytes,
@@ -6903,12 +6928,13 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                         .from_bytes = operand_type->bytes,
                                     },
                                 };
-                            if(result_type->kind >= TYPE_KIND_FLOAT && result_type->kind <= TYPE_KIND_F64 &&
-                              (operand_type->kind < TYPE_KIND_FLOAT || operand_type->kind > TYPE_KIND_F64)) {
+                            if(TYPE_KIND_IS_FLOAT(result_type->kind) && TYPE_KIND_IS_INTEGER(operand_type->kind)) {
                                 inst.opcode = IROP_ITOF;
                                 arrpush(jp->instructions, inst);
-                            } else if((result_type->kind < TYPE_KIND_FLOAT || result_type->kind > TYPE_KIND_F64) &&
-                                      operand_type->kind >= TYPE_KIND_FLOAT && operand_type->kind <= TYPE_KIND_F64) {
+                            } else if(TYPE_KIND_IS_FLOAT(result_type->kind) && TYPE_KIND_IS_FLOAT(operand_type->kind)) {
+                                inst.opcode = IROP_FTOF;
+                                arrpush(jp->instructions, inst);
+                            } else if(TYPE_KIND_IS_FLOAT(operand_type->kind) && TYPE_KIND_IS_INTEGER(result_type->kind)) {
                                 inst.opcode = IROP_FTOI;
                                 arrpush(jp->instructions, inst);
                             }
@@ -7814,20 +7840,27 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
 
                 if(!types_are_same(expect_param_type, p->type_annotation)) {
 
-                    if(p->value_annotation && p->value_annotation->kind != VALUE_KIND_NIL) {
-                        AST_expr_base *value_expr = (AST_expr_base*)(p->value);
+                    AST_expr_base *value_expr = (AST_expr_base*)(p->value);
 
-                        value_expr->type_annotation = expect_param_type;
+                    if(p->value_annotation && p->value_annotation->kind != VALUE_KIND_NIL) {
 
                         if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
                             UNIMPLEMENTED;
                         } else {
-                            if(TYPE_KIND_IS_FLOAT(expect_param_type->kind) && TYPE_KIND_IS_INTEGER(p->type_annotation->kind)) {
-                                p->value_annotation->val.floating = (f32)(p->value_annotation->val.integer);
-                            } else if(expect_param_type->kind == TYPE_KIND_F64 && p->type_annotation->kind == TYPE_KIND_FLOAT) {
-                                p->value_annotation->val.dfloating = (f64)(p->value_annotation->val.floating);
+                            if(expect_param_type->kind == TYPE_KIND_FLOAT && value_expr->type_annotation->kind == TYPE_KIND_INT) {
+                                value_expr->value_annotation->kind = VALUE_KIND_FLOAT;
+                                value_expr->value_annotation->val.floating = (f32)(value_expr->value_annotation->val.integer);
+                            } else if(expect_param_type->kind == TYPE_KIND_F64 && value_expr->type_annotation->kind == TYPE_KIND_INT) {
+                                value_expr->value_annotation->kind = VALUE_KIND_DFLOAT;
+                                value_expr->value_annotation->val.dfloating = (f64)(value_expr->value_annotation->val.integer);
+                            } else if(expect_param_type->kind == TYPE_KIND_F64 && value_expr->type_annotation->kind == TYPE_KIND_FLOAT) {
+                                value_expr->value_annotation->kind = VALUE_KIND_DFLOAT;
+                                value_expr->value_annotation->val.dfloating = (f64)(value_expr->value_annotation->val.floating);
                             }
                         }
+
+                        value_expr->type_annotation = expect_param_type;
+
                     } else {
                         if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
                             UNIMPLEMENTED;
@@ -7839,6 +7872,8 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                             cast_expr->right = p->value;
                             p->value = (AST*)cast_expr;
                         }
+
+                        value_expr->type_annotation = expect_param_type;
                     }
 
                     p->type_annotation = expect_param_type;
@@ -9324,13 +9359,13 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op) {
                 if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_F64)        return NULL;
 
                 if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_INT)        return a;
-                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_FLOAT)      return NULL;
-                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F32)        return NULL;
-                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F64)        return NULL;
+                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_FLOAT)      return b;
+                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F32)        return b;
+                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F64)        return b;
 
                 if(a->kind == TYPE_KIND_FLOAT && b->kind == TYPE_KIND_FLOAT)    return a;
                 if(a->kind == TYPE_KIND_FLOAT && b->kind == TYPE_KIND_F32)      return b;
-                if(a->kind == TYPE_KIND_FLOAT && b->kind == TYPE_KIND_F64)      return NULL;
+                if(a->kind == TYPE_KIND_FLOAT && b->kind == TYPE_KIND_F64)      return b;
 
                 if(a->kind == TYPE_KIND_F32 && b->kind == TYPE_KIND_F32)        return a;
                 if(a->kind == TYPE_KIND_F32 && b->kind == TYPE_KIND_F64)        return NULL;
@@ -10674,14 +10709,21 @@ void typecheck_vardecl(Job *jp) {
             if(jp->state == JOB_STATE_ERROR) return;
 
 
-            if(TYPE_KIND_IS_FLOAT(t->kind) && init_value->kind == VALUE_KIND_INT) {
+            if(TYPE_KIND_IS_FLOAT32(t->kind) && init_value->kind == VALUE_KIND_INT) {
                 init_value->kind = VALUE_KIND_FLOAT;
                 init_value->val.floating = (float)init_value->val.integer;
-            } else if(TYPE_KIND_IS_FLOAT(t->kind) && init_value->kind == VALUE_KIND_UINT) {
+            } else if(t->kind == TYPE_KIND_F64 && init_value->kind == VALUE_KIND_FLOAT) {
+                init_value->kind = VALUE_KIND_DFLOAT;
+                init_value->val.dfloating = (f64)init_value->val.floating;
+            } else if(t->kind == TYPE_KIND_F64 && init_value->kind == VALUE_KIND_INT) {
+                init_value->kind = VALUE_KIND_DFLOAT;
+                init_value->val.dfloating = (f64)init_value->val.integer;
+            } else if(TYPE_KIND_IS_FLOAT32(t->kind) && init_value->kind == VALUE_KIND_UINT) {
                 init_value->kind = VALUE_KIND_FLOAT;
                 init_value->val.floating = (float)init_value->val.uinteger;
             }
 
+            ((AST_expr_base*)ast->init)->type_annotation = t;
             bind_type = t;
         } else {
             bind_type = init_type;
@@ -10801,7 +10843,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/test_floats.jpl";
+    char *path = "test/f64.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 
