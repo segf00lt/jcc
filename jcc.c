@@ -1863,13 +1863,19 @@ u64 ir_gen_array_from_value(Job *jp, Type *array_type, Value *v) {
 
                 inst.setvar.immediate = true;
                 if(array_type->array.of->kind == TYPE_KIND_F64) {
-                    UNIMPLEMENTED; //TODO implement f64
+                    if(elem->kind == VALUE_KIND_INT) {
+                        inst.setvar.imm.floating64 = (f64)(elem->val.integer);
+                    } else if(elem->kind == VALUE_KIND_FLOAT) {
+                        inst.setvar.imm.floating64 = (f64)(elem->val.floating);
+                    } else if(elem->kind == VALUE_KIND_DFLOAT) {
+                        inst.setvar.imm.floating64 = (f64)(elem->val.dfloating);
+                    } else {
+                        UNREACHABLE;
+                    } 
                 } else if(array_type->array.of->kind >= TYPE_KIND_FLOAT) {
                     //TODO implicit casts should be resolved in the typechecker
                     //TODO overhaul typechecking and implement number type
-                    if(elem->kind <= VALUE_KIND_UINT) {
-                        assert(elem->kind != VALUE_KIND_UINT); // uint shouldn't implicitly cast
-                        assert(elem->kind != VALUE_KIND_NIL);
+                    if(elem->kind == VALUE_KIND_INT) {
                         inst.setvar.imm.floating32 = (f32)(elem->val.integer);
                     } else {
                         inst.setvar.imm.floating32 = elem->val.floating;
@@ -4930,15 +4936,20 @@ u64 ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array
                 } else {
                     inst.setvar.immediate = true;
                     if(array_type->array.of->kind == TYPE_KIND_F64) {
-                        UNIMPLEMENTED; //TODO implement f64
+                        if(expr_base->value_annotation->kind == VALUE_KIND_INT) {
+                            inst.setvar.imm.floating64 = (f64)(expr_base->value_annotation->val.integer);
+                        } else if(expr_base->value_annotation->kind == VALUE_KIND_FLOAT) {
+                            inst.setvar.imm.floating64 = (f64)(expr_base->value_annotation->val.floating);
+                        } else {
+                            assert(expr_base->value_annotation->kind == VALUE_KIND_DFLOAT);
+                            inst.setvar.imm.floating64 = (f64)(expr_base->value_annotation->val.dfloating);
+                        }
                     } else if(array_type->array.of->kind >= TYPE_KIND_FLOAT) {
                         //TODO implicit casts should be resolved in the typechecker
-                        //TODO overhaul typechecking and implement number type
-                        if(expr_base->value_annotation->kind <= VALUE_KIND_UINT) {
-                            assert(expr_base->value_annotation->kind != VALUE_KIND_UINT); // uint shouldn't implicitly cast
-                            assert(expr_base->value_annotation->kind != VALUE_KIND_NIL);
+                        if(expr_base->value_annotation->kind == VALUE_KIND_INT) {
                             inst.setvar.imm.floating32 = (f32)(expr_base->value_annotation->val.integer);
                         } else {
+                            assert(expr_base->value_annotation->kind == VALUE_KIND_FLOAT);
                             inst.setvar.imm.floating32 = expr_base->value_annotation->val.floating;
                         }
                     } else {
@@ -5019,22 +5030,27 @@ u64 ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_
             for(AST_expr_list *elem = ast_array->elements; elem; elem = elem->next) {
                 AST_expr_base *expr_base = (AST_expr_base*)(elem->expr);
                 if(expr_base->value_annotation == NULL || expr_base->value_annotation->kind == VALUE_KIND_NIL) {
-                    inst.setvar.immediate = false;
+                    inst.stor.immediate = false;
                     ir_gen_expr(jp, elem->expr);
                     (*regp)--;
                     inst.stor.reg_src = *regp;
                 } else {
                     inst.stor.immediate = true;
                     if(array_type->array.of->kind == TYPE_KIND_F64) {
-                        UNIMPLEMENTED; //TODO implement f64
+                        if(expr_base->value_annotation->kind == VALUE_KIND_INT) {
+                            inst.stor.imm.floating64 = (f64)(expr_base->value_annotation->val.integer);
+                        } else if(expr_base->value_annotation->kind == VALUE_KIND_FLOAT) {
+                            inst.stor.imm.floating64 = (f64)(expr_base->value_annotation->val.floating);
+                        } else {
+                            assert(expr_base->value_annotation->kind == VALUE_KIND_DFLOAT);
+                            inst.stor.imm.floating64 = (f64)(expr_base->value_annotation->val.dfloating);
+                        }
                     } else if(array_type->array.of->kind >= TYPE_KIND_FLOAT) {
                         //TODO implicit casts should be resolved in the typechecker
-                        //TODO overhaul typechecking and implement number type
-                        if(expr_base->value_annotation->kind <= VALUE_KIND_UINT) {
-                            assert(expr_base->value_annotation->kind != VALUE_KIND_UINT); // uint shouldn't implicitly cast
-                            assert(expr_base->value_annotation->kind != VALUE_KIND_NIL);
+                        if(expr_base->value_annotation->kind == VALUE_KIND_INT) {
                             inst.stor.imm.floating32 = (f32)(expr_base->value_annotation->val.integer);
                         } else {
+                            assert(expr_base->value_annotation->kind == VALUE_KIND_FLOAT);
                             inst.stor.imm.floating32 = expr_base->value_annotation->val.floating;
                         }
                     } else {
@@ -10026,7 +10042,7 @@ void typecheck_expr(Job *jp) {
                         case TYPE_KIND_INT:
                             v->kind = VALUE_KIND_INT;
                             v->val.integer = (s64)(jp->interp.ports[i].integer);
-                            printf("~~~~~~ %lu\n", v->val.integer);
+                            printf("~~~~~~ %li\n", v->val.integer);
                             break;
                         case TYPE_KIND_U8:
                         case TYPE_KIND_U16:
@@ -10034,14 +10050,18 @@ void typecheck_expr(Job *jp) {
                         case TYPE_KIND_U64:
                             v->kind = VALUE_KIND_UINT;
                             v->val.uinteger = (u64)(jp->interp.ports[i].integer);
+                            printf("~~~~~~ %lu\n", v->val.integer);
                             break;
                         case TYPE_KIND_FLOAT:
                         case TYPE_KIND_F32:
                             v->kind = VALUE_KIND_FLOAT;
                             v->val.floating = jp->interp.ports[i].floating32;
+                            printf("~~~~~~ %f\n", v->val.floating);
                             break;
                         case TYPE_KIND_F64:
-                            UNIMPLEMENTED;
+                            v->kind = VALUE_KIND_DFLOAT;
+                            v->val.dfloating = jp->interp.ports[i].floating64;
+                            printf("~~~~~~ %f\n", v->val.dfloating);
                             break;
                     }
 
@@ -10821,7 +10841,6 @@ void print_sym(Sym sym) {
     printf("size_in_bytes: %u\n", sym.type->bytes);
 }
 
-//TODO implement f64
 //TODO structs
 //TODO pass structs to procedures
 //TODO static array initialization and assignment need to be improved
