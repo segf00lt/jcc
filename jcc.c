@@ -679,7 +679,6 @@ struct AST_structdecl {
     AST base;
     AST *next;
     Sym *symbol_annotation;
-    bool visited;
     char *name;
     AST_paramdecl *params;
     bool has_defaults;
@@ -687,13 +686,15 @@ struct AST_structdecl {
     int n_params;
     int n_members;
     AST *body;
+    bool checked_params;
+    bool visited;
+    Type *record_type;
 };
 
 struct AST_uniondecl {
     AST base;
     AST *next;
     Sym *symbol_annotation;
-    bool visited;
     char *name;
     AST_paramdecl *params;
     bool has_defaults;
@@ -701,6 +702,8 @@ struct AST_uniondecl {
     int n_params;
     int n_members;
     AST *body;
+    bool checked_params;
+    bool visited;
 };
 
 struct AST_vardecl {
@@ -3953,6 +3956,8 @@ void ir_gen(Job *jp) {
     } else if(node->kind == AST_KIND_vardecl) {
         printf("sorry I don't know how to do this yet\n");
         //UNIMPLEMENTED;
+    } else if(node->kind == AST_KIND_structdecl) {
+        printf("sorry I don't know how to do this yet\n");
     } else {
         UNREACHABLE;
     }
@@ -6319,6 +6324,8 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     }
                                 }
                             }
+                        } else if(var_type->kind == TYPE_KIND_STRUCT) {
+                            UNIMPLEMENTED; //TODO
                         } else {
                             UNIMPLEMENTED;
                         }
@@ -8160,44 +8167,53 @@ void job_runner(char *src, char *src_path) {
 
                             arrlast(jp->tree_pos_stack) = ast_vardecl->next;
                         } else if(ast->kind == AST_KIND_structdecl || ast->kind == AST_KIND_uniondecl) {
-                            UNIMPLEMENTED;
                             //TODO structs and unions
-                            //AST_structdecl *ast_struct = (AST_structdecl*)ast;
+                            AST_structdecl *ast_struct = (AST_structdecl*)ast;
 
                             //if(ast_struct->n_params > 0) {
                             //    UNIMPLEMENTED; //TODO parametrized structs
                             //}
 
-                            //if(ast_struct->visited) {
-                            //    UNIMPLEMENTED;
-                            //    //TODO size struct and set member offsets
-                            //}
+                            if(ast_struct->visited) {
+                                Type *record_type = ast_struct->record_type;
+                                u64 offset = 0;
+                                for(int i = 0; i < record_type->record.member.n; ++i) {
+                                    record_type->record.member.offsets[i] = offset;
+                                    offset += record_type->record.member.types[i]->bytes;
+                                }
+                                record_type->bytes = offset;
+                                Scope s = arrpop(jp->scopes);
+                                shfree(s);
+                                arrsetlen(jp->record_types, arrlen(jp->record_types) - 1);
+                                arrlast(jp->tree_pos_stack) = ast_struct->next;
+                                continue;
+                            }
 
-                            //if(jp->step == TYPECHECK_STEP_NONE) {
-                            //    arrpush(jp->scopes, NULL);
-                            //    arrpush(jp->record_types, NULL);
-                            //    jp->step = TYPECHECK_STEP_STRUCTDECL_BEGIN + 1;
-                            //}
-                            //typecheck_structdecl(jp);
+                            if(ast_struct->visited == false) {
+                                arrpush(jp->scopes, NULL);
+                                arrpush(jp->record_types, NULL);
+                                ast_struct->visited = true;
+                            }
+                            typecheck_structdecl(jp);
+                            ast_struct->record_type = arrlast(jp->record_types);
 
-                            //if(jp->state == JOB_STATE_WAIT) {
-                            //    arrpush(job_queue_next, *jp);
-                            //    arrlast(job_queue_next).state = JOB_STATE_READY;
-                            //    ++i;
-                            //    continue;
-                            //}
+                            if(jp->state == JOB_STATE_WAIT) {
+                                arrpush(job_queue_next, *jp);
+                                arrlast(job_queue_next).state = JOB_STATE_READY;
+                                ++i;
+                                continue;
+                            }
 
-                            //if(jp->state == JOB_STATE_ERROR) {
-                            //    job_report_all_messages(jp);
-                            //    job_die(jp);
-                            //    ++i;
-                            //    continue;
-                            //}
+                            if(jp->state == JOB_STATE_ERROR) {
+                                job_report_all_messages(jp);
+                                job_die(jp);
+                                ++i;
+                                continue;
+                            }
 
-                            //assert(ast_struct->body);
-                            //jp->in_record_scope = true;
-                            //ast_struct->visited = true;
-                            //arrpush(jp->tree_pos_stack, ast_struct->body);
+                            assert(ast_struct->body);
+                            jp->in_record_scope = true;
+                            arrpush(jp->tree_pos_stack, ast_struct->body);
                         } else if(ast->kind == AST_KIND_procdecl) {
                             AST_procdecl *ast_procdecl = (AST_procdecl*)ast;
 
@@ -10230,192 +10246,199 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
 }
 
 //TODO
-//void typecheck_structdecl(Job *jp) {
-//    assert(jp->step > TYPECHECK_STEP_STRUCTDECL_BEGIN && jp->step < TYPECHECK_STEP_STRUCTDECL_END);
-//
-//    AST_structdecl *ast = (AST_structdecl*)arrlast(jp->tree_pos_stack);
-//    assert(ast->base.kind == AST_KIND_structdecl || ast->base.kind == AST_KIND_uniondecl);
-//
-//    if(jp->handling_name == NULL)
-//        jp->handling_name = ast->name;
-//
-//    bool is_top_level = (arrlen(jp->tree_pos_stack) == 1);
-//    bool is_union = (ast->base.kind == AST_KIND_uniondecl);
-//
-//    if(arrlast(jp->record_types) == NULL) {
-//        arrlast(jp->record_types) = job_alloc_type(jp, is_union ? TYPE_KIND_UNION : TYPE_KIND_STRUCT);
-//
-//        arrlast(jp->record_types)->record.name = ast->name;
-//        u64 n = ast_struct->n_members;
-//        arrlast(jp->record_types)->record.member.n = n;
-//        arrlast(jp->record_types)->record.member.types = (Type**)job_alloc_scratch(jp, sizeof(Type*) * n);
-//        arrlast(jp->record_types)->record.member.names = (char**)job_alloc_scratch(jp, sizeof(char*) * n);
-//        arrlast(jp->record_types)->record.member.values = (Value**)job_alloc_scratch(jp, sizeof(Value*) * n);
-//        arrlast(jp->record_types)->record.member.offsets = (u64*)job_alloc_scratch(jp, sizeof(u64) * n);
-//        arrlast(jp->record_types)->record.member.offsets = (Loc_info*)job_alloc_scratch(jp, sizeof(Loc_info) * n);
-//    }
-//    Type *record_type = arrlast(jp->record_types);
-//
-//    //NOTE copypasta from typecheck_procdecl()
-//    if(jp->step >= TYPECHECK_STEP_STRUCTDECL_PARAMS_BEGIN && jp->step <= TYPECHECK_STEP_STRUCTDECL_PARAMS_END) {
-//        u64 n = record_type->record.param.n;
-//
-//        if(n == 0) {
-//            jp->cur_paramdecl = ast->params;
-//            n = record_type->record.param.n = ast->n_params;
-//            record_type->record.param.names = (char**)job_alloc_scratch(jp, sizeof(char*) * n);
-//            record_type->record.param.types = (Type**)job_alloc_scratch(jp, sizeof(Type*) * n);
-//            record_type->record.param.values = (Value**)job_alloc_scratch(jp, sizeof(Value*) * n);
-//        }
-//
-//        if(jp->step == TYPECHECK_STEP_STRUCTDECL_PARAMS_BEGIN)
-//            jp->step = TYPECHECK_STEP_STRUCTDECL_PARAMS_BIND_TYPE;
-//
-//        for(AST_paramdecl *p = jp->cur_paramdecl; p; p = p->next) {
-//            record_type->record.param.names[p->index] = p->name;
-//
-//            bool initialize = (p->init != NULL);
-//
-//            if(jp->step == TYPECHECK_STEP_STRUCTDECL_PARAMS_BIND_TYPE) {
-//                if(arrlen(jp->expr) == 0) {
-//                    linearize_expr(jp, &p->type);
-//                }
-//                typecheck_expr(jp);
-//
-//                if(jp->state == JOB_STATE_WAIT) {
-//                    jp->cur_paramdecl = p;
-//                    return;
-//                }
-//
-//                if(jp->state == JOB_STATE_ERROR)
-//                    UNIMPLEMENTED;
-//
-//                arrsetlen(jp->type_stack, 0);
-//                arrsetlen(jp->value_stack, 0);
-//                arrsetlen(jp->expr, 0);
-//                jp->expr_pos = 0;
-//
-//                if(initialize)
-//                    jp->step = TYPECHECK_STEP_STRUCTDECL_PARAMS_INITIALIZE;
-//            }
-//
-//            if(initialize && jp->step == TYPECHECK_STEP_STRUCTDECL_PARAMS_INITIALIZE) {
-//                if(arrlen(jp->expr) == 0) {
-//                    linearize_expr(jp, &p->init);
-//                }
-//                typecheck_expr(jp);
-//
-//                if(jp->state == JOB_STATE_WAIT) {
-//                    jp->cur_paramdecl = p;
-//                    return;
-//                }
-//
-//                if(jp->state == JOB_STATE_ERROR)
-//                    UNIMPLEMENTED;
-//
-//                arrsetlen(jp->type_stack, 0);
-//                arrsetlen(jp->value_stack, 0);
-//                arrsetlen(jp->expr, 0);
-//                jp->expr_pos = 0;
-//
-//                jp->step = TYPECHECK_STEP_STRUCTDECL_PARAMS_BIND_TYPE;
-//            }
-//
-//            Type *bind_type = ((AST_expr*)(p->type))->value_annotation->val.type;
-//            Value *init_value = NULL;
-//            Type *init_type = NULL;
-//
-//            if(initialize) {
-//                init_value = ((AST_expr*)(p->init))->value_annotation;
-//                init_type = ((AST_expr*)(p->init))->type_annotation;
-//
-//                if(init_value->kind == VALUE_KIND_NIL)
-//                    job_error(jp, p->base.loc,
-//                            "parameter default values must evaluate at compile time");
-//
-//                Type *t = typecheck_assign(jp, bind_type, init_type, '=');
-//
-//                if(t->kind == TYPE_KIND_VOID)
-//                    job_error(jp, p->base.loc,
-//                            "invalid assignment of '%s' to parameter of type '%s'",
-//                            job_type_to_str(jp, init_type), job_type_to_str(jp, bind_type));
-//
-//                if(jp->state == JOB_STATE_ERROR) return;
-//
-//                if(t->kind >= TYPE_KIND_FLOAT && t->kind <= TYPE_KIND_F64 && init_value->kind == VALUE_KIND_INT) {
-//                    init_value->kind = VALUE_KIND_FLOAT;
-//                    init_value->val.floating = (float)init_value->val.integer;
-//                } else if(t->kind >= TYPE_KIND_FLOAT && t->kind <= TYPE_KIND_F64 && init_value->kind == VALUE_KIND_UINT) {
-//                    init_value->kind = VALUE_KIND_FLOAT;
-//                    init_value->val.floating = (float)init_value->val.uinteger;
-//                }
-//
-//                bind_type = t;
-//            }
-//
-//            Sym *ptr = job_scope_lookup(jp, p->name);
-//
-//            if(ptr) {
-//                job_error(jp, ast->base.loc,
-//                        "multiple declaration of parameter '%s' in header of '%s'",
-//                        p->name, ast->name, ptr->loc.line);
-//                return;
-//            }
-//
-//            Sym sym = {
-//                .name = p->name,
-//                .loc = p->base.loc,
-//                .declared_by = jp->id,
-//                .is_argument = true,
-//                .type = bind_type,
-//                .value = init_value,
-//                .initializer = p->init,
-//            };
-//
-//            Sym *symp = job_alloc_sym(jp);
-//            *symp = sym;
-//            job_scope_enter(jp, symp);
-//
-//            record_type->record.param.types[p->index] = bind_type;
-//            record_type->record.param.values[p->index] = init_value;
-//
-//            p->symbol_annotation = symp;
-//        }
-//    }
-//
-//    record_type->record.first_default_param = ast->first_default_param;
-//    record_type->record.has_defaults = ast->has_defaults;
-//
-//    Sym record_sym = {
-//        .name = ast->name,
-//        .loc = ast->base.loc,
-//        .declared_by = jp->id,
-//        .constant = true,
-//        .type = record_type,
-//    };
-//
-//    Sym *ptr = is_top_level ? global_scope_lookup(jp, ast->name) : job_scope_lookup(jp, ast->name);
-//
-//    if(ptr) {
-//        job_error(jp, ast->base.loc,
-//                "multiple declaration of identifier '%s', previously declared at line %i",
-//                ast->name, ptr->loc.line);
-//        return;
-//    }
-//
-//    arrlast(jp->record_types) = record_type;
-//    Sym *symp = job_alloc_global_sym(jp);
-//
-//    ast->symbol_annotation = symp;
-//
-//    if(is_top_level) {
-//        *symp = record_sym;
-//        global_scope_enter(jp, symp);
-//    } else {
-//        *symp = record_sym;
-//        job_scope_enter(jp, symp);
-//    }
-//}
+void typecheck_structdecl(Job *jp) {
+    AST_structdecl *ast = (AST_structdecl*)arrlast(jp->tree_pos_stack);
+    assert(ast->base.kind == AST_KIND_structdecl || ast->base.kind == AST_KIND_uniondecl);
+
+    if(jp->handling_name == NULL)
+        jp->handling_name = ast->name;
+
+    bool is_top_level = (arrlen(jp->tree_pos_stack) == 1);
+    bool is_union = (ast->base.kind == AST_KIND_uniondecl);
+
+    if(arrlast(jp->record_types) == NULL) {
+        arrlast(jp->record_types) = job_alloc_type(jp, is_union ? TYPE_KIND_UNION : TYPE_KIND_STRUCT);
+
+        arrlast(jp->record_types)->record.name = ast->name;
+        u64 n = ast->n_members;
+        arrlast(jp->record_types)->record.member.n = n;
+        arrlast(jp->record_types)->record.member.types = (Type**)job_alloc_scratch(jp, sizeof(Type*) * n);
+        arrlast(jp->record_types)->record.member.names = (char**)job_alloc_scratch(jp, sizeof(char*) * n);
+        arrlast(jp->record_types)->record.member.values = (Value**)job_alloc_scratch(jp, sizeof(Value*) * n);
+        arrlast(jp->record_types)->record.member.offsets = (u64*)job_alloc_scratch(jp, sizeof(u64) * n);
+        arrlast(jp->record_types)->record.member.locs = (Loc_info*)job_alloc_scratch(jp, sizeof(Loc_info) * n);
+    }
+    Type *record_type = arrlast(jp->record_types);
+
+    //NOTE copypasta from typecheck_procdecl()
+    if(ast->checked_params == false) {
+        u64 n = record_type->record.param.n;
+
+        if(n == 0) {
+            jp->cur_paramdecl = ast->params;
+            n = record_type->record.param.n = ast->n_params;
+            record_type->record.param.names = (char**)job_alloc_scratch(jp, sizeof(char*) * n);
+            record_type->record.param.types = (Type**)job_alloc_scratch(jp, sizeof(Type*) * n);
+            record_type->record.param.values = (Value**)job_alloc_scratch(jp, sizeof(Value*) * n);
+        }
+
+        for(AST_paramdecl *p = jp->cur_paramdecl; p; p = p->next) {
+            record_type->record.param.names[p->index] = p->name;
+
+            bool initialize = (p->init != NULL);
+
+            if(p->checked_type == false) {
+                if(arrlen(jp->expr) == 0) {
+                    linearize_expr(jp, p->type);
+                }
+                typecheck_expr(jp);
+
+                if(jp->state == JOB_STATE_WAIT) {
+                    jp->cur_paramdecl = p;
+                    return;
+                }
+
+                if(jp->state == JOB_STATE_ERROR)
+                    UNIMPLEMENTED;
+
+                arrsetlen(jp->type_stack, 0);
+                arrsetlen(jp->value_stack, 0);
+                arrsetlen(jp->expr, 0);
+                jp->expr_pos = 0;
+
+                p->checked_type = true;
+            }
+
+            if(initialize && p->checked_init == false) {
+                if(arrlen(jp->expr) == 0) {
+                    linearize_expr(jp, p->init);
+                }
+                typecheck_expr(jp);
+
+                if(jp->state == JOB_STATE_WAIT) {
+                    jp->cur_paramdecl = p;
+                    return;
+                }
+
+                if(jp->state == JOB_STATE_ERROR)
+                    UNIMPLEMENTED;
+
+                arrsetlen(jp->type_stack, 0);
+                arrsetlen(jp->value_stack, 0);
+                arrsetlen(jp->expr, 0);
+                jp->expr_pos = 0;
+
+                p->checked_init = true;
+            }
+
+            Type *bind_type = ((AST_expr*)(p->type))->value_annotation->val.type;
+            Value *init_value = NULL;
+            Type *init_type = NULL;
+
+            if(initialize) {
+                init_value = ((AST_expr*)(p->init))->value_annotation;
+                init_type = ((AST_expr*)(p->init))->type_annotation;
+
+                if(init_value->kind == VALUE_KIND_NIL)
+                    job_error(jp, p->base.loc,
+                            "parameter default values must evaluate at compile time");
+
+                Type *t = typecheck_operation(jp, bind_type, init_type, '=');
+
+                if(!t) {
+                    job_error(jp, p->base.loc,
+                            "invalid assignment of '%s' to parameter of type '%s'",
+                            job_type_to_str(jp, init_type), job_type_to_str(jp, bind_type));
+                }
+
+                if(jp->state == JOB_STATE_ERROR) return;
+
+                //TODO f64
+                if(TYPE_KIND_IS_FLOAT32(t->kind) && init_value->kind == VALUE_KIND_INT) {
+                    init_value->kind = VALUE_KIND_FLOAT;
+                    init_value->val.floating = (float)init_value->val.integer;
+                } else if(t->kind == TYPE_KIND_F64 && init_value->kind == VALUE_KIND_FLOAT) {
+                    init_value->kind = VALUE_KIND_DFLOAT;
+                    init_value->val.dfloating = (f64)init_value->val.floating;
+                } else if(t->kind == TYPE_KIND_F64 && init_value->kind == VALUE_KIND_INT) {
+                    init_value->kind = VALUE_KIND_DFLOAT;
+                    init_value->val.dfloating = (f64)init_value->val.integer;
+                } else if(TYPE_KIND_IS_FLOAT32(t->kind) && init_value->kind == VALUE_KIND_UINT) {
+                    init_value->kind = VALUE_KIND_FLOAT;
+                    init_value->val.floating = (float)init_value->val.uinteger;
+                }
+
+                ((AST_expr_base*)p->init)->type_annotation = t;
+                bind_type = t;
+            }
+
+            Sym *ptr = job_scope_lookup(jp, p->name);
+
+            if(ptr) {
+                job_error(jp, p->base.loc,
+                        "multiple declaration of parameter '%s' in '%s'",
+                        p->name, ast->name, ptr->loc.line);
+                return;
+            }
+
+            Sym sym = {
+                .name = p->name,
+                .loc = p->base.loc,
+                .declared_by = jp->id,
+                .is_argument = true,
+                .type = bind_type,
+                .value = init_value,
+                .initializer = p->init,
+            };
+
+            Sym *symp = job_alloc_sym(jp);
+            *symp = sym;
+            job_scope_enter(jp, symp);
+
+            record_type->record.param.types[p->index] = bind_type;
+            record_type->record.param.values[p->index] = init_value;
+
+            p->symbol_annotation = symp;
+        }
+    }
+
+    record_type->record.first_default_param = ast->first_default_param;
+    record_type->record.has_defaults = ast->has_defaults;
+
+    Value *sym_value = job_alloc_value(jp, VALUE_KIND_TYPE);
+    sym_value->val.type = record_type;
+
+    Sym record_sym = {
+        .name = ast->name,
+        .loc = ast->base.loc,
+        .declared_by = jp->id,
+        .constant = true,
+        .type = builtin_type+TYPE_KIND_TYPE,
+        .value = sym_value,
+    };
+
+    Sym *ptr = is_top_level ? global_scope_lookup(jp, ast->name) : job_scope_lookup(jp, ast->name);
+
+    if(ptr) {
+        job_error(jp, ast->base.loc,
+                "multiple declaration of identifier '%s', previously declared at line %i",
+                ast->name, ptr->loc.line);
+        return;
+    }
+
+    arrlast(jp->record_types) = record_type;
+    Sym *symp = job_alloc_global_sym(jp);
+
+    ast->symbol_annotation = symp;
+
+    if(is_top_level) {
+        *symp = record_sym;
+        global_scope_enter(jp, symp);
+    } else {
+        *symp = record_sym;
+        job_scope_enter(jp, symp);
+    }
+}
 
 void typecheck_procdecl(Job *jp) {
     AST_procdecl *ast = (AST_procdecl*)arrlast(jp->tree_pos_stack);
@@ -10514,21 +10537,29 @@ void typecheck_procdecl(Job *jp) {
 
                 if(jp->state == JOB_STATE_ERROR) return;
 
-                if(t->kind >= TYPE_KIND_FLOAT && t->kind <= TYPE_KIND_F64 && init_value->kind == VALUE_KIND_INT) {
+                //TODO f64
+                if(TYPE_KIND_IS_FLOAT32(t->kind) && init_value->kind == VALUE_KIND_INT) {
                     init_value->kind = VALUE_KIND_FLOAT;
                     init_value->val.floating = (float)init_value->val.integer;
-                } else if(t->kind >= TYPE_KIND_FLOAT && t->kind <= TYPE_KIND_F64 && init_value->kind == VALUE_KIND_UINT) {
+                } else if(t->kind == TYPE_KIND_F64 && init_value->kind == VALUE_KIND_FLOAT) {
+                    init_value->kind = VALUE_KIND_DFLOAT;
+                    init_value->val.dfloating = (f64)init_value->val.floating;
+                } else if(t->kind == TYPE_KIND_F64 && init_value->kind == VALUE_KIND_INT) {
+                    init_value->kind = VALUE_KIND_DFLOAT;
+                    init_value->val.dfloating = (f64)init_value->val.integer;
+                } else if(TYPE_KIND_IS_FLOAT32(t->kind) && init_value->kind == VALUE_KIND_UINT) {
                     init_value->kind = VALUE_KIND_FLOAT;
                     init_value->val.floating = (float)init_value->val.uinteger;
                 }
 
+                ((AST_expr_base*)p->init)->type_annotation = t;
                 bind_type = t;
             }
 
             Sym *ptr = job_scope_lookup(jp, p->name);
 
             if(ptr) {
-                job_error(jp, ast->base.loc,
+                job_error(jp, p->base.loc,
                         "multiple declaration of parameter '%s' in header of '%s'",
                         p->name, ast->name, ptr->loc.line);
                 return;
@@ -10698,7 +10729,7 @@ void typecheck_vardecl(Job *jp) {
     Type *init_type = NULL;
 
     if(!infer_type) {
-        if(((AST_expr*)ast->type)->value_annotation->kind != VALUE_KIND_TYPE)
+        if(((AST_expr_base*)ast->type)->value_annotation->kind != VALUE_KIND_TYPE)
             job_error(jp, ast->type->loc,
                     "expected type to bind to '%s'", name);
         if(jp->state == JOB_STATE_ERROR) return;
@@ -10765,14 +10796,14 @@ void typecheck_vardecl(Job *jp) {
             return;
         }
 
-        if(init_value->kind == VALUE_KIND_NIL) {
+        if(initialize && init_value->kind == VALUE_KIND_NIL) {
             job_error(jp, ast->base.loc,
                     "%s member initializer must be constant", record_str);
             return;
         }
 
         u64 i = 0;
-        for(; i <= record_type->record.member.i; ++i) {
+        for(; i < record_type->record.member.i; ++i) {
             if(!strcmp(name, record_type->record.member.names[i])) {
                 job_error(jp, ast->base.loc,
                         "multiple declaration of %s member '%s', previously declared at line %i",
@@ -10781,7 +10812,7 @@ void typecheck_vardecl(Job *jp) {
             }
         }
 
-        record_type->record.member.i = i;
+        record_type->record.member.i = i + 1;
         record_type->record.member.types[i] = bind_type;
         record_type->record.member.names[i] = name;
         record_type->record.member.values[i] = init_value;
@@ -10862,7 +10893,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/f64.jpl";
+    char *path = "test/struct.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 

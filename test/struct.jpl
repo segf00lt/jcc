@@ -1,0 +1,8 @@
+struct Bob {
+    i: int;
+    f: float;
+}
+
+proc main() {
+    b: Bob;
+}
