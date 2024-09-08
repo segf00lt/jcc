@@ -22,6 +22,7 @@
 #define UNREACHABLE assert("UNREACHABLE"&&0)
 #define UNIMPLEMENTED assert("UNIMPLEMENTED"&&0)
 #define PASS assert(1)
+#define DUNNO fprintf(stderr, "======\nDUNNO WHAT HAPPENS ON LINE %i IN '%s'()\n======\n", __LINE__, __func__)
 #define INLINE __attribute__((always_inline)) inline
 #if defined(stbsp_sprintf) && defined(stbsp_snprintf)
 #undef sprintf
