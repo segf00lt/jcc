@@ -1,6 +1,9 @@
 struct Bob {
     i: int = 54;
+    unique_id: u16 = ---;
     f: float = 3.14;
+    tau: f64 = ---;
+    c: s8;
 }
 
 proc main() {
@@ -8,4 +11,9 @@ proc main() {
     f: float = 38.44;
     c: char;
     i := 123;
+
+    x := f + b.f;
+    y := -b.i + i;
 }
+
+
