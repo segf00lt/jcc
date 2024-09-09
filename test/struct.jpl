@@ -1,8 +1,11 @@
 struct Bob {
-    i: int;
-    f: float;
+    i: int = 54;
+    f: float = 3.14;
 }
 
 proc main() {
     b: Bob;
+    f: float = 38.44;
+    c: char;
+    i := 123;
 }

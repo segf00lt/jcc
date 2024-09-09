@@ -886,7 +886,6 @@ struct Type {
                 Type    **types;
                 char    **names;
                 Value   **values;
-                AST     **init_exprs;
                 u64      *offsets;
                 Loc_info *locs;
                 u64       i;
@@ -985,6 +984,7 @@ void        ir_gen_block(Job *jp, AST *ast);
 void        ir_gen_statement(Job *jp, AST_statement *ast_statement);
 void        ir_gen_logical_expr(Job *jp, AST *ast);
 void        ir_gen_vardecl(Job *jp, AST_vardecl *ast_vardecl);
+void        ir_gen_struct_init(Job *jp, Type *struct_type, u64 offset);
 void        ir_gen_expr(Job *jp, AST *ast);
 u64         ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array);
 u64         ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array, u64 offset, u64 ptr_reg);
@@ -6687,6 +6687,68 @@ void ir_gen_logical_expr(Job *jp, AST *ast) {
     }
 }
 
+void ir_gen_struct_init(Job *jp, Type *struct_type, u64 offset) {
+    IRinst inst = {0};
+
+    u64 n_members = struct_type->record.member.n;
+
+    Type **member_types = struct_type->record.member.types;
+    Value **member_values = struct_type->record.member.values;
+    u64 *member_offsets = struct_type->record.member.offsets;
+
+    for(u64 i = 0; i < n_members; ++i) {
+        if(TYPE_KIND_IS_NOT_SCALAR(member_types[i]->kind)) {
+            UNIMPLEMENTED;
+        } else {
+            if(member_values[i]) {
+                IRop opcode;
+                IRvalue imm;
+
+                if(member_types[i]->kind == TYPE_KIND_F64) {
+                    opcode = IROP_SETLOCALF;
+                    imm.floating64 = member_values[i]->val.dfloating;
+                } else if(TYPE_KIND_IS_FLOAT32(member_types[i]->kind)) {
+                    opcode = IROP_SETLOCALF;
+                    imm.floating32 = member_values[i]->val.floating;
+                } else {
+                    opcode = IROP_SETLOCAL;
+                    imm.integer = member_values[i]->val.integer;
+                }
+
+                assert(jp->float_reg_alloc == 0);
+                assert(jp->reg_alloc == 0);
+
+                inst =
+                    (IRinst) {
+                        .opcode = opcode,
+                        .setvar = {
+                            .offset = offset + member_offsets[i],
+                            .imm = imm,
+                            .bytes = member_types[i]->bytes,
+                            .immediate = true,
+                        },
+                    };
+                inst.loc = jp->cur_loc;
+                arrpush(jp->instructions, inst);
+            } else {
+                inst =
+                    (IRinst) {
+                        .opcode = (member_types[i]->kind >= TYPE_KIND_FLOAT && member_types[i]->kind <= TYPE_KIND_F64)
+                            ? IROP_SETLOCALF
+                            : IROP_SETLOCAL,
+                        .setvar = {
+                            .offset = offset + member_offsets[i],
+                            .bytes = member_types[i]->bytes,
+                            .immediate = true,
+                        },
+                    };
+                inst.loc = jp->cur_loc;
+                arrpush(jp->instructions, inst);
+            }
+        }
+    }
+}
+
 //TODO do we want this as a function or should we have a ir_gen_struct() ???
 void ir_gen_vardecl(Job *jp, AST_vardecl *ast_vardecl) {
     AST *init_expr = ast_vardecl->init;
@@ -6875,14 +6937,8 @@ void ir_gen_vardecl(Job *jp, AST_vardecl *ast_vardecl) {
                 }
             }
         } else if(var_type->kind == TYPE_KIND_STRUCT) {
-            UNIMPLEMENTED; //TODO
-
-            //TODO flatten the struct to handle nested structs
-
-            for(int i = 0; i < var_type->record.member.n; ++i) {
-
-            }
-
+            arrlast(jp->local_offset) += var_type->bytes;
+            ir_gen_struct_init(jp, var_type, sym->segment_offset);
         } else {
             UNIMPLEMENTED;
         }
@@ -11320,7 +11376,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/rule110.jpl";
+    char *path = "test/struct.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 
