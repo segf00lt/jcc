@@ -1,3 +1,24 @@
+proc main() f64 {
+    b: Bob;
+    f: float = 38.44;
+    c: char;
+    i := 123;
+
+    x := f + b.f;
+    y := -b.i + i;
+
+    b.tau = 5.23446;
+    tau_add_one := get_tau_plus_x_plus_one(b, 4.56);
+
+    foo := 12545;
+
+    return tau_add_one;
+}
+
+proc get_tau_plus_x_plus_one(b: Bob, x: f64) f64 {
+    return b.tau + x + 1;
+}
+
 struct Bob {
     i: int = 54;
     unique_id: u16 = ---;
@@ -6,14 +27,4 @@ struct Bob {
     c: s8;
 }
 
-proc main() {
-    b: Bob;
-    f: float = 38.44;
-    c: char;
-    i := 123;
-
-    x := f + b.f;
-    y := -b.i + i;
-}
-
-
+#run main();
