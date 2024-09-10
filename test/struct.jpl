@@ -12,11 +12,20 @@ proc main() f64 {
 
     foo := 12545;
 
-    return tau_add_one;
+    other_b := make_bob(33, 6.331);
+
+    return tau_add_one + other_b.tau;
 }
 
 proc get_tau_plus_x_plus_one(b: Bob, x: f64) f64 {
     return b.tau + x + 1;
+}
+
+proc make_bob(unique_id: u16, tau: f64) Bob {
+    b: Bob;
+    b.unique_id = unique_id;
+    b.tau = tau;
+    return b;
 }
 
 struct Bob {

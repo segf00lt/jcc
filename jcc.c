@@ -3820,11 +3820,6 @@ void ir_gen(Job *jp) {
             AST_expr_base *expr = (AST_expr_base*)(r->expr);
             Type *ret_type = expr->value_annotation->val.type;
             if(TYPE_KIND_IS_NOT_SCALAR(ret_type->kind)) {
-                assert(
-                        ret_type->kind == TYPE_KIND_ARRAY ||
-                        ret_type->kind == TYPE_KIND_ARRAY_VIEW
-                        );
-
                     IRinst inst_read = {
                         .opcode = IROP_GETARG,
                         .getport = {
@@ -6203,7 +6198,41 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     }
                                 }
                             } else {
-                                UNIMPLEMENTED;
+                                AST_expr_base *expr_base = (AST_expr_base*)(expr_list->expr);
+                                Type *expr_type = expr_base->type_annotation;
+
+                                assert(TYPE_KIND_IS_RECORD(expr_type->kind));
+
+                                assert(jp->float_reg_alloc == 0);
+                                assert(jp->reg_alloc == 0);
+                                ir_gen_expr(jp, expr_list->expr);
+                                assert(jp->reg_alloc == 1);
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_GETLOCAL,
+                                        .getvar = {
+                                            .reg_dest = jp->reg_alloc,
+                                            .offset = non_scalar_returns << 3,
+                                            .bytes = 8,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+                                ir_gen_memorycopy(jp, ret_type->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_SETRET,
+                                        .setport = {
+                                            .port = i,
+                                            .bytes = 8,
+                                            .reg_src = jp->reg_alloc,
+                                            .c_call = proc_type->proc.c_call,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+                                jp->reg_alloc--;
+                                assert(jp->reg_alloc == 0);
                             }
 
                             non_scalar_returns++;
@@ -6453,8 +6482,34 @@ void ir_gen_block(Job *jp, AST *ast) {
                                 }
                             }
                         } else if(var_type->kind == TYPE_KIND_STRUCT) {
+
                             arrlast(jp->local_offset) += var_type->bytes;
-                            ir_gen_struct_init(jp, var_type, sym->segment_offset);
+
+                            if(init_expr) {
+                                ir_gen_expr(jp, init_expr);
+                                assert(jp->reg_alloc == 1);
+
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_ADDRLOCAL,
+                                        .addrvar = {
+                                            .reg_dest = jp->reg_alloc,
+                                            .offset = sym->segment_offset,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+
+                                ir_gen_memorycopy(jp, var_type->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+
+                                jp->reg_alloc--;
+
+                                assert(jp->reg_alloc == 0);
+
+                            } else {
+                                ir_gen_struct_init(jp, var_type, sym->segment_offset);
+                            }
+
                         } else {
                             UNIMPLEMENTED;
                         }
@@ -11265,12 +11320,12 @@ void print_sym(Sym sym) {
 }
 
 //TODO structs
-//TODO pass structs to procedures
+//TODO pass structs to foreign procedures
 //TODO static array initialization and assignment need to be improved
 //TODO dynamic arrays and views
 //TODO runtime type info
-//TODO full C interop
 //TODO varargs
+//TODO full C interop
 //TODO for loops on arrays
 //TODO output assembly
 //TODO directives (#load, #import, #assert, etc)
