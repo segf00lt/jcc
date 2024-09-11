@@ -4183,7 +4183,20 @@ void ir_gen_foreign_proc_x64(Job *jp) {
         Type *ret_type = proc_type->proc.ret.types[0];
 
         if(TYPE_KIND_IS_NOT_SCALAR(ret_type->kind)) {
-            UNIMPLEMENTED;
+            char *ret_ctype_str =
+                job_tprint(jp, "%s %s",
+                        (ret_type->kind == TYPE_KIND_UNION) ? "union" : "struct",
+                        ret_type->record.name);
+            fprintf(wrapper_file, "%s r = %s(", ret_ctype_str, proc_sym->name);
+            int i;
+            for(i = 0; i < proc_type->proc.param.n - 1; ++i) {
+                char *param_name = proc_type->proc.param.names[i];
+                fprintf(wrapper_file, "%s, ", param_name);
+            }
+            char *param_name = proc_type->proc.param.names[i];
+            fprintf(wrapper_file, "%s);\n", param_name);
+
+            fprintf(wrapper_file, "*(%s*)(void*)(interp->ports[0].integer) = r;\n", ret_ctype_str);
         } else {
             char *ret_ctype_str = job_type_to_ctype_str(jp, ret_type);
             fprintf(wrapper_file, "%s r = %s(", ret_ctype_str, proc_sym->name);
@@ -8607,7 +8620,7 @@ void job_runner(char *src, char *src_path) {
                                 }
                                 */
                                 shfree(s);
-                                printf("\ntype checked the body of '%s'!!!!!!!!!\n\n", ast_procdecl->name);
+                                fprintf(stderr, "\ntype checked the body of '%s'!!!!!!!!!\n\n", ast_procdecl->name);
                                 break;
                             }
 
@@ -11312,7 +11325,6 @@ void print_sym(Sym sym) {
 }
 
 //TODO structs
-//TODO return structs from foreign procedures
 //TODO static array initialization and assignment need to be improved
 //TODO dynamic arrays and views
 //TODO runtime type info

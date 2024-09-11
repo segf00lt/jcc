@@ -14,12 +14,12 @@ proc main() f64 {
     bytes_read := read(STDIN, cast(*void)buf.data, buf.count);
     bytes_written := write(STDOUT, cast(*void)buf.data, buf.count);
 
-    bob: Bob;
+    bob: Bob = birth_bob(2);
     bob.i *= 4;
     bob.tau = 12.4534;
     r := bar(bob);
 
-    return r;
+    return r.tau / cast(f64)r.i;
     //if bytes_written >= bytes_read return r;
     //else return 0;
 }
@@ -29,7 +29,8 @@ proc main() f64 {
 #run main();
 
 proc foo(size: u64, f: float) int #foreign "foo";
-proc bar(b: Bob) f64 #foreign "foo";
+proc bar(b: Bob) Bob #foreign "foo";
+proc birth_bob(i: s32) Bob #foreign "foo";
 
 struct Bob {
     c: char = 4;

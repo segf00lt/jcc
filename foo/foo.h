@@ -7,4 +7,5 @@ struct Bob {
 };
 
 int foo(uint64_t, float);
-double bar(struct Bob);
+struct Bob bar(struct Bob);
+struct Bob birth_bob(int i);

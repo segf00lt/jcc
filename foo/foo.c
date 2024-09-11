@@ -7,6 +7,13 @@ int foo(uint64_t size, float f) {
     return (int)(size >> 2);
 }
 
-double bar(struct Bob b) {
-    return b.tau;
+struct Bob bar(struct Bob b) {
+    b.tau *= 2.0;
+    return b;
+}
+
+struct Bob birth_bob(int i) {
+    struct Bob b = {0};
+    b.i = i;
+    return b;
 }
