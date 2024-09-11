@@ -1,5 +1,3 @@
-proc foo(size: u64, f: float) int #foreign "foo";
-
 proc read(fd: s32, buf: *void, bytes: size_t) size_t #system;
 proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
 proc putchar(c: s32) s32 #system;
@@ -10,16 +8,31 @@ STDIN  :: 0;
 STDOUT :: 1;
 STDERR :: 2;
 
-proc main() bool {
+proc main() f64 {
     buf: [2048]char;
 
     bytes_read := read(STDIN, cast(*void)buf.data, buf.count);
     bytes_written := write(STDOUT, cast(*void)buf.data, buf.count);
 
-    if bytes_written == bytes_read return 1;
-    else return 0;
+    bob: Bob;
+    bob.i *= 4;
+    bob.tau = 12.4534;
+    r := bar(bob);
+
+    return r;
+    //if bytes_written >= bytes_read return r;
+    //else return 0;
 }
 
 #run foo(12, 4.3);
 
 #run main();
+
+proc foo(size: u64, f: float) int #foreign "foo";
+proc bar(b: Bob) f64 #foreign "foo";
+
+struct Bob {
+    c: char = 4;
+    tau: f64 = ---;
+    i: s32  = 12;
+}

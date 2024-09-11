@@ -968,6 +968,7 @@ bool        is_lvalue(AST *ast);
 bool        all_paths_return(Job *jp, AST *ast);
 bool        has_nested_call(AST *ast);
 void        add_implicit_casts_to_expr(Job *jp, AST *ast);
+u64         align_up(u64 offset, u64 align);
 
 void        do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type);
 
@@ -1476,39 +1477,8 @@ Arr(char) _ctype_to_str(Type *t, Arr(char) tmp_buf) {
     } else if(t->kind == TYPE_KIND_POINTER) {
         tmp_buf = _type_to_str(t->pointer.to, tmp_buf);
         arrpush(tmp_buf, '*');
-    //} else if(t->kind == TYPE_KIND_PROC) {
-    //    arrpush(tmp_buf, '(');
-    //    if(t->proc.param.n == 0) {
-    //        char *p = arraddnptr(tmp_buf, token_keyword_lengths[TOKEN_VOID - TOKEN_INVALID - 1] + 2);
-    //        char cpy[] = "void) ";
-    //        for(int i = 0; i < STRLEN(cpy); ++i) p[i] = cpy[i]; 
-    //    } else {
-    //        for(u64 i = 0; i < t->proc.param.n; ++i) {
-    //            Type *param_type = t->proc.param.types[i];
-    //            tmp_buf = _type_to_str(param_type, tmp_buf);
-    //            arrpush(tmp_buf, ',');
-    //            arrpush(tmp_buf, ' ');
-    //        }
-    //        tmp_buf[arrlen(tmp_buf) - 2] = ')';
-    //    }
-
-    //    arrpush(tmp_buf, '-');
-    //    arrpush(tmp_buf, '>');
-    //    arrpush(tmp_buf, ' ');
-
-    //    if(t->proc.ret.n == 0) {
-    //        char *p = arraddnptr(tmp_buf, 4);
-    //        stbsp_sprintf(p, "void");
-    //    } else {
-    //        for(u64 i = 0; i < t->proc.ret.n; ++i) {
-    //            Type *ret_type = t->proc.ret.types[i];
-    //            tmp_buf = _type_to_str(ret_type, tmp_buf);
-    //            arrpush(tmp_buf, ',');
-    //            arrpush(tmp_buf, ' ');
-    //        }
-
-    //        arrsetlen(tmp_buf, arrlen(tmp_buf) - 2);
-    //    }
+    } else if(TYPE_KIND_IS_RECORD(t->kind)) {
+        UNIMPLEMENTED;
     } else {
         UNIMPLEMENTED;
     }
@@ -3965,6 +3935,7 @@ void ir_gen(Job *jp) {
     }
 }
 
+// cc -shared -o libfoo.so foo.c
 // cc -dynamiclib -o libfoo.dylib foo.c -install_name @rpath/libfoo.dylib
 // cc -dynamiclib -o jcc_wrap_foo.dylib jcc_wrap_foo.c -L'.' -lfoo -install_name @rpath/jcc_wrap_foo.dylib -Wl,-rpath,@loader_path
 
@@ -4160,16 +4131,29 @@ void ir_gen_foreign_proc_x64(Job *jp) {
     for(int i = 0; i < proc_type->proc.param.n; ++i) {
         char *param_name = proc_type->proc.param.names[i];
         Type *param_type = proc_type->proc.param.types[i];
-        char *param_ctype_str = job_type_to_ctype_str(jp, param_type);
+
+        char *param_ctype_str;
+        if(TYPE_KIND_IS_RECORD(param_type->kind)) {
+            //TODO is it better to not require the C header file and generate it from our code?
+            assert(param_type->record.name);
+            param_ctype_str =
+                job_tprint(jp, "%s %s",
+                        (param_type->kind == TYPE_KIND_UNION) ? "union" : "struct",
+                        param_type->record.name);
+        } else {
+            param_ctype_str = job_type_to_ctype_str(jp, param_type);
+        }
+
         port_index = i;
 
         fprintf(wrapper_file, "%s %s;\n", param_ctype_str, param_name);
 
         if(TYPE_KIND_IS_NOT_SCALAR(param_type->kind)) {
-            UNIMPLEMENTED;
+            fprintf(wrapper_file,
+                    "%s = *(%s*)(void*)(interp->ports[%i].integer);\n",
+                    param_name, param_ctype_str, port_index + has_non_scalar_return);
         } else {
             if(param_type->kind == TYPE_KIND_F64) {
-                UNIMPLEMENTED;
                 fprintf(wrapper_file,
                         "%s = interp->ports[%i].floating64;\n",
                         param_name, port_index + has_non_scalar_return);
@@ -4230,13 +4214,13 @@ void ir_gen_foreign_proc_x64(Job *jp) {
 #if defined(__MACH__)
     if(is_system) {
         wrapper_compile = job_tprint(jp,
-                "cc -dynamiclib -o %s %s -install_name @rpath/%s",
+                "cc -g -dynamiclib -o %s %s -install_name @rpath/%s",
                 wrapper_dl_path,
                 wrapper_path,
                 wrapper_dl_path);
     } else {
         wrapper_compile = job_tprint(jp,
-                "cc -dynamiclib -o %s %s -L'%s' -l'%s' -install_name @rpath/%s -Wl,-rpath,'%s'",
+                "cc -g -dynamiclib -o %s %s -L'%s' -l'%s' -install_name @rpath/%s -Wl,-rpath,'%s'",
                 wrapper_dl_path,
                 wrapper_path,
                 foreign_lib_str,
@@ -4247,12 +4231,12 @@ void ir_gen_foreign_proc_x64(Job *jp) {
 #else
     if(is_system) {
         wrapper_compile = job_tprint(jp,
-                "cc -shared -o %s %s",
+                "cc -g -shared -o %s %s",
                 wrapper_dl_path,
                 wrapper_path);
     } else {
         wrapper_compile = job_tprint(jp,
-                "cc -shared -o %s %s -L'%s' -l'%s' -Wl,-rpath,'%s'",
+                "cc -g -shared -o %s %s -L'%s' -l'%s' -Wl,-rpath,'%s'",
                 wrapper_dl_path,
                 wrapper_path,
                 foreign_lib_str,
@@ -4330,8 +4314,8 @@ void ir_run(Job *jp, int procid) {
             case IROP_##opcode: \
                                 \
                 imask = (inst.arith.operand_bytes[0] < 8) \
-                ? ((1 << (inst.arith.operand_bytes[0] << 3)) - 1) \
-                : (u64)(-1); \
+                ? ((1l << (inst.arith.operand_bytes[0] << 3l)) - 1l) \
+                : (u64)(-1l); \
                 if(inst.arith.immediate) { \
                     interp.iregs[inst.arith.reg[0]] = \
                     imask & (interp.iregs[inst.arith.reg[1]] opsym inst.arith.imm.integer); \
@@ -4346,8 +4330,8 @@ void ir_run(Job *jp, int procid) {
             case IROP_##opcode: \
                                 \
                 imask = (inst.arith.operand_bytes[0] < 8) \
-                ? ((1 << (inst.arith.operand_bytes[0] << 3)) - 1) \
-                : (u64)(-1); \
+                ? ((1l << (inst.arith.operand_bytes[0] << 3l)) - 1l) \
+                : (u64)(-1l); \
                 interp.iregs[inst.arith.reg[0]] = imask & (opsym interp.iregs[inst.arith.reg[1]]); \
                 break;
                 IR_INT_UNOPS;
@@ -8442,6 +8426,12 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
     return type_stack;
 }
 
+INLINE u64 align_up(u64 offset, u64 align) {
+    if(align == 0) return offset;
+    
+    return (offset + align - 1) & ~(align - 1);
+}
+
 void job_runner(char *src, char *src_path) {
     Arr(Job) job_queue = NULL;
     Arr(Job) job_queue_next = NULL;
@@ -8563,8 +8553,10 @@ void job_runner(char *src, char *src_path) {
                                 Type *record_type = ast_struct->record_type;
                                 u64 offset = 0;
                                 for(int i = 0; i < record_type->record.member.n; ++i) {
+                                    u64 bytes = record_type->record.member.types[i]->bytes;
+                                    offset = align_up(offset, bytes); //NOTE very important, struct members must be aligned to a 'bytes' boundry
                                     record_type->record.member.offsets[i] = offset;
-                                    offset += record_type->record.member.types[i]->bytes;
+                                    offset += bytes;
                                 }
                                 record_type->bytes = offset;
                                 Scope s = arrpop(jp->scopes);
@@ -11320,7 +11312,7 @@ void print_sym(Sym sym) {
 }
 
 //TODO structs
-//TODO pass structs to foreign procedures
+//TODO return structs from foreign procedures
 //TODO static array initialization and assignment need to be improved
 //TODO dynamic arrays and views
 //TODO runtime type info
@@ -11340,7 +11332,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/struct.jpl";
+    char *path = "test/foreign_proc.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 
