@@ -681,35 +681,28 @@ struct AST_expr_list {
     AST_expr_list *next;
 };
 
+#define AST_RECORD_BODY         \
+    AST base;                   \
+    AST *next;                  \
+    Sym *symbol_annotation;     \
+    char *name;                 \
+    AST_paramdecl *params;      \
+    bool has_defaults;          \
+    int first_default_param;    \
+    int n_params;               \
+    int n_members;              \
+    AST *body;                  \
+    bool checked_params;        \
+    bool visited;               \
+    Type *record_type;          \
+
+
 struct AST_structdecl {
-    AST base;
-    AST *next;
-    Sym *symbol_annotation;
-    char *name;
-    AST_paramdecl *params;
-    bool has_defaults;
-    int first_default_param;
-    int n_params;
-    int n_members;
-    AST *body;
-    bool checked_params;
-    bool visited;
-    Type *record_type;
+    AST_RECORD_BODY
 };
 
 struct AST_uniondecl {
-    AST base;
-    AST *next;
-    Sym *symbol_annotation;
-    char *name;
-    AST_paramdecl *params;
-    bool has_defaults;
-    int first_default_param;
-    int n_params;
-    int n_members;
-    AST *body;
-    bool checked_params;
-    bool visited;
+    AST_RECORD_BODY
 };
 
 struct AST_vardecl {
@@ -872,7 +865,8 @@ struct Value {
 
 struct Type {
     Typekind kind;
-    u32 bytes;
+    u64 bytes;
+    u64 align;
     union {
         struct { /* struct and union */
             char *name;
@@ -969,6 +963,7 @@ bool        all_paths_return(Job *jp, AST *ast);
 bool        has_nested_call(AST *ast);
 void        add_implicit_casts_to_expr(Job *jp, AST *ast);
 u64         align_up(u64 offset, u64 align);
+u64         next_pow_2(u64 v);
 
 void        do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type);
 
@@ -1049,22 +1044,22 @@ void        print_ast_expr(AST *expr, int indent);
 /* globals */
 
 Type builtin_type[] = {
-    { .kind = TYPE_KIND_VOID,  .bytes = 0 },
-    { .kind = TYPE_KIND_BOOL,  .bytes = 1 },
-    { .kind = TYPE_KIND_CHAR,  .bytes = 1 },
-    { .kind = TYPE_KIND_S8,    .bytes = 1 },
-    { .kind = TYPE_KIND_U8,    .bytes = 1 },
-    { .kind = TYPE_KIND_S16,   .bytes = 2 },
-    { .kind = TYPE_KIND_U16,   .bytes = 2 },
-    { .kind = TYPE_KIND_S32,   .bytes = 4 },
-    { .kind = TYPE_KIND_U32,   .bytes = 4 },
-    { .kind = TYPE_KIND_S64,   .bytes = 8 },
-    { .kind = TYPE_KIND_U64,   .bytes = 8 },
-    { .kind = TYPE_KIND_INT,   .bytes = 8 },
-    { .kind = TYPE_KIND_FLOAT, .bytes = 4 },
-    { .kind = TYPE_KIND_F32,   .bytes = 4 },
-    { .kind = TYPE_KIND_F64,   .bytes = 8 },
-    { .kind = TYPE_KIND_TYPE,  .bytes = 8 },
+    { .kind = TYPE_KIND_VOID,  .bytes = 0, .align = 0 },
+    { .kind = TYPE_KIND_BOOL,  .bytes = 1, .align = 1 },
+    { .kind = TYPE_KIND_CHAR,  .bytes = 1, .align = 1 },
+    { .kind = TYPE_KIND_S8,    .bytes = 1, .align = 1 },
+    { .kind = TYPE_KIND_U8,    .bytes = 1, .align = 1 },
+    { .kind = TYPE_KIND_S16,   .bytes = 2, .align = 2 },
+    { .kind = TYPE_KIND_U16,   .bytes = 2, .align = 2 },
+    { .kind = TYPE_KIND_S32,   .bytes = 4, .align = 4 },
+    { .kind = TYPE_KIND_U32,   .bytes = 4, .align = 4 },
+    { .kind = TYPE_KIND_S64,   .bytes = 8, .align = 8 },
+    { .kind = TYPE_KIND_U64,   .bytes = 8, .align = 8 },
+    { .kind = TYPE_KIND_INT,   .bytes = 8, .align = 8 },
+    { .kind = TYPE_KIND_FLOAT, .bytes = 4, .align = 4 },
+    { .kind = TYPE_KIND_F32,   .bytes = 4, .align = 4 },
+    { .kind = TYPE_KIND_F64,   .bytes = 8, .align = 8 },
+    { .kind = TYPE_KIND_TYPE,  .bytes = 8, .align = 8 },
 };
 
 char *builtin_type_to_str[] = {
@@ -1191,15 +1186,19 @@ Type* job_alloc_type(Job *jp, Typekind kind) {
             break;
         case TYPE_KIND_PROC:
             ptr->bytes = 8;
+            ptr->align = 8;
             break;
         case TYPE_KIND_POINTER:
             ptr->bytes = 8;
+            ptr->align = 8;
             break;
         case TYPE_KIND_DYNAMIC_ARRAY:
             ptr->bytes = 24; // needs to be bigger for allowing an allocator pointer
+            ptr->align = 8;
             break;
         case TYPE_KIND_ARRAY_VIEW:
             ptr->bytes = 16;
+            ptr->align = 8;
             break;
         case TYPE_KIND_ARRAY:
             ptr->bytes = 0;
@@ -1396,7 +1395,7 @@ Arr(char) _type_to_str(Type *t, Arr(char) tmp_buf) {
             ++p;
             ++tstr;
         }
-    } else if(t->kind >= TYPE_KIND_ARRAY && t->kind <= TYPE_KIND_ARRAY_VIEW) {
+    } else if(TYPE_KIND_IS_ARRAY_LIKE(t->kind)) {
         arrpush(tmp_buf, '[');
         if(t->kind == TYPE_KIND_ARRAY) {
             u64 cur_len = arrlen(tmp_buf);
@@ -1444,6 +1443,13 @@ Arr(char) _type_to_str(Type *t, Arr(char) tmp_buf) {
             }
 
             arrsetlen(tmp_buf, arrlen(tmp_buf) - 2);
+        }
+    } else if(TYPE_KIND_IS_RECORD(t->kind)) {
+        if(!t->record.name) {
+            UNIMPLEMENTED;
+        } else {
+            char *p = arraddnptr(tmp_buf, strlen(t->record.name));
+            strcpy(p, t->record.name);
         }
     } else {
         UNIMPLEMENTED;
@@ -2269,6 +2275,12 @@ AST* parse_structblock(Job *jp, int *n) {
 
         if(statement_list->base.kind == AST_KIND_structdecl || statement_list->base.kind == AST_KIND_uniondecl) {
             AST_structdecl *ast_struct = (AST_structdecl*)(AST*)statement_list;
+            if(ast_struct->name) {
+                char *s = (statement_list->base.kind == AST_KIND_uniondecl) ? "union" : "struct";
+                job_error(jp, ast_struct->base.loc,
+                        "a named nested %ss must be created by saying 'name: %s {...}'", s, s);
+                break;
+            }
             *n += ast_struct->n_members;
         } else {
             *n += 1;
@@ -8445,6 +8457,18 @@ INLINE u64 align_up(u64 offset, u64 align) {
     return (offset + align - 1) & ~(align - 1);
 }
 
+INLINE u64 next_pow_2(u64 v) {
+    v--;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
+    v |= v >> 16;
+    v |= v >> 32;
+    v++;
+    return v;
+}
+
 void job_runner(char *src, char *src_path) {
     Arr(Job) job_queue = NULL;
     Arr(Job) job_queue_next = NULL;
@@ -8564,17 +8588,41 @@ void job_runner(char *src, char *src_path) {
 
                             if(ast_struct->visited) {
                                 Type *record_type = ast_struct->record_type;
-                                u64 offset = 0;
-                                for(int i = 0; i < record_type->record.member.n; ++i) {
-                                    u64 bytes = record_type->record.member.types[i]->bytes;
-                                    offset = align_up(offset, bytes); //NOTE very important, struct members must be aligned to a 'bytes' boundry
-                                    record_type->record.member.offsets[i] = offset;
-                                    offset += bytes;
-                                }
-                                record_type->bytes = offset;
+
                                 Scope s = arrpop(jp->scopes);
                                 shfree(s);
+
                                 arrsetlen(jp->record_types, arrlen(jp->record_types) - 1);
+
+                                //TODO test nested structs and unions
+                                if(record_type->record.name && arrlen(jp->record_types) > 0) {
+                                    Type *outer_record = arrlast(jp->record_types);
+
+                                    bool in_union = (outer_record->kind == TYPE_KIND_UNION);
+
+                                    if(record_type->align > outer_record->align) {
+                                        outer_record->align = record_type->align;
+                                    }
+
+                                    //NOTE copypasta from typecheck_vardecl()
+                                    u64 i = outer_record->record.member.i;
+                                    outer_record->record.member.i++;
+                                    outer_record->record.member.types[i] = record_type;
+                                    outer_record->record.member.names[i] = record_type->record.name;
+                                    outer_record->record.member.values[i] = NULL;
+                                    outer_record->record.member.locs[i] = ast_struct->base.loc;
+
+                                    if(in_union) {
+                                        outer_record->record.member.offsets[i] = 0;
+                                        outer_record->bytes = (record_type->bytes > outer_record->bytes) ? record_type->bytes : outer_record->bytes;
+                                    } else {
+                                        u64 offset = align_up(outer_record->bytes, record_type->align);
+                                        outer_record->record.member.offsets[i] = offset;
+                                        outer_record->bytes = offset + record_type->bytes;
+                                    }
+
+                                }
+
                                 arrlast(jp->tree_pos_stack) = ast_struct->next;
                                 continue;
                             }
@@ -8611,14 +8659,12 @@ void job_runner(char *src, char *src_path) {
                                 jp->cur_proc_type = NULL;
                                 arrlast(jp->tree_pos_stack) = ast_procdecl->next;
                                 Scope s = arrpop(jp->scopes);
-                                /*
                                 for(int i = 0; i < shlen(s); ++i) {
                                     if(s[i].value) {
                                         print_sym(s[i].value[0]);
                                         printf("\n");
                                     }
                                 }
-                                */
                                 shfree(s);
                                 fprintf(stderr, "\ntype checked the body of '%s'!!!!!!!!!\n\n", ast_procdecl->name);
                                 break;
@@ -9257,6 +9303,7 @@ Type *atom_to_type(Job *jp, AST_atom *atom) {
             tp = job_alloc_type(jp, TYPE_KIND_ARRAY);
             tp->array.n = strlen(atom->text);
             tp->array.of = builtin_type+TYPE_KIND_CHAR;
+            tp->align = tp->array.of->align;
             tp->bytes += tp->array.n;
             break;
         case TOKEN_TWODOT: /* we do this to make checking array constructors easier */
@@ -9371,6 +9418,7 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
                     result->val.type->array.n = b->val.integer;
                     result->val.type->array.element_stride = a->val.type->bytes;
                     result->val.type->bytes = result->val.type->array.element_stride * result->val.type->array.n;
+                    result->val.type->align = a->val.type->align;
                     if(result->val.type->array.n == 0)
                         job_error(jp, op_ast->base.loc, "static array size expression evaluates to 0");
                 }
@@ -10201,6 +10249,7 @@ void typecheck_expr(Job *jp) {
             array_type->array.n = array_lit->n_elements;
             array_type->array.element_stride = array_elem_type->bytes;
             array_type->bytes = array_type->array.element_stride * array_type->array.n;
+            array_type->align = array_elem_type->align;
 
             array_lit->type_annotation = array_type;
             array_lit->value_annotation = array_val;
@@ -10672,7 +10721,6 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
     return ir_expr;
 }
 
-//TODO
 void typecheck_structdecl(Job *jp) {
     AST_structdecl *ast = (AST_structdecl*)arrlast(jp->tree_pos_stack);
     assert(ast->base.kind == AST_KIND_structdecl || ast->base.kind == AST_KIND_uniondecl);
@@ -10682,23 +10730,41 @@ void typecheck_structdecl(Job *jp) {
 
     bool is_top_level = (arrlen(jp->tree_pos_stack) == 1);
     bool is_union = (ast->base.kind == AST_KIND_uniondecl);
+    bool has_params = (ast->params != NULL);
+    bool is_nested = (arrlen(jp->record_types) > 1);
+
+    if(has_params && is_nested) {
+        char *s = is_union ? "union" : "struct";
+        job_error(jp, ast->base.loc,
+                "nested %s's are part of the outer %s, they cannot have parameters", s, s);
+        return;
+    }
+
+    assert((bool)(ast->name) ^ is_nested);
 
     if(arrlast(jp->record_types) == NULL) {
         arrlast(jp->record_types) = job_alloc_type(jp, is_union ? TYPE_KIND_UNION : TYPE_KIND_STRUCT);
 
         arrlast(jp->record_types)->record.name = ast->name;
-        u64 n = ast->n_members;
-        arrlast(jp->record_types)->record.member.n = n;
-        arrlast(jp->record_types)->record.member.types = (Type**)job_alloc_scratch(jp, sizeof(Type*) * n);
-        arrlast(jp->record_types)->record.member.names = (char**)job_alloc_scratch(jp, sizeof(char*) * n);
-        arrlast(jp->record_types)->record.member.values = (Value**)job_alloc_scratch(jp, sizeof(Value*) * n);
-        arrlast(jp->record_types)->record.member.offsets = (u64*)job_alloc_scratch(jp, sizeof(u64) * n);
-        arrlast(jp->record_types)->record.member.locs = (Loc_info*)job_alloc_scratch(jp, sizeof(Loc_info) * n);
+
+        if(ast->name) {
+            u64 n = ast->n_members;
+            arrlast(jp->record_types)->record.member.n = n;
+            arrlast(jp->record_types)->record.member.types = (Type**)job_alloc_scratch(jp, sizeof(Type*) * n);
+            arrlast(jp->record_types)->record.member.names = (char**)job_alloc_scratch(jp, sizeof(char*) * n);
+            arrlast(jp->record_types)->record.member.values = (Value**)job_alloc_scratch(jp, sizeof(Value*) * n);
+            arrlast(jp->record_types)->record.member.offsets = (u64*)job_alloc_scratch(jp, sizeof(u64) * n);
+            arrlast(jp->record_types)->record.member.locs = (Loc_info*)job_alloc_scratch(jp, sizeof(Loc_info) * n);
+        }
     }
     Type *record_type = arrlast(jp->record_types);
 
+    if(is_nested) {
+        return;
+    }
+
     //NOTE copypasta from typecheck_procdecl()
-    if(ast->checked_params == false) {
+    if(has_params && ast->checked_params == false) {
         u64 n = record_type->record.param.n;
 
         if(n == 0) {
@@ -10725,9 +10791,6 @@ void typecheck_structdecl(Job *jp) {
                     return;
                 }
 
-                if(jp->state == JOB_STATE_ERROR)
-                    UNIMPLEMENTED;
-
                 arrsetlen(jp->type_stack, 0);
                 arrsetlen(jp->value_stack, 0);
                 arrsetlen(jp->expr, 0);
@@ -10747,9 +10810,6 @@ void typecheck_structdecl(Job *jp) {
                     return;
                 }
 
-                if(jp->state == JOB_STATE_ERROR)
-                    UNIMPLEMENTED;
-
                 arrsetlen(jp->type_stack, 0);
                 arrsetlen(jp->value_stack, 0);
                 arrsetlen(jp->expr, 0);
@@ -10757,6 +10817,8 @@ void typecheck_structdecl(Job *jp) {
 
                 p->checked_init = true;
             }
+
+            if(jp->state == JOB_STATE_ERROR) return;
 
             Type *bind_type = ((AST_expr*)(p->type))->value_annotation->val.type;
             Value *init_value = NULL;
@@ -10817,6 +10879,7 @@ void typecheck_structdecl(Job *jp) {
             Sym sym = {
                 .name = p->name,
                 .loc = p->base.loc,
+                .constant = true,
                 .declared_by = jp->id,
                 .is_argument = true,
                 .type = bind_type,
@@ -11234,7 +11297,8 @@ void typecheck_vardecl(Job *jp) {
 
         Type *record_type = arrlast(jp->record_types);
 
-        char *record_str = (record_type->kind == TYPE_KIND_UNION) ? "union" : "struct";
+        bool in_union = (record_type->kind == TYPE_KIND_UNION);
+        char *record_str =  in_union ? "union" : "struct";
 
         if(ast->constant) {
             //NOTE do const members even make sense?
@@ -11254,6 +11318,15 @@ void typecheck_vardecl(Job *jp) {
             init_value = builtin_value+VALUE_KIND_NIL;
         }
 
+        if(record_type->record.name == NULL) {
+            for(int i = arrlen(jp->record_types) - 2; i >= 0; --i) {
+                if(jp->record_types[i]->record.name) {
+                    record_type = jp->record_types[i];
+                    break;
+                }
+            }
+        }
+
         u64 i = 0;
         for(; i < record_type->record.member.i; ++i) {
             if(!strcmp(name, record_type->record.member.names[i])) {
@@ -11264,11 +11337,25 @@ void typecheck_vardecl(Job *jp) {
             }
         }
 
+        if(bind_type->align > record_type->align) {
+            record_type->align = bind_type->align;
+        }
+
         record_type->record.member.i = i + 1;
         record_type->record.member.types[i] = bind_type;
         record_type->record.member.names[i] = name;
         record_type->record.member.values[i] = init_value;
         record_type->record.member.locs[i] = ast->base.loc;
+
+        if(in_union) {
+            record_type->record.member.offsets[i] = 0;
+            record_type->bytes = (bind_type->bytes > record_type->bytes) ? bind_type->bytes : record_type->bytes;
+        } else {
+            u64 offset = align_up(record_type->bytes, bind_type->align);
+            record_type->record.member.offsets[i] = offset;
+            record_type->bytes = offset + bind_type->bytes;
+        }
+
     } else {
         Sym sym = {
             .name = name,
@@ -11321,14 +11408,14 @@ void print_sym(Sym sym) {
     printf("value: ");
     print_value(sym.value);
     printf("\n");
-    printf("size_in_bytes: %u\n", sym.type->bytes);
+    printf("size_in_bytes: %lu\n", sym.type->bytes);
 }
 
-//TODO structs
-//TODO static array initialization and assignment need to be improved
-//TODO dynamic arrays and views
+//TODO nested structs (anonymous and named)
 //TODO runtime type info
 //TODO varargs
+//TODO static array initialization and assignment need to be improved
+//TODO dynamic arrays and views
 //TODO full C interop
 //TODO for loops on arrays
 //TODO output assembly
@@ -11344,7 +11431,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/foreign_proc.jpl";
+    char *path = "test/struct.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 
