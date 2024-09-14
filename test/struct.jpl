@@ -32,9 +32,11 @@ struct Bob {
     i: int = 54;
     unique_id: u16 = ---;
     f: float = 3.14;
-    union {
-        x: float;
-        y: float;
+    u: union {
+        union {
+            x: float;
+            y: float;
+        }
         struct {
             x1: float;
             y1: float;

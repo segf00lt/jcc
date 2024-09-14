@@ -1,0 +1,21 @@
+//TODO we fucked up how nested structs work
+//     unions are kinda broken
+//     record.member.i is not being incremented
+
+struct Bob {
+    u: union {
+        x: float;
+        y: float;
+        struct {
+            x1: float;
+            y1: float;
+        }
+    }
+    /*
+    i: int = 54;
+    unique_id: u16 = ---;
+    f: float = 3.14;
+    tau: f64 = ---;
+    c: s8;
+    */
+}
