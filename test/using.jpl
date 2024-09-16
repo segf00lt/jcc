@@ -1,0 +1,29 @@
+struct Bob {
+    i: int = 11;
+    c: char = 27;
+}
+
+struct Alice {
+    id: u16 = 255;
+}
+
+struct Another_Alice {
+    id: u16 = 255;
+}
+
+struct Jane {
+    using Bob;
+    using Alice;
+    q: struct {
+        r: f64;
+        i: f64;
+    }
+    f: float;
+}
+
+proc main() {
+    jane: Jane;
+    c := jane.c;
+    qi := jane.q.i;
+    alice_id := cast(*Alice) @jane;
+}

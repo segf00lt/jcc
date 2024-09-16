@@ -661,6 +661,14 @@ typedef struct
   size_t      length;
   size_t      capacity;
   void      * hash_table;
+
+  /* TODO add custom allocators
+  void      * allocator_context;
+
+  void      * (*allocator_realloc)(void *, void *, size_t);
+  void      * (*allocator_free)(void *, void *);
+  */
+
   ptrdiff_t   temp;
 } stbds_array_header;
 

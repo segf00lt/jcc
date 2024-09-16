@@ -1,0 +1,7 @@
+proc main() {
+    printf("hello world\n");
+}
+
+// we actually might not be able to even call C vararg functions
+
+proc printf(fmt: *char, args: ..) #system;
