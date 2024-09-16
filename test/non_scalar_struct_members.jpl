@@ -58,10 +58,5 @@ struct Type_info_member {
 }
 
 proc main() {
-    jane: Jane;
-    c := jane.c;
-    qi := jane.q.i;
-    alice_id := cast(*Alice) @jane;
-
     test: Type_info_struct;
 }

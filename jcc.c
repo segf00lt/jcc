@@ -2407,6 +2407,7 @@ AST* parse_structblock(Job *jp, int *n_members, int *n_using) {
         }
 
         if(!statement_list->next && !using_list->next) {
+            t = lex(lexer);
             job_error(jp, lexer->loc, "illegal statement in declarative block");
             return NULL;
         }
@@ -3865,7 +3866,7 @@ void print_value(Value *v) {
             printf("%f", v->val.floating);
             break;
         case VALUE_KIND_TYPE:
-            printf("%s", global_type_to_str(v->val.type));
+            printf("%s (%zu bytes, %zu align)", global_type_to_str(v->val.type), v->val.type->bytes, v->val.type->align);
             break;
         case VALUE_KIND_STRING:
             UNIMPLEMENTED;
@@ -7022,26 +7023,28 @@ void ir_gen_struct_init(Job *jp, Type *struct_type, u64 offset) {
 
     for(u64 i = 0; i < n_members; ++i) {
         if(TYPE_KIND_IS_NOT_SCALAR(member_types[i]->kind)) {
-            if(member_types[i]->kind == TYPE_KIND_UNION) {
-                u64 total_bytes = member_types[i]->bytes;
-                for(u64 b = 0, step = 8; b < total_bytes; b += step) {
-                    while(b + step > total_bytes) step >>= 1;
-                    inst =
-                        (IRinst) {
-                            .opcode = IROP_SETLOCAL,
-                            .setvar = {
-                                .offset = offset + member_offsets[i] + b,
-                                .bytes = step,
-                                .immediate = true,
-                            },
-                        };
-                    inst.loc = jp->cur_loc;
-                    arrpush(jp->instructions, inst);
-                }
-            } else if(member_types[i]->kind == TYPE_KIND_STRUCT) {
+            if(member_types[i]->kind == TYPE_KIND_STRUCT) {
                 ir_gen_struct_init(jp, member_types[i], offset + member_offsets[i]);
             } else {
-                UNIMPLEMENTED;
+                if(member_values[i]) {
+                    UNIMPLEMENTED;
+                } else {
+                    u64 total_bytes = member_types[i]->bytes;
+                    for(u64 b = 0, step = 8; b < total_bytes; b += step) {
+                        while(b + step > total_bytes) step >>= 1;
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_SETLOCAL,
+                                .setvar = {
+                                    .offset = offset + member_offsets[i] + b,
+                                    .bytes = step,
+                                    .immediate = true,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+                    }
+                }
             }
         } else {
             if(member_values[i]) {
@@ -8903,6 +8906,17 @@ void job_runner(char *src, char *src_path) {
                             //}
 
                             if(ast_struct->visited) {
+                                if(ast_struct->name) {
+                                    bool is_top_level = (arrlen(jp->tree_pos_stack) == 1);
+                                    Sym *symp = ast_struct->symbol_annotation;
+
+                                    if(is_top_level) {
+                                        global_scope_enter(jp, symp);
+                                    } else {
+                                        job_scope_enter(jp, symp);
+                                    }
+                                }
+
                                 Type *record_type = ast_struct->record_type;
 
                                 assert(record_type == arrlast(jp->record_types));
@@ -9025,6 +9039,17 @@ void job_runner(char *src, char *src_path) {
                             
                             if(arrlen(jp->record_types) > 0) {
                                 Type *record_type = arrlast(jp->record_types);
+
+                                if(record_type == using_type) {
+                                    job_error(jp, ast->loc,
+                                            "circular use of name '%s'",
+                                            ast_using->name);
+                                    job_report_all_messages(jp);
+                                    job_die(jp);
+                                    ++i;
+                                    continue;
+                                }
+
                                 bool in_union = (record_type->kind == TYPE_KIND_UNION);
 
                                 if(using_type->align > record_type->align) {
@@ -11400,15 +11425,8 @@ void typecheck_structdecl(Job *jp) {
         arrlast(jp->record_types) = record_type;
         Sym *symp = job_alloc_global_sym(jp);
 
+        *symp = record_sym;
         ast->symbol_annotation = symp;
-
-        if(is_top_level) {
-            *symp = record_sym;
-            global_scope_enter(jp, symp);
-        } else {
-            *symp = record_sym;
-            job_scope_enter(jp, symp);
-        }
     }
 }
 
@@ -11943,7 +11961,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/using.jpl";
+    char *path = "test/non_scalar_struct_members.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 
