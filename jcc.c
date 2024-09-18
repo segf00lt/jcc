@@ -1014,6 +1014,8 @@ void        add_implicit_casts_to_expr(Job *jp, AST *ast);
 u64         align_up(u64 offset, u64 align);
 u64         next_pow_2(u64 v);
 
+bool        records_have_member_name_conflicts(Job *jp, Loc_info using_loc, Type *a, Type *b);
+
 void        do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type);
 
 void        copy_array_data_to_value(Job *jp, Value *v, Type *t, u8 *data);
@@ -4148,7 +4150,9 @@ void ir_gen(Job *jp) {
         printf("sorry I don't know how to do this yet\n");
         //UNIMPLEMENTED;
     } else if(node->kind == AST_KIND_structdecl) {
-        printf("sorry I don't know how to do this yet\n");
+        printf("no IR to generate\n");
+    } else if(node->kind == AST_KIND_uniondecl) {
+        printf("no IR to generate\n");
     } else {
         UNREACHABLE;
     }
@@ -8778,6 +8782,40 @@ INLINE u64 next_pow_2(u64 v) {
     return v;
 }
 
+//TODO better name conflicts
+bool records_have_member_name_conflicts(Job *jp, Loc_info using_loc, Type *a, Type *b) {
+    assert(TYPE_KIND_IS_RECORD(a->kind) && TYPE_KIND_IS_RECORD(b->kind));
+
+    for(u64 i = 0; i < a->record.member.i; ++i) {
+        char *name = a->record.member.names[i];
+        for(u64 j = 0; j < b->record.member.i; ++j) {
+            if(!strcmp(name, b->record.member.names[j])) {
+                job_error(jp, using_loc,
+                        "name conflict between '%s' and '%s', they share the member name '%s'",
+                        a->record.name, b->record.name, name);
+                return true;
+            }
+        }
+    }
+
+    for(u64 u = 0; u < a->record.use.i; ++u) {
+        Type *use_t = a->record.use.types[u];
+        for(u64 i = 0; i < use_t->record.member.i; ++i) {
+            char *name = use_t->record.member.names[i];
+            for(u64 j = 0; j < b->record.member.i; ++j) {
+                if(!strcmp(name, b->record.member.names[j])) {
+                    job_error(jp, using_loc,
+                            "name conflict between '%s' and '%s', they share the member name '%s'",
+                            a->record.name, b->record.name, name);
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
 void job_runner(char *src, char *src_path) {
     Arr(Job) job_queue = NULL;
     Arr(Job) job_queue_next = NULL;
@@ -8906,17 +8944,6 @@ void job_runner(char *src, char *src_path) {
                             //}
 
                             if(ast_struct->visited) {
-                                if(ast_struct->name) {
-                                    bool is_top_level = (arrlen(jp->tree_pos_stack) == 1);
-                                    Sym *symp = ast_struct->symbol_annotation;
-
-                                    if(is_top_level) {
-                                        global_scope_enter(jp, symp);
-                                    } else {
-                                        job_scope_enter(jp, symp);
-                                    }
-                                }
-
                                 Type *record_type = ast_struct->record_type;
 
                                 assert(record_type == arrlast(jp->record_types));
@@ -8928,44 +8955,57 @@ void job_runner(char *src, char *src_path) {
 
                                 arrsetlen(jp->record_types, arrlen(jp->record_types) - 1);
 
-                                //TODO this way of handling anonymous sub structs is a bit weird
-                                if(arrlen(jp->record_types) > 0 && !ast_struct->is_name_spaced) {
-                                    Type *inner_record = record_type;
-                                    Type *outer_record = arrlast(jp->record_types);
+                                if(ast_struct->name) {
+                                    bool is_top_level = (arrlen(jp->tree_pos_stack) == 1);
+                                    Sym *symp = ast_struct->symbol_annotation;
 
-                                    u64 offset;
-                                    if(outer_record->kind == TYPE_KIND_UNION) {
-                                        offset = 0;
-                                        if(inner_record->bytes > outer_record->bytes)
-                                            outer_record->bytes = inner_record->bytes;
+                                    if(is_top_level) {
+                                        global_scope_enter(jp, symp);
                                     } else {
-                                        offset = align_up(outer_record->bytes, inner_record->align);
-                                        outer_record->bytes = offset + inner_record->bytes;
+                                        job_scope_enter(jp, symp);
                                     }
+                                } else {
 
-                                    if(inner_record->align > outer_record->align)
-                                        outer_record->align = inner_record->align;
+                                    //TODO this way of handling anonymous sub structs is a bit weird
+                                    if(arrlen(jp->record_types) > 0 && !ast_struct->is_name_spaced) {
+                                        Type *inner_record = record_type;
+                                        Type *outer_record = arrlast(jp->record_types);
 
-                                    for(u64 i = 0; i < inner_record->record.member.n; ++i) {
-                                        u64 outer_i = outer_record->record.member.i;
-
-                                        for(u64 j = 0; j < outer_i; ++j) {
-                                            if(!strcmp(outer_record->record.member.names[j], inner_record->record.member.names[i])) {
-                                                job_error(jp, inner_record->record.member.locs[i],
-                                                        "multiple declaration of struct field '%s', previously declared on line %i",
-                                                        inner_record->record.member.names[i],
-                                                        outer_record->record.member.locs[i].line);
-                                            }
+                                        u64 offset;
+                                        if(outer_record->kind == TYPE_KIND_UNION) {
+                                            offset = 0;
+                                            if(inner_record->bytes > outer_record->bytes)
+                                                outer_record->bytes = inner_record->bytes;
+                                        } else {
+                                            offset = align_up(outer_record->bytes, inner_record->align);
+                                            outer_record->bytes = offset + inner_record->bytes;
                                         }
 
-                                        outer_record->record.member.names[outer_i] = inner_record->record.member.names[i];
-                                        outer_record->record.member.types[outer_i] = inner_record->record.member.types[i];
-                                        outer_record->record.member.values[outer_i] = inner_record->record.member.values[i];
-                                        outer_record->record.member.locs[outer_i] = inner_record->record.member.locs[i];
-                                        outer_record->record.member.offsets[outer_i] = inner_record->record.member.offsets[i] + offset;
+                                        if(inner_record->align > outer_record->align)
+                                            outer_record->align = inner_record->align;
 
-                                        outer_record->record.member.i++;
+                                        for(u64 i = 0; i < inner_record->record.member.n; ++i) {
+                                            u64 outer_i = outer_record->record.member.i;
+
+                                            for(u64 j = 0; j < outer_i; ++j) {
+                                                if(!strcmp(outer_record->record.member.names[j], inner_record->record.member.names[i])) {
+                                                    job_error(jp, inner_record->record.member.locs[i],
+                                                            "multiple declaration of struct field '%s', previously declared on line %i",
+                                                            inner_record->record.member.names[i],
+                                                            outer_record->record.member.locs[i].line);
+                                                }
+                                            }
+
+                                            outer_record->record.member.names[outer_i] = inner_record->record.member.names[i];
+                                            outer_record->record.member.types[outer_i] = inner_record->record.member.types[i];
+                                            outer_record->record.member.values[outer_i] = inner_record->record.member.values[i];
+                                            outer_record->record.member.locs[outer_i] = inner_record->record.member.locs[i];
+                                            outer_record->record.member.offsets[outer_i] = inner_record->record.member.offsets[i] + offset;
+
+                                            outer_record->record.member.i++;
+                                        }
                                     }
+
                                 }
 
                                 if(jp->state == JOB_STATE_ERROR) {
@@ -9038,12 +9078,50 @@ void job_runner(char *src, char *src_path) {
                             }
                             
                             if(arrlen(jp->record_types) > 0) {
+                                if(using_type->record.use.n > 0) {
+                                    job_error(jp, ast->loc,
+                                            "only single level struct/union inclusion is allowed, '%s' can't have it's own 'using's",
+                                            ast_using->name);
+                                    job_report_all_messages(jp);
+                                    job_die(jp);
+                                    ++i;
+                                    continue;
+                                }
+
                                 Type *record_type = arrlast(jp->record_types);
+
+                                //TODO should using be allowed within anonymous records???
+                                if(record_type->record.name == NULL) {
+                                    job_error(jp, ast->loc,
+                                            "'using' can't be used within an anonymous %s",
+                                            (record_type->kind == TYPE_KIND_UNION) ? "union" : "struct");
+                                    job_report_all_messages(jp);
+                                    job_die(jp);
+                                    ++i;
+                                    continue;
+                                }
+
+                                if(using_type->kind != record_type->kind) {
+                                    job_error(jp, ast->loc,
+                                            "'using' can only include structs within structs and unions within unions");
+                                    job_report_all_messages(jp);
+                                    job_die(jp);
+                                    ++i;
+                                    continue;
+                                }
 
                                 if(record_type == using_type) {
                                     job_error(jp, ast->loc,
                                             "circular use of name '%s'",
                                             ast_using->name);
+                                    job_report_all_messages(jp);
+                                    job_die(jp);
+                                    ++i;
+                                    continue;
+                                }
+
+                                //TODO better name conflicts
+                                if(records_have_member_name_conflicts(jp, ast_using->base.loc, record_type, using_type)) {
                                     job_report_all_messages(jp);
                                     job_die(jp);
                                     ++i;
@@ -11854,12 +11932,30 @@ void typecheck_vardecl(Job *jp) {
             init_value = builtin_value+VALUE_KIND_NIL;
         }
 
+        //TODO better name conflicts
         for(u64 i = 0; i < record_type->record.member.i; ++i) {
             if(!strcmp(name, record_type->record.member.names[i])) {
                 job_error(jp, ast->base.loc,
                         "multiple declaration of %s member '%s', previously declared at line %i",
                         record_str, name, record_type->record.member.locs[i].line);
                 return;
+            }
+        }
+
+        //TODO better name conflicts
+        for(u64 u = 0; u < record_type->record.use.i; ++u) {
+            Type *use_t = record_type->record.use.types[u];
+
+            for(u64 i = 0; i < use_t->record.member.i; ++i) {
+                if(!strcmp(name, use_t->record.member.names[i])) {
+                    job_error(jp, ast->base.loc,
+                            "in '%s', member name '%s' conflicts with the included %s '%s' which has a member of the same name",
+                            record_type->record.name,
+                            name,
+                            (use_t->kind == TYPE_KIND_UNION) ? "union" : "struct",
+                            use_t->record.name);
+                    return;
+                }
             }
         }
 
@@ -11945,12 +12041,12 @@ void print_sym(Sym sym) {
 //TODO dynamic arrays
 //TODO for loops on arrays
 //TODO improve 'defer'
-//TODO static array initialization and assignment need to be improved
-//TODO full C interop
-//TODO output assembly
 //TODO directives (#load, #import, #assert, etc)
-//TODO allow variables in inner scopes to be named the same as vars in outer scopes
+//TODO test full C interop
 //TODO prevent shadowing of global constants
+//TODO allow variables in inner scopes to be named the same as vars in outer scopes
+//TODO static array initialization and assignment need to be improved (???)
+//TODO output assembly
 //TODO sort stack variables by size
 
 //TODO too much implicit state

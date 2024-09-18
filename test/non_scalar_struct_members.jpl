@@ -7,8 +7,16 @@ struct Alice {
     id: u16 = 255;
 }
 
+struct Test_union {
+    c: char;
+    b: u8;
+}
+
 struct Another_Alice {
-    id: u16 = 255;
+            using Test_union;
+    union {
+    id: u16;
+    }
 }
 
 struct Jane {
@@ -59,4 +67,6 @@ struct Type_info_member {
 
 proc main() {
     test: Type_info_struct;
+    alice: Another_Alice;
+    x := alice.b;
 }
