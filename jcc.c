@@ -94,6 +94,7 @@
     X(STRUCT)                           \
     X(PARAM)                            \
     X(TOKEN)                            \
+    X(POINTER)                          \
 
 #define TYPEKINDS                       \
     X(VOID)                             \
@@ -179,20 +180,15 @@
     X(LOADF,         _)                 \
     X(STORF,         _)                 \
     X(CALCPTROFFSET, _)                 \
-    X(ADDRLOCAL,     _)                 \
-    X(ADDRGLOBAL,    _)                 \
-    X(GETLOCAL,      _)                 \
-    X(SETLOCAL,      _)                 \
-    X(GETGLOBAL,     _)                 \
-    X(SETGLOBAL,     _)                 \
+    X(ADDRVAR,       _)                 \
+    X(GETVAR,        _)                 \
+    X(SETVAR,        _)                 \
     X(SETARG,        _)                 \
     X(SETRET,        _)                 \
     X(GETARG,        _)                 \
     X(GETRET,        _)                 \
-    X(GETLOCALF,     _)                 \
-    X(SETLOCALF,     _)                 \
-    X(GETGLOBALF,    _)                 \
-    X(SETGLOBALF,    _)                 \
+    X(GETVARF,       _)                 \
+    X(SETVARF,       _)                 \
     X(SETARGF,       _)                 \
     X(SETRETF,       _)                 \
     X(GETARGF,       _)                 \
@@ -203,6 +199,13 @@
     X(FTOI,          _)                 \
     X(ITOI,          _)                 \
     X(FTOF,          _)                 \
+
+#define IRSEGMENTS                      \
+    X(LOCAL)                            \
+    X(GLOBAL)                           \
+    X(BSS)                              \
+    X(TYPE)                             \
+    X(CODE)                             \
 
 #define PLATFORMS    \
     X(X64)           \
@@ -311,6 +314,13 @@ typedef enum IRop {
 #undef X
 } IRop;
 
+typedef enum IRsegment {
+    IRSEG_INVALID = -1,
+#define X(x) IRSEG_##x,
+    IRSEGMENTS
+#undef X
+} IRsegment;
+
 typedef enum Platform {
     PLATFORM_INVALID = -1,
 #define X(x) PLATFORM_##x,
@@ -321,6 +331,12 @@ typedef enum Platform {
 char *IRop_debug[] = {
 #define X(x, _) #x,
     IROPCODES
+#undef X
+};
+
+char *IRsegment_debug[] = {
+#define X(x) #x,
+    IRSEGMENTS
 #undef X
 };
 
@@ -338,20 +354,26 @@ struct IRlabel {
     Loc_info loc;
 };
 
+#define IRMACHINE_BODY                \
+    X(Arr(u64) pc_stack;)             \
+    X(Arr(int) procid_stack;)         \
+    X(Arr(u8*) local_base_stack;)     \
+    X(Arr(u64*) jump_table_stack;)    \
+                                      \
+    X(u8 *global_segment;)            \
+    X(u8 *bss_segment;)               \
+    X(u8 *local_segment;)             \
+                                      \
+    X(u64 iregs[8];)                  \
+    X(f32 f32regs[8];)                \
+    X(f64 f64regs[8];)                \
+                                      \
+    X(Arr(IRvalue) ports;)            \
+
 struct IRmachine {
-    Arr(u64) pc_stack;
-    Arr(int) procid_stack;
-    Arr(u8*) local_base_stack;
-    Arr(u64*) jump_table_stack;
-
-    u8 *global_segment;
-    u8 *local_segment;
-
-    u64 iregs[8];
-    f32 f32regs[8];
-    f64 f64regs[8];
-
-    Arr(IRvalue) ports;
+#define X(x) x
+    IRMACHINE_BODY
+#undef X
 };
 
 struct IRinst {
@@ -388,11 +410,6 @@ struct IRinst {
 
         struct {
             u64 reg_dest;
-            u64 offset;
-        } addrvar;
-
-        struct {
-            u64 reg_dest;
             u64 reg_src_ptr;
             u64 offset_reg;
             u64 stride;
@@ -423,13 +440,24 @@ struct IRinst {
         } stor;
 
         struct {
-            u64 reg_dest;
+            IRsegment segment;
             u64 offset;
+
+            u64 reg_dest;
+        } addrvar;
+
+        struct {
+            IRsegment segment;
+            u64 offset;
+
+            u64 reg_dest;
             u64 bytes;
         } getvar;
 
         struct {
+            IRsegment segment;
             u64 offset;
+
             u64 reg_src;
             IRvalue imm;
             u64 bytes;
@@ -588,6 +616,7 @@ struct Sym {
     bool is_argument : 1;
     bool is_record_argument : 1;
     bool constant : 1;
+    IRsegment segment;
     u64 segment_offset;
     Type *type;
     union {
@@ -882,6 +911,12 @@ struct Value {
         Token token;
         char *str;
         Type *type;
+        /*
+        struct {
+            IRsegment segment;
+            u64 offset;
+        } pointer;
+        */
         struct {
             Value **elements;
             u64 n;
@@ -899,6 +934,10 @@ struct Type {
     u64 bytes;
     u64 align;
     union {
+        struct {
+            Type *what;
+        } type;
+
         struct { /* struct and union */
             char *name;
             bool has_defaults;
@@ -966,7 +1005,7 @@ struct Type {
             } ret;
         } proc;
 
-        struct { /* static array, dynamic or slice */
+        struct { /* static array, dynamic or view */
             u64  n; /* used for capacity of static array */
             u64  element_stride;
             Type *of;
@@ -1032,7 +1071,7 @@ Arr(Type*)  ir_gen_call_arm64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call
 void        ir_gen_block(Job *jp, AST *ast);
 void        ir_gen_statement(Job *jp, AST_statement *ast_statement);
 void        ir_gen_logical_expr(Job *jp, AST *ast);
-void        ir_gen_struct_init(Job *jp, Type *struct_type, u64 offset);
+void        ir_gen_struct_init(Job *jp, Type *struct_type, IRsegment segment, u64 offset);
 void        ir_gen_expr(Job *jp, AST *ast);
 u64         ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array);
 u64         ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array, u64 offset, u64 ptr_reg);
@@ -1140,6 +1179,12 @@ Value builtin_value[] = {
 Arena                      global_scratch_allocator;
 Pool                       global_sym_allocator;
 Scope                      global_scope;
+
+u64                        global_segment_offset;
+Arr(Sym*)                  global_data_table;
+u64                        bss_segment_offset;
+Arr(Sym*)                  bss_data_table;
+
 int                        procid_alloc;
 u64                        n_procedures;
 u64                        n_foreign_procedures;
@@ -1151,6 +1196,7 @@ Map(u64, u64*)             procedure_local_jump_table;
 Map(u64, IR_foreign_proc)  foreign_procedure_table;
 Map(u64, char*)            foreign_procedure_names;
 Arr(void*)                 loaded_wrapper_dlls;
+
 Platform                   target_platform;
 
 
@@ -1932,8 +1978,9 @@ u64 ir_gen_array_from_value(Job *jp, Type *array_type, Value *v) {
             //u64 *regp = &(jp->reg_alloc);
 
             IRinst inst = {
-                .opcode = IROP_SETLOCAL,
+                .opcode = IROP_SETVAR,
                 .setvar = {
+                    .segment = IRSEG_LOCAL,
                     .offset = offset,
                     .bytes = stride,
                 },
@@ -1943,8 +1990,9 @@ u64 ir_gen_array_from_value(Job *jp, Type *array_type, Value *v) {
                 //regp = &(jp->float_reg_alloc);
 
                 inst = (IRinst) {
-                    .opcode = IROP_SETLOCALF,
+                    .opcode = IROP_SETVARF,
                     .setvar = {
+                        .segment = IRSEG_LOCAL,
                         .offset = offset,
                         .bytes = stride,
                     },
@@ -1992,8 +2040,9 @@ u64 ir_gen_array_from_value(Job *jp, Type *array_type, Value *v) {
         while(cur_offset + step > expected_offset) step >>= 1;
         IRinst inst =
             (IRinst) {
-                .opcode = IROP_SETLOCAL,
+                .opcode = IROP_SETVAR,
                 .setvar = {
+                    .segment = IRSEG_LOCAL,
                     .offset = cur_offset,
                     .bytes = step,
                     .immediate = true,
@@ -2110,8 +2159,8 @@ INLINE void print_ir_inst(IRinst inst, FILE *f) {
                     inst.calcptroffset.offset_reg,
                     inst.calcptroffset.stride);
             break;
-        case IROP_ADDRLOCAL: case IROP_ADDRGLOBAL:
-            fprintf(f, "%s r_%lu, segment offset %lu\n", opstr, inst.addrvar.reg_dest, inst.addrvar.offset);
+        case IROP_ADDRVAR:
+            fprintf(f, "%s r_%lu, segment %s, offset %lu\n", opstr, inst.addrvar.reg_dest, IRsegment_debug[inst.addrvar.segment], inst.addrvar.offset);
             break;
 		case IROP_LOAD:
 		case IROP_LOADF:
@@ -2172,30 +2221,26 @@ INLINE void print_ir_inst(IRinst inst, FILE *f) {
             }
             fprintf(f, "%luB\n", inst.stor.bytes);
 			break;
-		case IROP_GETLOCAL:
-		case IROP_GETGLOBAL:
-            fprintf(f, "%s r_%lu, addr %lu, %luB\n", opstr, inst.getvar.reg_dest, inst.getvar.offset, inst.getvar.bytes);
+		case IROP_GETVAR:
+            fprintf(f, "%s r_%lu, segment %s, addr %lu, %luB\n", opstr, inst.getvar.reg_dest, IRsegment_debug[inst.getvar.segment], inst.getvar.offset, inst.getvar.bytes);
 			break;
-		case IROP_GETLOCALF:
-		case IROP_GETGLOBALF:
-            fprintf(f, "%s f_%lu, addr %lu, %luB\n", opstr, inst.getvar.reg_dest, inst.getvar.offset, inst.getvar.bytes);
+		case IROP_GETVARF:
+            fprintf(f, "%s f_%lu, segment %s, addr %lu, %luB\n", opstr, inst.getvar.reg_dest, IRsegment_debug[inst.getvar.segment], inst.getvar.offset, inst.getvar.bytes);
 			break;
-        case IROP_SETLOCAL:
-        case IROP_SETGLOBAL:
+        case IROP_SETVAR:
             if(inst.setvar.immediate)
-                fprintf(f, "%s addr %lu, %lu, %luB\n", opstr, inst.setvar.offset, inst.setvar.imm.integer, inst.setvar.bytes);
+                fprintf(f, "%s segment %s, addr %lu, %lu, %luB\n",   opstr, IRsegment_debug[inst.setvar.segment], inst.setvar.offset, inst.setvar.imm.integer, inst.setvar.bytes);
             else
-                fprintf(f, "%s addr %lu, r_%lu, %luB\n", opstr, inst.setvar.offset, inst.setvar.reg_src, inst.setvar.bytes);
+                fprintf(f, "%s segment %s, addr %lu, r_%lu, %luB\n", opstr, IRsegment_debug[inst.setvar.segment], inst.setvar.offset, inst.setvar.reg_src, inst.setvar.bytes);
 			break;
-        case IROP_SETLOCALF:
-        case IROP_SETGLOBALF:
+        case IROP_SETVARF:
             if(inst.setvar.immediate) {
                 if(inst.setvar.bytes == 8)
-                    fprintf(f, "%s addr %lu, %g, %luB\n",opstr,inst.setvar.offset,inst.setvar.imm.floating64,inst.setvar.bytes);
+                    fprintf(f, "%s segment %s, addr %lu, %g, %luB\n",opstr, IRsegment_debug[inst.setvar.segment], inst.setvar.offset,inst.setvar.imm.floating64,inst.setvar.bytes);
                 else
-                    fprintf(f, "%s addr %lu, %f, %luB\n",opstr,inst.setvar.offset,inst.setvar.imm.floating32,inst.setvar.bytes);
+                    fprintf(f, "%s segment %s, addr %lu, %f, %luB\n",opstr, IRsegment_debug[inst.setvar.segment], inst.setvar.offset,inst.setvar.imm.floating32,inst.setvar.bytes);
             } else {
-                fprintf(f, "%s addr %lu, f_%lu, %luB\n", opstr, inst.setvar.offset, inst.setvar.reg_src, inst.setvar.bytes);
+                fprintf(f, "%s segment %s, addr %lu, f_%lu, %luB\n", opstr, IRsegment_debug[inst.setvar.segment], inst.setvar.offset, inst.setvar.reg_src, inst.setvar.bytes);
             }
 			break;
 		case IROP_SETARG: case IROP_SETRET:
@@ -4022,8 +4067,9 @@ void ir_gen(Job *jp) {
                     };
 
                     IRinst inst_write = {
-                        .opcode = IROP_SETLOCAL,
+                        .opcode = IROP_SETVAR,
                         .setvar = {
+                            .segment = IRSEG_LOCAL,
                             .offset = local_offset,
                             .reg_src = 0,
                             .bytes = 8,
@@ -4058,8 +4104,9 @@ void ir_gen(Job *jp) {
                 };
 
                 IRinst inst_write = {
-                    .opcode = IROP_SETLOCAL,
+                    .opcode = IROP_SETVAR,
                     .setvar = {
+                        .segment = IRSEG_LOCAL,
                         .offset = p_sym->segment_offset,
                         .reg_src = 0,
                         .bytes = 8,
@@ -4080,8 +4127,9 @@ void ir_gen(Job *jp) {
                 };
 
                 IRinst inst_write = {
-                    .opcode = is_float ? IROP_SETLOCALF : IROP_SETLOCAL,
+                    .opcode = is_float ? IROP_SETVARF : IROP_SETVAR,
                     .setvar = {
+                        .segment = IRSEG_LOCAL,
                         .offset = p_sym->segment_offset,
                         .reg_src = 0,
                         .bytes = p_bytes,
@@ -4147,8 +4195,23 @@ void ir_gen(Job *jp) {
         sym->ready_to_run = true;
 
     } else if(node->kind == AST_KIND_vardecl) {
-        printf("sorry I don't know how to do this yet\n");
-        //UNIMPLEMENTED;
+        AST_vardecl *ast_global = (AST_vardecl*)node;
+        Sym *sym = ast_global->symbol_annotation;
+
+        if(sym->constant) return;
+
+        if(sym->value) {
+            sym->segment = IRSEG_GLOBAL;
+            sym->segment_offset = global_segment_offset;
+            arrpush(global_data_table, sym);
+            global_segment_offset += sym->type->bytes;
+        } else {
+            sym->segment = IRSEG_BSS;
+            sym->segment_offset = bss_segment_offset;
+            arrpush(bss_data_table, sym);
+            bss_segment_offset += sym->type->bytes;
+        }
+
     } else if(node->kind == AST_KIND_structdecl) {
         printf("no IR to generate\n");
     } else if(node->kind == AST_KIND_uniondecl) {
@@ -4331,16 +4394,9 @@ void ir_gen_foreign_proc_x64(Job *jp) {
             "    f64 floating64;\n"
             "} IRvalue;\n"
             "typedef struct IRmachine {\n"
-            "    Arr(u64) pc_stack;\n"
-            "    Arr(int) procid_stack;\n"
-            "    Arr(u8*) local_base_stack;\n"
-            "    Arr(u64*) jump_table_stack;\n"
-            "    u8 *global_segment;\n"
-            "    u8 *local_segment;\n"
-            "    u64 iregs[8];\n"
-            "    f32 f32regs[8];\n"
-            "    f64 f64regs[8];\n"
-            "    Arr(IRvalue) ports;\n"
+#define X(x) #x "\n"
+            IRMACHINE_BODY
+#undef X
             "} IRmachine;\n";
 
         fprintf(wrapper_file, "%s\nvoid %s(IRmachine *interp) {\n", system_preamble, wrapper_name);
@@ -4520,7 +4576,7 @@ void ir_run(Job *jp, int procid) {
     u64 pc = 0;
     u8 *local_base = interp.local_segment;
 
-    assert(interp.local_segment && interp.global_segment && arrlen(interp.ports) > 0);
+    assert(interp.local_segment && arrlen(interp.ports) > 0);
 
     IRinst inst;
     u64 imask;
@@ -4531,6 +4587,32 @@ void ir_run(Job *jp, int procid) {
         //bool loc_changed = (inst.loc.line != procedure[pc].loc.line && inst.loc.line != 0 && procedure[pc].loc.line != 0);
         inst = procedure[pc];
         imask = 0;
+
+        u8 *varptr = NULL;
+
+        if(     inst.opcode == IROP_ADDRVAR ||
+                inst.opcode == IROP_GETVAR  ||
+                inst.opcode == IROP_SETVAR  ||
+                inst.opcode == IROP_SETVARF ||
+                inst.opcode == IROP_GETVARF)
+        {
+            switch(inst.addrvar.segment) {
+                default:
+                    UNREACHABLE;
+                case IRSEG_LOCAL:
+                    varptr = local_base + inst.addrvar.offset;
+                    break;
+                case IRSEG_GLOBAL:
+                    varptr = interp.global_segment + inst.addrvar.offset;
+                    break;
+                case IRSEG_BSS:
+                    varptr = interp.bss_segment + inst.addrvar.offset;
+                    break;
+                case IRSEG_TYPE:
+                    varptr = (u8*)(inst.addrvar.offset);
+                    break;
+            }
+        }
 
         //if(loc_changed) {
         //    fprintf(stderr, "\n");
@@ -4579,12 +4661,12 @@ void ir_run(Job *jp, int procid) {
                     interp.f64regs[inst.arith.reg[0]] = \
                     interp.f64regs[inst.arith.reg[1]] opsym \
                     (inst.arith.immediate ? inst.arith.imm.floating64 \
-                    : interp.f64regs[inst.arith.reg[2]]); \
+                     : interp.f64regs[inst.arith.reg[2]]); \
                 } else { \
                     interp.f32regs[inst.arith.reg[0]] = \
                     interp.f32regs[inst.arith.reg[1]] opsym \
                     (inst.arith.immediate ? inst.arith.imm.floating32 \
-                    : interp.f32regs[inst.arith.reg[2]]); \
+                     : interp.f32regs[inst.arith.reg[2]]); \
                 } \
                 break;
                 IR_FLOAT_BINOPS;
@@ -4595,13 +4677,13 @@ void ir_run(Job *jp, int procid) {
                 if(inst.arith.operand_bytes[0] == 8) { \
                     interp.iregs[inst.arith.reg[0]] = \
                     (bool)(interp.f64regs[inst.arith.reg[1]] opsym \
-                    (inst.arith.immediate ? inst.arith.imm.floating64 \
-                    : interp.f64regs[inst.arith.reg[2]])); \
+                            (inst.arith.immediate ? inst.arith.imm.floating64 \
+                             : interp.f64regs[inst.arith.reg[2]])); \
                 } else { \
                     interp.iregs[inst.arith.reg[0]] = \
                     (bool)(interp.f32regs[inst.arith.reg[1]] opsym \
-                    (inst.arith.immediate ? inst.arith.imm.floating32 \
-                    : interp.f32regs[inst.arith.reg[2]])); \
+                            (inst.arith.immediate ? inst.arith.imm.floating32 \
+                             : interp.f32regs[inst.arith.reg[2]])); \
                 } \
                 break;
                 IR_FLOAT_CMPOPS;
@@ -4852,96 +4934,49 @@ void ir_run(Job *jp, int procid) {
             case IROP_CALCPTROFFSET:
                 interp.iregs[inst.calcptroffset.reg_dest] =
                     (u64)(((u8*)(interp.iregs[inst.calcptroffset.reg_src_ptr])) + 
-                    interp.iregs[inst.calcptroffset.offset_reg] * inst.calcptroffset.stride);
+                            interp.iregs[inst.calcptroffset.offset_reg] * inst.calcptroffset.stride);
                 break;
-            case IROP_ADDRLOCAL:
-                interp.iregs[inst.addrvar.reg_dest] = (u64)(local_base + inst.addrvar.offset);
+            case IROP_ADDRVAR:
+                interp.iregs[inst.addrvar.reg_dest] = (u64)(void*)varptr;
                 break;
-            case IROP_ADDRGLOBAL:
-                interp.iregs[inst.addrvar.reg_dest] = (u64)(interp.global_segment + inst.addrvar.offset);
-                break;
-            case IROP_GETLOCAL:
+            case IROP_GETVAR:
                 switch(inst.getvar.bytes) {
                     case 1:
-                        interp.iregs[inst.getvar.reg_dest] = local_base[inst.getvar.offset];
+                        interp.iregs[inst.getvar.reg_dest] = *varptr;
                         break;
                     case 2:
-                        interp.iregs[inst.getvar.reg_dest] = *(u16*)(local_base + inst.getvar.offset);
+                        interp.iregs[inst.getvar.reg_dest] = *(u16*)varptr;
                         break;
                     case 4:
-                        interp.iregs[inst.getvar.reg_dest] = *(u32*)(local_base + inst.getvar.offset);
+                        interp.iregs[inst.getvar.reg_dest] = *(u32*)varptr;
                         break;
                     case 8:
-                        interp.iregs[inst.getvar.reg_dest] = *(u64*)(local_base + inst.getvar.offset);
+                        interp.iregs[inst.getvar.reg_dest] = *(u64*)varptr;
                         break;
                 }
                 break;
-            case IROP_SETLOCAL:
+            case IROP_SETVAR:
                 switch(inst.setvar.bytes) {
                     case 1:
-                        local_base[inst.setvar.offset] =
+                        *varptr =
                             inst.setvar.immediate
                             ? (inst.setvar.imm.integer & 0xff)
                             : (u8)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 2:
-                        *(u16*)(local_base + inst.setvar.offset) =
+                        *(u16*)varptr =
                             inst.setvar.immediate
                             ? (inst.setvar.imm.integer & 0xffff)
                             : (u16)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 4:
-                        *(u32*)(local_base + inst.setvar.offset) =
+                        *(u32*)varptr =
                             inst.setvar.immediate
                             ? (inst.setvar.imm.integer & 0xffffffff)
                             : (u32)(interp.iregs[inst.setvar.reg_src]);
                         break;
                     case 8:
-                        *(u64*)(local_base + inst.setvar.offset) =
-                            inst.setvar.immediate
-                            ? inst.setvar.imm.integer
-                            : (u64)(interp.iregs[inst.setvar.reg_src]);
-                        break;
-                }
-                break;
-            case IROP_GETGLOBAL:
-                switch(inst.getvar.bytes) {
-                    case 1:
-                        interp.iregs[inst.getvar.reg_dest] = interp.global_segment[inst.getvar.offset];
-                        break;
-                    case 2:
-                        interp.iregs[inst.getvar.reg_dest] = *(u16*)(interp.global_segment + inst.getvar.offset);
-                        break;
-                    case 4:
-                        interp.iregs[inst.getvar.reg_dest] = *(u32*)(interp.global_segment + inst.getvar.offset);
-                        break;
-                    case 8:
-                        interp.iregs[inst.getvar.reg_dest] = *(u64*)(interp.global_segment + inst.getvar.offset);
-                        break;
-                }
-                break;
-            case IROP_SETGLOBAL:
-                switch(inst.setvar.bytes) {
-                    case 1:
-                        interp.global_segment[inst.setvar.offset] =
-                            inst.setvar.immediate
-                            ? (inst.setvar.imm.integer & 0xff)
-                            : (u8)(interp.iregs[inst.setvar.reg_src]);
-                        break;
-                    case 2:
-                        *(u16*)(interp.global_segment + inst.setvar.offset) =
-                            inst.setvar.immediate
-                            ? (inst.setvar.imm.integer & 0xffff)
-                            : (u16)(interp.iregs[inst.setvar.reg_src]);
-                        break;
-                    case 4:
-                        *(u32*)(interp.global_segment + inst.setvar.offset) =
-                            inst.setvar.immediate
-                            ? (inst.setvar.imm.integer & 0xffffffff)
-                            : (u32)(interp.iregs[inst.setvar.reg_src]);
-                        break;
-                    case 8:
-                        *(u64*)(interp.global_segment + inst.setvar.offset) =
+                        *(u64*)varptr =
                             inst.setvar.immediate
                             ? inst.setvar.imm.integer
                             : (u64)(interp.iregs[inst.setvar.reg_src]);
@@ -4970,38 +5005,20 @@ void ir_run(Job *jp, int procid) {
                     interp.iregs[inst.getport.reg_dest] = imask & interp.ports[inst.getport.port].integer;
                 }
                 break;
-            case IROP_GETLOCALF:
+            case IROP_GETVARF:
                 if(inst.getvar.bytes == 8)
-                    interp.f64regs[inst.getvar.reg_dest] = *(f64*)(local_base + inst.getvar.offset);
+                    interp.f64regs[inst.getvar.reg_dest] = *(f64*)(varptr);
                 else
-                    interp.f32regs[inst.getvar.reg_dest] = *(f32*)(local_base + inst.getvar.offset);
+                    interp.f32regs[inst.getvar.reg_dest] = *(f32*)(varptr);
                 break;
-            case IROP_SETLOCALF:
+            case IROP_SETVARF:
                 if(inst.setvar.bytes == 8)
-                    *(f64*)(local_base + inst.setvar.offset) =
+                    *(f64*)(varptr) =
                         inst.setvar.immediate
                         ? inst.setvar.imm.floating64
                         : interp.f64regs[inst.setvar.reg_src];
                 else
-                    *(f32*)(local_base + inst.setvar.offset) =
-                        inst.setvar.immediate
-                        ? inst.setvar.imm.floating32
-                        : interp.f32regs[inst.setvar.reg_src];
-                break;
-            case IROP_GETGLOBALF:
-                if(inst.getvar.bytes == 8)
-                    interp.f64regs[inst.getvar.reg_dest] = *(f64*)(interp.global_segment + inst.getvar.offset);
-                else
-                    interp.f32regs[inst.getvar.reg_dest] = *(f32*)(interp.global_segment + inst.getvar.offset);
-                break;
-            case IROP_SETGLOBALF:
-                if(inst.setvar.bytes == 8)
-                    *(f64*)(interp.global_segment + inst.setvar.offset) =
-                        inst.setvar.immediate
-                        ? inst.setvar.imm.floating64
-                        : interp.f64regs[inst.setvar.reg_src];
-                else
-                    *(f32*)(interp.global_segment + inst.setvar.offset) =
+                    *(f32*)(varptr) =
                         inst.setvar.immediate
                         ? inst.setvar.imm.floating32
                         : interp.f32regs[inst.setvar.reg_src];
@@ -5135,8 +5152,9 @@ u64 ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array
             u64 *regp = &(jp->reg_alloc);
 
             IRinst inst = {
-                .opcode = IROP_SETLOCAL,
+                .opcode = IROP_SETVAR,
                 .setvar = {
+                    .segment = IRSEG_LOCAL,
                     .offset = offset,
                     .bytes = stride,
                 },
@@ -5146,8 +5164,9 @@ u64 ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array
                 regp = &(jp->float_reg_alloc);
 
                 inst = (IRinst) {
-                    .opcode = IROP_SETLOCALF,
+                    .opcode = IROP_SETVARF,
                     .setvar = {
+                        .segment = IRSEG_LOCAL,
                         .offset = offset,
                         .bytes = stride,
                     },
@@ -5198,8 +5217,9 @@ u64 ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array
         while(cur_offset + step > expected_offset) step >>= 1;
         IRinst inst =
             (IRinst) {
-                .opcode = IROP_SETLOCAL,
+                .opcode = IROP_SETVAR,
                 .setvar = {
+                    .segment = IRSEG_LOCAL,
                     .offset = cur_offset,
                     .bytes = step,
                     .immediate = true,
@@ -5359,6 +5379,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
     IRinst inst_write = {0};
     IRop opcode_read = 0;
     IRop opcode_write = 0;
+    IRsegment segment = -1;
     u64 op_bytes = 0;
     Type *op_type = NULL;
     u64 read_reg = 0;
@@ -5407,10 +5428,11 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 jp->reg_alloc--;
                 inst =
                     (IRinst) {
-                        .opcode = IROP_ADDRLOCAL,
+                        .opcode = IROP_ADDRVAR,
                         .addrvar = {
-                            .reg_dest = jp->reg_alloc + 1,
+                            .segment = IRSEG_LOCAL,
                             .offset = array_data_offset,
+                            .reg_dest = jp->reg_alloc + 1,
                         },
                     };
                 inst.loc = jp->cur_loc;
@@ -5701,21 +5723,21 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
             assert(sym->type->kind != TYPE_KIND_VOID);
 
             if(sym->is_global) {
-                if(sym->type->kind >= TYPE_KIND_FLOAT && sym->type->kind <= TYPE_KIND_F64) {
-                    opcode_read = IROP_GETGLOBALF;
-                    opcode_write = IROP_SETGLOBALF;
+                if(sym->value) {
+                    segment = IRSEG_GLOBAL;
                 } else {
-                    opcode_read = IROP_GETGLOBAL;
-                    opcode_write = IROP_SETGLOBAL;
+                    segment = IRSEG_BSS;
                 }
             } else {
-                if(sym->type->kind >= TYPE_KIND_FLOAT && sym->type->kind <= TYPE_KIND_F64) {
-                    opcode_read = IROP_GETLOCALF;
-                    opcode_write = IROP_SETLOCALF;
-                } else {
-                    opcode_read = IROP_GETLOCAL;
-                    opcode_write = IROP_SETLOCAL;
-                }
+                segment = IRSEG_LOCAL;
+            }
+
+            if(sym->type->kind >= TYPE_KIND_FLOAT && sym->type->kind <= TYPE_KIND_F64) {
+                opcode_read = IROP_GETVARF;
+                opcode_write = IROP_SETVARF;
+            } else {
+                opcode_read = IROP_GETVAR;
+                opcode_write = IROP_SETVAR;
             }
 
             op_type = sym->type;
@@ -5727,8 +5749,9 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 (IRinst) {
                     .opcode = opcode_read,
                     .getvar = {
-                        .reg_dest = read_reg,
+                        .segment = segment,
                         .offset = sym->segment_offset,
+                        .reg_dest = read_reg,
                         .bytes = sym->type->bytes,
                     }
                 };
@@ -5737,6 +5760,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 (IRinst) {
                     .opcode = opcode_write,
                     .setvar = {
+                        .segment = segment,
                         .offset = sym->segment_offset,
                         .reg_src = 0,
                         .bytes = sym->type->bytes,
@@ -6256,10 +6280,11 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     assert(jp->reg_alloc == 0);
                                     inst =
                                         (IRinst) {
-                                            .opcode = IROP_GETLOCAL,
+                                            .opcode = IROP_GETVAR,
                                             .getvar = {
-                                                .reg_dest = 0,
+                                                .segment = IRSEG_LOCAL,
                                                 .offset = non_scalar_returns << 3,
+                                                .reg_dest = 0,
                                                 .bytes = 8,
                                             },
                                         };
@@ -6286,10 +6311,11 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     ir_gen_expr(jp, expr_list->expr);
                                     inst =
                                         (IRinst) {
-                                            .opcode = IROP_GETLOCAL,
+                                            .opcode = IROP_GETVAR,
                                             .getvar = {
-                                                .reg_dest = jp->reg_alloc,
+                                                .segment = IRSEG_LOCAL,
                                                 .offset = non_scalar_returns << 3,
+                                                .reg_dest = jp->reg_alloc,
                                                 .bytes = 8,
                                             },
                                         };
@@ -6333,10 +6359,11 @@ void ir_gen_block(Job *jp, AST *ast) {
 
                                         inst =
                                             (IRinst) {
-                                                .opcode = IROP_GETLOCAL,
+                                                .opcode = IROP_GETVAR,
                                                 .getvar = {
-                                                    .reg_dest = jp->reg_alloc + 1,
+                                                    .segment = IRSEG_LOCAL,
                                                     .offset = non_scalar_returns << 3,
+                                                    .reg_dest = jp->reg_alloc + 1,
                                                     .bytes = 8,
                                                 },
                                             };
@@ -6391,10 +6418,11 @@ void ir_gen_block(Job *jp, AST *ast) {
                                         assert(jp->reg_alloc == 1);
                                         inst =
                                             (IRinst) {
-                                                .opcode = IROP_GETLOCAL,
+                                                .opcode = IROP_GETVAR,
                                                 .getvar = {
-                                                    .reg_dest = jp->reg_alloc,
+                                                    .segment = IRSEG_LOCAL,
                                                     .offset = non_scalar_returns << 3,
+                                                    .reg_dest = jp->reg_alloc,
                                                     .bytes = 8,
                                                 },
                                             };
@@ -6429,10 +6457,11 @@ void ir_gen_block(Job *jp, AST *ast) {
                                 assert(jp->reg_alloc == 1);
                                 inst =
                                     (IRinst) {
-                                        .opcode = IROP_GETLOCAL,
+                                        .opcode = IROP_GETVAR,
                                         .getvar = {
-                                            .reg_dest = jp->reg_alloc,
+                                            .segment = IRSEG_LOCAL,
                                             .offset = non_scalar_returns << 3,
+                                            .reg_dest = jp->reg_alloc,
                                             .bytes = 8,
                                         },
                                     };
@@ -6520,6 +6549,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                     AST *init_expr = ast_vardecl->init;
                     Sym *sym = ast_vardecl->symbol_annotation;
 
+                    assert(sym->segment == IRSEG_LOCAL);
                     sym->segment_offset = arrlast(jp->local_offset);
 
                     Type *var_type = sym->type;
@@ -6537,10 +6567,11 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     ir_gen_expr(jp, init_expr);
                                     inst =
                                         (IRinst) {
-                                            .opcode = IROP_ADDRLOCAL,
+                                            .opcode = IROP_ADDRVAR,
                                             .addrvar = {
-                                                .reg_dest = jp->reg_alloc,
+                                                .segment = IRSEG_LOCAL,
                                                 .offset = offset,
+                                                .reg_dest = jp->reg_alloc,
                                             },
                                         };
                                     inst.loc = jp->cur_loc;
@@ -6560,8 +6591,9 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     while(b + step > total_bytes) step >>= 1;
                                     inst =
                                         (IRinst) {
-                                            .opcode = IROP_SETLOCAL,
+                                            .opcode = IROP_SETVAR,
                                             .setvar = {
+                                                .segment = IRSEG_LOCAL,
                                                 .offset = array_data_offset + b,
                                                 .bytes = step,
                                                 .immediate = true,
@@ -6580,10 +6612,11 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     u64 array_data_offset = ir_gen_array_literal(jp, array_literal->type_annotation, array_literal);
                                     inst =
                                         (IRinst) {
-                                            .opcode = IROP_ADDRLOCAL,
+                                            .opcode = IROP_ADDRVAR,
                                             .addrvar = {
-                                                .reg_dest = 0,
+                                                .segment = IRSEG_LOCAL,
                                                 .offset = array_data_offset,
+                                                .reg_dest = 0,
                                             },
                                         };
                                     inst.loc = jp->cur_loc;
@@ -6591,8 +6624,9 @@ void ir_gen_block(Job *jp, AST *ast) {
 
                                     inst =
                                         (IRinst) {
-                                            .opcode = IROP_SETLOCAL,
+                                            .opcode = IROP_SETVAR,
                                             .setvar = {
+                                                .segment = IRSEG_LOCAL,
                                                 .offset = sym->segment_offset,
                                                 .reg_src = 0,
                                                 .bytes = 8,
@@ -6603,8 +6637,9 @@ void ir_gen_block(Job *jp, AST *ast) {
 
                                     inst =
                                         (IRinst) {
-                                            .opcode = IROP_SETLOCAL,
+                                            .opcode = IROP_SETVAR,
                                             .setvar = {
+                                                .segment = IRSEG_LOCAL,
                                                 .offset = sym->segment_offset + 8,
                                                 .imm.integer = array_literal->type_annotation->array.n,
                                                 .bytes = 8,
@@ -6647,8 +6682,9 @@ void ir_gen_block(Job *jp, AST *ast) {
                                         arrpush(jp->instructions, inst);
                                         inst =
                                             (IRinst) {
-                                                .opcode = IROP_SETLOCAL,
+                                                .opcode = IROP_SETVAR,
                                                 .setvar = {
+                                                    .segment = IRSEG_LOCAL,
                                                     .offset = sym->segment_offset,
                                                     .reg_src = jp->reg_alloc + 1,
                                                     .bytes = 8,
@@ -6658,8 +6694,9 @@ void ir_gen_block(Job *jp, AST *ast) {
                                         arrpush(jp->instructions, inst);
                                         inst =
                                             (IRinst) {
-                                                .opcode = IROP_SETLOCAL,
+                                                .opcode = IROP_SETVAR,
                                                 .setvar = {
+                                                    .segment = IRSEG_LOCAL,
                                                     .offset = sym->segment_offset + 8,
                                                     .reg_src = jp->reg_alloc + 2,
                                                     .bytes = 8,
@@ -6675,8 +6712,9 @@ void ir_gen_block(Job *jp, AST *ast) {
                                         jp->reg_alloc = 0;
                                         inst =
                                             (IRinst) {
-                                                .opcode = IROP_SETLOCAL,
+                                                .opcode = IROP_SETVAR,
                                                 .setvar = {
+                                                    .segment = IRSEG_LOCAL,
                                                     .offset = sym->segment_offset,
                                                     .reg_src = jp->reg_alloc,
                                                     .bytes = 8,
@@ -6686,8 +6724,9 @@ void ir_gen_block(Job *jp, AST *ast) {
                                         arrpush(jp->instructions, inst);
                                         inst =
                                             (IRinst) {
-                                                .opcode = IROP_SETLOCAL,
+                                                .opcode = IROP_SETVAR,
                                                 .setvar = {
+                                                    .segment = IRSEG_LOCAL,
                                                     .offset = sym->segment_offset + 8,
                                                     .imm.integer = init_type->array.n,
                                                     .bytes = 8,
@@ -6715,8 +6754,9 @@ void ir_gen_block(Job *jp, AST *ast) {
                                         while(b + step > total_bytes) step >>= 1;
                                         inst =
                                             (IRinst) {
-                                                .opcode = IROP_SETLOCAL,
+                                                .opcode = IROP_SETVAR,
                                                 .setvar = {
+                                                    .segment = IRSEG_LOCAL,
                                                     .offset = offset + b,
                                                     .bytes = step,
                                                     .immediate = true,
@@ -6733,10 +6773,11 @@ void ir_gen_block(Job *jp, AST *ast) {
 
                                     inst =
                                         (IRinst) {
-                                            .opcode = IROP_ADDRLOCAL,
+                                            .opcode = IROP_ADDRVAR,
                                             .addrvar = {
-                                                .reg_dest = jp->reg_alloc,
+                                                .segment = IRSEG_LOCAL,
                                                 .offset = sym->segment_offset,
+                                                .reg_dest = jp->reg_alloc,
                                             },
                                         };
                                     inst.loc = jp->cur_loc;
@@ -6749,7 +6790,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     assert(jp->reg_alloc == 0);
 
                                 } else {
-                                    ir_gen_struct_init(jp, var_type, sym->segment_offset);
+                                    ir_gen_struct_init(jp, var_type, IRSEG_LOCAL, sym->segment_offset);
                                 }
                             }
 
@@ -6766,12 +6807,12 @@ void ir_gen_block(Job *jp, AST *ast) {
                             u64 reg_src;
 
                             if(TYPE_KIND_IS_FLOAT(var_type->kind)) {
-                                opcode = IROP_SETLOCALF;
+                                opcode = IROP_SETVARF;
                                 jp->float_reg_alloc--;
                                 reg_src = jp->float_reg_alloc;
                                 assert(jp->float_reg_alloc == 0);
                             } else {
-                                opcode = IROP_SETLOCAL;
+                                opcode = IROP_SETVAR;
                                 jp->reg_alloc--;
                                 reg_src = jp->reg_alloc;
                                 assert(jp->reg_alloc == 0);
@@ -6781,6 +6822,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                                 (IRinst) {
                                     .opcode = opcode,
                                     .setvar = {
+                                        .segment = IRSEG_LOCAL,
                                         .offset = sym->segment_offset,
                                         .reg_src = reg_src,
                                         .bytes = var_type->bytes,
@@ -6792,9 +6834,10 @@ void ir_gen_block(Job *jp, AST *ast) {
                             inst =
                                 (IRinst) {
                                     .opcode = (var_type->kind >= TYPE_KIND_FLOAT && var_type->kind <= TYPE_KIND_F64)
-                                        ? IROP_SETLOCALF
-                                        : IROP_SETLOCAL,
+                                        ? IROP_SETVARF
+                                        : IROP_SETVAR,
                                     .setvar = {
+                                        .segment = IRSEG_LOCAL,
                                         .offset = sym->segment_offset,
                                         .bytes = var_type->bytes,
                                         .immediate = true,
@@ -7008,7 +7051,7 @@ void ir_gen_logical_expr(Job *jp, AST *ast) {
     }
 }
 
-void ir_gen_struct_init(Job *jp, Type *struct_type, u64 offset) {
+void ir_gen_struct_init(Job *jp, Type *struct_type, IRsegment segment, u64 offset) {
     IRinst inst = {0};
 
     u64 n_use = struct_type->record.use.n;
@@ -7022,13 +7065,13 @@ void ir_gen_struct_init(Job *jp, Type *struct_type, u64 offset) {
     u64 *member_offsets = struct_type->record.member.offsets;
 
     for(u64 i = 0; i < n_use; ++i) {
-        ir_gen_struct_init(jp, use_types[i], offset + use_offsets[i]);
+        ir_gen_struct_init(jp, use_types[i], segment, offset + use_offsets[i]);
     }
 
     for(u64 i = 0; i < n_members; ++i) {
         if(TYPE_KIND_IS_NOT_SCALAR(member_types[i]->kind)) {
             if(member_types[i]->kind == TYPE_KIND_STRUCT) {
-                ir_gen_struct_init(jp, member_types[i], offset + member_offsets[i]);
+                ir_gen_struct_init(jp, member_types[i], segment, offset + member_offsets[i]);
             } else {
                 if(member_values[i]) {
                     UNIMPLEMENTED;
@@ -7038,8 +7081,9 @@ void ir_gen_struct_init(Job *jp, Type *struct_type, u64 offset) {
                         while(b + step > total_bytes) step >>= 1;
                         inst =
                             (IRinst) {
-                                .opcode = IROP_SETLOCAL,
+                                .opcode = IROP_SETVAR,
                                 .setvar = {
+                                    .segment = segment,
                                     .offset = offset + member_offsets[i] + b,
                                     .bytes = step,
                                     .immediate = true,
@@ -7058,13 +7102,13 @@ void ir_gen_struct_init(Job *jp, Type *struct_type, u64 offset) {
                 IRvalue imm;
 
                 if(member_types[i]->kind == TYPE_KIND_F64) {
-                    opcode = IROP_SETLOCALF;
+                    opcode = IROP_SETVARF;
                     imm.floating64 = member_values[i]->val.dfloating;
                 } else if(TYPE_KIND_IS_FLOAT32(member_types[i]->kind)) {
-                    opcode = IROP_SETLOCALF;
+                    opcode = IROP_SETVARF;
                     imm.floating32 = member_values[i]->val.floating;
                 } else {
-                    opcode = IROP_SETLOCAL;
+                    opcode = IROP_SETVAR;
                     imm.integer = member_values[i]->val.integer;
                 }
 
@@ -7075,6 +7119,7 @@ void ir_gen_struct_init(Job *jp, Type *struct_type, u64 offset) {
                     (IRinst) {
                         .opcode = opcode,
                         .setvar = {
+                            .segment = segment,
                             .offset = offset + member_offsets[i],
                             .imm = imm,
                             .bytes = member_types[i]->bytes,
@@ -7087,9 +7132,10 @@ void ir_gen_struct_init(Job *jp, Type *struct_type, u64 offset) {
                 inst =
                     (IRinst) {
                         .opcode = (member_types[i]->kind >= TYPE_KIND_FLOAT && member_types[i]->kind <= TYPE_KIND_F64)
-                            ? IROP_SETLOCALF
-                            : IROP_SETLOCAL,
+                            ? IROP_SETVARF
+                            : IROP_SETVAR,
                         .setvar = {
+                            .segment = segment,
                             .offset = offset + member_offsets[i],
                             .bytes = member_types[i]->bytes,
                             .immediate = true,
@@ -7155,38 +7201,55 @@ void ir_gen_expr(Job *jp, AST *ast) {
                             };
                     }
                 } else {
-                    IRop opcode = IROP_GETLOCAL;
                     u64 *reg_destp = &(jp->reg_alloc);
 
                     if(TYPE_KIND_IS_NOT_SCALAR(sym->type->kind)) {
                         if(sym->is_argument) {
                             inst =
                                 (IRinst) {
-                                    .opcode = IROP_GETLOCAL,
+                                    .opcode = IROP_GETVAR,
                                     .getvar = {
-                                        .reg_dest = (*reg_destp)++,
+                                        .segment = IRSEG_LOCAL,
                                         .offset = sym->segment_offset,
+                                        .reg_dest = (*reg_destp)++,
                                         .bytes = 8,
                                     },
                                 };
                         } else {
+                            IRsegment segment = IRSEG_LOCAL;
+
+                            if(sym->is_global) {
+                                if(sym->value) {
+                                    segment = IRSEG_GLOBAL;
+                                } else {
+                                    segment = IRSEG_BSS;
+                                }
+                            }
+
                             inst =
                                 (IRinst) {
-                                    .opcode = sym->is_global ? IROP_ADDRGLOBAL : IROP_ADDRLOCAL,
+                                    .opcode = IROP_ADDRVAR,
                                     .addrvar = {
-                                        .reg_dest = (*reg_destp)++,
+                                        .segment = segment,
                                         .offset = sym->segment_offset,
+                                        .reg_dest = (*reg_destp)++,
                                     },
                                 };
                         }
                     } else {
-                        if(sym->is_global && sym->type->kind >= TYPE_KIND_FLOAT && sym->type->kind <= TYPE_KIND_F64) {
-                            opcode = IROP_GETGLOBALF;
-                            reg_destp = &(jp->float_reg_alloc);
-                        } else if(sym->is_global) {
-                            opcode = IROP_GETGLOBAL;
-                        } else if(sym->type->kind >= TYPE_KIND_FLOAT && sym->type->kind <= TYPE_KIND_F64) {
-                            opcode = IROP_GETLOCALF;
+                        IRop opcode = IROP_GETVAR;
+                        IRsegment segment = IRSEG_LOCAL;
+
+                        if(sym->is_global) {
+                            if(sym->value) {
+                                segment = IRSEG_GLOBAL;
+                            } else {
+                                segment = IRSEG_BSS;
+                            }
+                        }
+
+                        if(TYPE_KIND_IS_FLOAT(sym->type->kind)) {
+                            opcode = IROP_GETVARF;
                             reg_destp = &(jp->float_reg_alloc);
                         }
 
@@ -7194,8 +7257,9 @@ void ir_gen_expr(Job *jp, AST *ast) {
                             (IRinst) {
                                 .opcode = opcode,
                                 .getvar = {
-                                    .reg_dest = (*reg_destp)++,
+                                    .segment = segment,
                                     .offset = sym->segment_offset,
+                                    .reg_dest = (*reg_destp)++,
                                     .bytes = sym->type->bytes,
                                 },
                             };
@@ -7211,12 +7275,23 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
                 arrpush(type_stack, pointer_to_sym_type);
 
+                IRsegment segment = IRSEG_LOCAL;
+
+                if(sym->is_global) {
+                    if(sym->value) {
+                        segment = IRSEG_GLOBAL;
+                    } else {
+                        segment = IRSEG_BSS;
+                    }
+                }
+
                 inst =
                     (IRinst) {
-                        .opcode = (sym->is_global) ? IROP_ADDRGLOBAL : IROP_ADDRLOCAL,
+                        .opcode = IROP_ADDRVAR,
                         .addrvar = {
-                            .reg_dest = jp->reg_alloc++,
+                            .segment = segment,
                             .offset = sym->segment_offset,
+                            .reg_dest = jp->reg_alloc++,
                         },
                     };
             } else {
@@ -7275,10 +7350,11 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         u64 array_offset = ir_gen_array_from_value(jp, result_type, result_value);
                         inst =
                             (IRinst) {
-                                .opcode = IROP_ADDRLOCAL,
+                                .opcode = IROP_ADDRVAR,
                                 .addrvar = {
-                                    .reg_dest = jp->reg_alloc++,
+                                    .segment = IRSEG_LOCAL,
                                     .offset = array_offset,
+                                    .reg_dest = jp->reg_alloc++,
                                 },
                             };
 
@@ -7362,20 +7438,32 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         if(sym->is_argument) {
                             inst =
                                 (IRinst) {
-                                    .opcode = IROP_GETLOCAL,
+                                    .opcode = IROP_GETVAR,
                                     .getvar = {
-                                        .reg_dest = jp->reg_alloc++,
+                                        .segment = IRSEG_LOCAL,
                                         .offset = sym->segment_offset,
+                                        .reg_dest = jp->reg_alloc++,
                                         .bytes = 8,
                                     },
                                 };
                         } else {
+                            IRsegment segment = IRSEG_LOCAL;
+
+                            if(sym->is_global) {
+                                if(sym->value) {
+                                    segment = IRSEG_GLOBAL;
+                                } else {
+                                    segment = IRSEG_BSS;
+                                }
+                            }
+
                             inst =
                                 (IRinst) {
-                                    .opcode = (sym->is_global) ? IROP_ADDRGLOBAL : IROP_ADDRLOCAL,
+                                    .opcode = IROP_ADDRVAR,
                                     .addrvar = {
-                                        .reg_dest = jp->reg_alloc++,
+                                        .segment = segment,
                                         .offset = sym->segment_offset,
+                                        .reg_dest = jp->reg_alloc++,
                                     },
                                 };
                         }
@@ -8122,10 +8210,11 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 u64 array_offset = ir_gen_array_from_value(jp, result_type, result_value);
                 inst =
                     (IRinst) {
-                        .opcode = IROP_ADDRLOCAL,
+                        .opcode = IROP_ADDRVAR,
                         .addrvar = {
-                            .reg_dest = jp->reg_alloc++,
+                            .segment = IRSEG_LOCAL,
                             .offset = array_offset,
+                            .reg_dest = jp->reg_alloc++,
                         },
                     };
 
@@ -8283,8 +8372,9 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
             register_save_offsets[i] = arrlast(jp->local_offset);
             inst =
                 (IRinst) {
-                    .opcode = IROP_SETLOCALF,
+                    .opcode = IROP_SETVARF,
                     .setvar = {
+                        .segment = IRSEG_LOCAL,
                         .offset = arrlast(jp->local_offset),
                         .reg_src = jp->float_reg_alloc,
                         .bytes = t->bytes,
@@ -8296,8 +8386,9 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
             register_save_offsets[i] = arrlast(jp->local_offset);
             inst =
                 (IRinst) {
-                    .opcode = IROP_SETLOCAL,
+                    .opcode = IROP_SETVAR,
                     .setvar = {
+                        .segment = IRSEG_LOCAL,
                         .offset = arrlast(jp->local_offset),
                         .reg_src = jp->reg_alloc,
                         .bytes = t->bytes,
@@ -8324,8 +8415,9 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 jp->reg_alloc--;
                 inst =
                     (IRinst) {
-                        .opcode = IROP_SETLOCAL,
+                        .opcode = IROP_SETVAR,
                         .setvar = {
+                            .segment = IRSEG_LOCAL,
                             .offset = arrlast(jp->local_offset),
                             .reg_src = jp->reg_alloc,
                             .bytes = 8,
@@ -8346,12 +8438,12 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
             if(TYPE_KIND_IS_FLOAT(p->type_annotation->kind)) {
                 //assert(jp->float_reg_alloc == 1);
                 jp->float_reg_alloc--;
-                opcode = IROP_SETLOCALF;
+                opcode = IROP_SETVARF;
                 reg = jp->float_reg_alloc;
             } else {
                 //assert(jp->reg_alloc == 1);
                 jp->reg_alloc--;
-                opcode = IROP_SETLOCAL;
+                opcode = IROP_SETVAR;
                 reg = jp->reg_alloc;
             }
 
@@ -8359,6 +8451,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 (IRinst) {
                     .opcode = opcode,
                     .setvar = {
+                        .segment = IRSEG_LOCAL,
                         .offset = arrlast(jp->local_offset),
                         .reg_src = reg,
                         .bytes = p->type_annotation->bytes,
@@ -8392,12 +8485,12 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 UNIMPLEMENTED;
                 //NOTE this is just a memory copy
             } else {
-                IRop opcode1 = IROP_GETLOCAL;
+                IRop opcode1 = IROP_GETVAR;
                 IRop opcode2 = IROP_SETARG;
                 u64 reg = jp->reg_alloc;
 
                 if(TYPE_KIND_IS_FLOAT(p->type_annotation->kind)) {
-                    opcode1 = IROP_GETLOCALF;
+                    opcode1 = IROP_GETVARF;
                     opcode2 = IROP_SETARGF;
                     reg = jp->float_reg_alloc;
                 }
@@ -8406,8 +8499,9 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                     (IRinst) {
                         .opcode = opcode1,
                         .getvar = {
-                            .reg_dest = reg,
+                            .segment = IRSEG_LOCAL,
                             .offset = arrpop(nested_call_param_offsets),
+                            .reg_dest = reg,
                             .bytes = p->type_annotation->bytes,
                         },
                     };
@@ -8432,10 +8526,11 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                         u64 offset = ir_gen_array_literal(jp, p->type_annotation, (AST_array_literal*)(p->value));
                         inst =
                             (IRinst) {
-                                .opcode = IROP_ADDRLOCAL,
+                                .opcode = IROP_ADDRVAR,
                                 .addrvar = {
-                                    .reg_dest = jp->reg_alloc,
+                                    .segment = IRSEG_LOCAL,
                                     .offset = offset,
+                                    .reg_dest = jp->reg_alloc,
                                 },
                             };
                         inst.loc = jp->cur_loc;
@@ -8453,8 +8548,9 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                         arrlast(jp->local_offset) += view_type->bytes;
                         inst =
                             (IRinst) {
-                                .opcode = IROP_SETLOCAL,
+                                .opcode = IROP_SETVAR,
                                 .setvar = {
+                                    .segment = IRSEG_LOCAL,
                                     .offset = offset,
                                     .reg_src = jp->reg_alloc,
                                     .bytes = 8,
@@ -8464,8 +8560,9 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                         arrpush(jp->instructions, inst);
                         inst =
                             (IRinst) {
-                                .opcode = IROP_SETLOCAL,
+                                .opcode = IROP_SETVAR,
                                 .setvar = {
+                                    .segment = IRSEG_LOCAL,
                                     .offset = offset + 8,
                                     .imm.integer = p->type_annotation->array.n,
                                     .bytes = 8,
@@ -8476,10 +8573,11 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                         arrpush(jp->instructions, inst);
                         inst =
                             (IRinst) {
-                                .opcode = IROP_ADDRLOCAL,
+                                .opcode = IROP_ADDRVAR,
                                 .addrvar = {
-                                    .reg_dest = jp->reg_alloc,
                                     .offset = offset,
+                                    .segment = IRSEG_LOCAL,
+                                    .reg_dest = jp->reg_alloc,
                                 },
                             };
                         inst.loc = jp->cur_loc;
@@ -8529,10 +8627,11 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
 
                     inst =
                         (IRinst) {
-                            .opcode = IROP_ADDRLOCAL,
+                            .opcode = IROP_ADDRVAR,
                             .addrvar = {
-                                .reg_dest = jp->reg_alloc,
+                                .segment = IRSEG_LOCAL,
                                 .offset = arrlast(jp->local_offset),
+                                .reg_dest = jp->reg_alloc,
                             },
                     };
                     inst.loc = jp->cur_loc;
@@ -8638,10 +8737,11 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         u64 offset = non_scalar_return_addrs[i];
         inst =
             (IRinst) {
-                .opcode = IROP_ADDRLOCAL,
+                .opcode = IROP_ADDRVAR,
                 .addrvar = {
-                    .reg_dest = jp->reg_alloc,
+                    .segment = IRSEG_LOCAL,
                     .offset = offset,
+                    .reg_dest = jp->reg_alloc,
                 },
             };
         inst.loc = jp->cur_loc;
@@ -8681,22 +8781,23 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         Type *t = type_stack[i];
 
         Arr(u64) regs_saved = iregs_saved;
-        IRop opcode = IROP_GETLOCAL;
+        IRop opcode = IROP_GETVAR;
 
         if(TYPE_KIND_IS_NOT_SCALAR(t->kind))
             UNREACHABLE;
 
         if(TYPE_KIND_IS_FLOAT(t->kind)) {
             regs_saved = fregs_saved;
-            opcode = IROP_GETLOCALF;
+            opcode = IROP_GETVARF;
         }
 
         inst =
             (IRinst) {
                 .opcode = opcode,
                 .getvar = {
-                    .reg_dest = arrpop(regs_saved),
+                    .segment = IRSEG_LOCAL,
                     .offset = arrpop(register_save_offsets),
+                    .reg_dest = arrpop(regs_saved),
                     .bytes = t->bytes,
                 },
             };
@@ -10647,6 +10748,10 @@ void typecheck_expr(Job *jp) {
                 Type *t = atom_to_type(jp, atom);
                 Value *v = atom_to_value(jp, atom);
 
+                if(t->kind == TYPE_KIND_TYPE && v) {
+                    t->type.what = v->val.type;
+                }
+
                 atom->type_annotation = t;
                 atom->value_annotation = v;
 
@@ -10676,6 +10781,10 @@ void typecheck_expr(Job *jp) {
 
                 node->type_annotation = result_type;
                 node->value_annotation = result_value;
+
+                if(result_type->kind == TYPE_KIND_TYPE && result_value) {
+                    result_type->type.what = result_value->val.type;
+                }
 
                 arrpush(type_stack, result_type);
                 arrpush(value_stack, result_value);
@@ -10736,6 +10845,10 @@ void typecheck_expr(Job *jp) {
 
                 node->type_annotation = result_type;
                 node->value_annotation = result_value;
+
+                if(result_type->kind == TYPE_KIND_TYPE && result_value) {
+                    result_type->type.what = result_value->val.type;
+                }
 
                 arrpush(type_stack, result_type);
                 arrpush(value_stack, result_value);
@@ -11014,6 +11127,72 @@ void typecheck_expr(Job *jp) {
                 jp->reg_alloc = 0;
                 //arrpush(jp->local_offset, 0);
 
+                jp->cur_run_local_segment_size = 0;
+                for(AST_param *p = call_to_run->params; p; p = p->next)
+                    jp->cur_run_local_segment_size += p->type_annotation->bytes;
+                for(int i = 0; i < proc_type->proc.param.n; ++i)
+                    jp->cur_run_local_segment_size += proc_type->proc.param.types[i]->bytes;
+                for(int i = 0; i < proc_type->proc.ret.n; ++i)
+                    jp->cur_run_local_segment_size += proc_type->proc.ret.types[i]->bytes;
+                //printf("jp->cur_run_local_segment_size %lu\n", jp->cur_run_local_segment_size);
+
+                if(global_segment_offset > 0) {
+                    jp->interp.global_segment = realloc(jp->interp.global_segment, global_segment_offset);
+                }
+
+                if(bss_segment_offset > 0) {
+                    jp->interp.bss_segment = realloc(jp->interp.bss_segment, bss_segment_offset);
+                    memset(jp->interp.bss_segment, 0, bss_segment_offset);
+                }
+
+                if(!jp->interp.local_segment)
+                    jp->interp.local_segment = malloc(1<<15);
+
+                //NOTE leaving this dirty for testing purposes
+                //memset(jp->interp.local_segment, 0, 1<<15);
+
+                for(int i = 0; i < arrlen(global_data_table); ++i) {
+                    Sym *s = global_data_table[i];
+                    Type *t = s->type;
+                    Value *v = s->value;
+
+                    /*TODO important refactor needed, read below
+                     * 
+                     * The separation between Sym, Type and Value is starting to cause some ergonomics problems.
+                     * It would be a good idea to try and unify the things that fly around in the language in to
+                     * one Entity struct, like in a game engine.
+                     */
+                    if(TYPE_KIND_IS_NOT_SCALAR(t->kind)) {
+                        UNIMPLEMENTED;
+
+                        if(TYPE_KIND_IS_RECORD(t->kind)) {
+                            UNIMPLEMENTED;
+                        } else if(TYPE_KIND_IS_ARRAY_LIKE(t->kind)) {
+                            if(t->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+                                UNIMPLEMENTED;
+                            } else if(t->kind == TYPE_KIND_ARRAY) {
+                                UNIMPLEMENTED;
+                            } else {
+                                assert(t->kind == TYPE_KIND_ARRAY_VIEW);
+                                UNIMPLEMENTED;
+                            }
+                        } else {
+                            UNIMPLEMENTED;
+                        }
+                    } else {
+                        if(t->kind == TYPE_KIND_POINTER) { 
+                            UNIMPLEMENTED;
+                        } else {
+                            assert(v);
+                            memcpy(jp->interp.global_segment + s->segment_offset, (void*)&(v->val), t->bytes);
+                        }
+                    }
+
+                }
+
+                arrsetlen(jp->interp.ports, 16);
+                for(int i = 0; i < 16; ++i) jp->interp.ports[i] = (IRvalue){0};
+
                 ir_gen_expr(jp, (AST*)call_to_run);
                 IRinst ret_inst = { .opcode = IROP_RET };
                 arrpush(jp->instructions, ret_inst);
@@ -11028,22 +11207,6 @@ void typecheck_expr(Job *jp) {
                 //arrsetlen(jp->local_offset, 0);
                 jp->reg_alloc = 0;
                 jp->label_alloc = 0;
-
-                jp->cur_run_local_segment_size = 0;
-                for(AST_param *p = call_to_run->params; p; p = p->next)
-                    jp->cur_run_local_segment_size += p->type_annotation->bytes;
-                for(int i = 0; i < proc_type->proc.param.n; ++i)
-                    jp->cur_run_local_segment_size += proc_type->proc.param.types[i]->bytes;
-                for(int i = 0; i < proc_type->proc.ret.n; ++i)
-                    jp->cur_run_local_segment_size += proc_type->proc.ret.types[i]->bytes;
-                //printf("jp->cur_run_local_segment_size %lu\n", jp->cur_run_local_segment_size);
-
-                if(!jp->interp.global_segment) jp->interp.global_segment = malloc(1<<10);
-                if(!jp->interp.local_segment) jp->interp.local_segment = malloc(1<<15);
-                memset(jp->interp.global_segment, 0, 1<<10);
-                memset(jp->interp.local_segment, 0, 1<<13);
-                arrsetlen(jp->interp.ports, 16);
-                for(int i = 0; i < 16; ++i) jp->interp.ports[i] = (IRvalue){0};
 
                 printf("running '%s'\n", proc_type->proc.name);
                 ir_run(jp, -1);
@@ -11742,6 +11905,7 @@ void typecheck_procdecl(Job *jp) {
         .declared_by = jp->id,
         .procid = procid_alloc++,
         .constant = true,
+        .segment = IRSEG_CODE,
         .is_foreign = ast->is_foreign,
         .is_system = ast->is_system,
         .type = proc_type,
@@ -11846,10 +12010,12 @@ void typecheck_vardecl(Job *jp) {
         if(jp->state == JOB_STATE_ERROR) return;
 
         if(!infer_type) {
-            if(((AST_expr_base*)ast->type)->value_annotation->kind != VALUE_KIND_TYPE)
+            if(((AST_expr_base*)ast->type)->value_annotation->kind != VALUE_KIND_TYPE) {
                 job_error(jp, ast->type->loc,
                         "expected type to bind to '%s'", name);
-            if(jp->state == JOB_STATE_ERROR) return;
+                return;
+            }
+
             bind_type = ((AST_expr*)ast->type)->value_annotation->val.type;
         }
 
@@ -11857,6 +12023,12 @@ void typecheck_vardecl(Job *jp) {
             //TODO multi-identifier declarations so we can initialize from a function that returns multiple values
             init_value = ((AST_expr*)ast->init)->value_annotation;
             init_type = ((AST_expr*)ast->init)->type_annotation;
+
+            if(is_top_level && (TYPE_KIND_IS_NOT_SCALAR(init_type->kind) || init_type->kind == TYPE_KIND_POINTER)) {
+                job_error(jp, ast->base.loc,
+                        "initialization of non scalar global variables is currently unimplemented");
+                return;
+            }
 
             if(!infer_type) {
                 //TODO check assignment of arrays differently maybe, this is a bit bodged
@@ -12028,6 +12200,7 @@ void print_sym(Sym sym) {
     printf("declared_by: %d\n", sym.declared_by);
     printf("constant: %s\n", sym.constant ? "true" : "false");
     printf("procid: %i\n", sym.procid);
+    printf("segment: %s\n", IRsegment_debug[sym.segment]);
     printf("segment_offset: %lu\n", sym.segment_offset);
     printf("type: %s\n", global_type_to_str(sym.type));
     printf("value: ");
@@ -12038,16 +12211,21 @@ void print_sym(Sym sym) {
 
 //TODO type info
 //TODO varargs
+//TODO proc types and proc pointers
+//TODO implicit context
 //TODO dynamic arrays
-//TODO for loops on arrays
-//TODO improve 'defer'
 //TODO directives (#load, #import, #assert, etc)
+//TODO for loops on arrays
 //TODO test full C interop
+//TODO big refactor to bring Sym, Type and Value in to one struct
+//TODO output assembly
+//TODO improve 'defer'
 //TODO prevent shadowing of global constants
 //TODO allow variables in inner scopes to be named the same as vars in outer scopes
 //TODO static array initialization and assignment need to be improved (???)
-//TODO output assembly
 //TODO sort stack variables by size
+//TODO macros, struct and proc polymorphism
+//TODO compiler intercept and event loop
 
 //TODO too much implicit state
 //     A lot of the code generator depends on the current value of jp->reg_alloc,
@@ -12057,7 +12235,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/non_scalar_struct_members.jpl";
+    char *path = "test/globals.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 

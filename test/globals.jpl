@@ -1,0 +1,20 @@
+struct Foo {
+    i: int;
+    c: char;
+    arr: [4]float;
+}
+
+proc main() float {
+    PI *= 2;
+    twopi := PI;
+    uninitialized_global = 12;
+    return twopi * uninitialized_global;
+}
+
+arr: [20]float;
+foo: Foo;
+initialized_arr: [4][4]float;
+uninitialized_global: float;
+PI: float = 3.14159;
+
+#run main();
