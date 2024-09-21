@@ -1,0 +1,88 @@
+Type_info_tag :: u32;
+
+//TODO add enums so we can do this in a less stupid way
+//TODO constant struct members also
+TYPE_INFO_TAG_VOID     : Type_info_tag :   0;
+TYPE_INFO_TAG_INT      : Type_info_tag :   1;
+TYPE_INFO_TAG_FLOAT    : Type_info_tag :   2;
+TYPE_INFO_TAG_BOOL     : Type_info_tag :   2;
+TYPE_INFO_TAG_TYPE     : Type_info_tag :   4;
+TYPE_INFO_TAG_POINTER  : Type_info_tag :   5;
+TYPE_INFO_TAG_ARRAY    : Type_info_tag :   6;
+TYPE_INFO_TAG_STRING   : Type_info_tag :   7;
+TYPE_INFO_TAG_STRUCT   : Type_info_tag :   8;
+TYPE_INFO_TAG_ENUM     : Type_info_tag :   9;
+TYPE_INFO_TAG_PROC     : Type_info_tag :  10;
+TYPE_INFO_TAG_ANY      : Type_info_tag :  11;
+
+struct Type_info {
+    tag: Type_info_tag;
+}
+
+struct Type_info_int {
+    using Type_info;
+
+    bits: u32;
+    sign: bool;
+}
+
+struct Type_info_float {
+    using Type_info;
+
+    bits: u32;
+}
+
+struct Type_info_pointer {
+    using Type_info;
+
+    pointer_to: *Type_info;
+}
+
+struct Type_info_array {
+    using Type_info;
+
+    array_of:    *Type_info;
+    array_count:  u64;
+    array_kind:   u32; // STATIC, DYNAMIC, VIEW
+}
+
+struct Type_info_struct_member {
+    name:  []char; //TODO strings
+    type:   *Type_info;
+    offset:  u64;
+}
+
+struct Type_info_struct {
+    using Type_info;
+
+    name:    []char;
+    members: []Type_info_struct_member;
+}
+
+struct Type_info_proc {
+    using Type_info;
+
+    param_types:  []*Type_info;
+    return_types: []*Type_info;
+}
+
+struct _String_view { // struct definition for a builtin string
+    data: *char;
+    count: u64;
+}
+
+struct _Array_view {
+    data: *void;
+    count: u64;
+}
+
+struct _Dynamic_array {
+    data: *void;
+    count: u64;
+    cap:   u64;
+}
+
+struct _Any {
+    data: *void;
+    type: *Type_info;
+}

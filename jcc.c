@@ -9,6 +9,7 @@
 #include "arena.h"
 
 #include "lexer.c"
+#include "preload.c"
 
 
 #define PIPE_STAGES                     \
@@ -89,6 +90,7 @@
     X(FLOAT)                            \
     X(DFLOAT)                           \
     X(TYPE)                             \
+    X(TYPEINFO)                         \
     X(STRING)                           \
     X(ARRAY)                            \
     X(STRUCT)                           \
@@ -911,6 +913,7 @@ struct Value {
         Token token;
         char *str;
         Type *type;
+        Type_info *typeinfo;
         /*
         struct {
             IRsegment segment;
@@ -1044,6 +1047,7 @@ bool        job_label_create(Job *jp, IRlabel label);
 char*       job_op_token_to_str(Job *jp, Token op);
 void        job_push_typechecker_context(Job *jp, Job_typechecker_context context);
 void        job_pop_typechecker_context(Job *jp);
+Type_info*  job_make_type_info(Job *jp, Type *t);
 void        linearize_expr(Job *jp, AST *astpp);
 
 bool        is_lvalue(AST *ast);
@@ -1179,6 +1183,10 @@ Value builtin_value[] = {
 Arena                      global_scratch_allocator;
 Pool                       global_sym_allocator;
 Scope                      global_scope;
+
+Arena                      type_info_arena;
+Arr(Type_info*)            type_info_table;
+Arr(Type*)                 type_info_lookup_type;
 
 u64                        global_segment_offset;
 Arr(Sym*)                  global_data_table;
@@ -1521,6 +1529,156 @@ INLINE void job_pop_typechecker_context(Job *jp) {
         jp->cur_typechecker_context = arrpop(jp->save_typechecker_context);
         jp->scopes = scopes;
     }
+}
+
+Type_info* job_make_type_info(Job *jp, Type *t) {
+    int i = 0;
+    for(; i < arrlen(type_info_lookup_type); ++i) {
+        if(types_are_same(t, type_info_lookup_type[i])) {
+            break;
+        }
+    }
+
+    if(i < arrlen(type_info_lookup_type)) {
+        return type_info_table[i];
+    }
+
+    arrpush(type_info_lookup_type, t);
+
+    Type_info *tinfo = NULL;
+
+    switch(t->kind) {
+        case TYPE_KIND_BOOL:
+            tinfo = arena_alloc(&type_info_arena, sizeof(Type_info));
+            tinfo->tag = TYPE_INFO_TAG_BOOL;
+            break;
+        case TYPE_KIND_VOID:
+            tinfo = arena_alloc(&type_info_arena, sizeof(Type_info));
+            tinfo->tag = TYPE_INFO_TAG_VOID;
+            break;
+        case TYPE_KIND_TYPE:
+            tinfo = arena_alloc(&type_info_arena, sizeof(Type_info));
+            tinfo->tag = TYPE_INFO_TAG_TYPE;
+            break;
+        case TYPE_KIND_CHAR:
+        case TYPE_KIND_U8:
+        case TYPE_KIND_U16:
+        case TYPE_KIND_U32:
+        case TYPE_KIND_U64:
+            {
+                Type_info_int *tinfo_int = arena_alloc(&type_info_arena, sizeof(Type_info_int));
+                tinfo_int->base.tag = TYPE_INFO_TAG_INT;
+                tinfo_int->bits = builtin_type[t->kind].bytes << 3;
+                tinfo_int->sign = false;
+                tinfo = (Type_info*)tinfo_int;
+            }
+            break;
+        case TYPE_KIND_S8:
+        case TYPE_KIND_S16:
+        case TYPE_KIND_S32:
+        case TYPE_KIND_S64:
+        case TYPE_KIND_INT:
+            {
+                Type_info_int *tinfo_int = arena_alloc(&type_info_arena, sizeof(Type_info_int));
+                tinfo_int->base.tag = TYPE_INFO_TAG_INT;
+                tinfo_int->bits = builtin_type[t->kind].bytes << 3;
+                tinfo_int->sign = true;
+                tinfo = (Type_info*)tinfo_int;
+            }
+            break;
+        case TYPE_KIND_FLOAT:
+        case TYPE_KIND_F32:
+        case TYPE_KIND_F64:
+            {
+                Type_info_float *tinfo_float = arena_alloc(&type_info_arena, sizeof(Type_info_float));
+                tinfo_float->base.tag = TYPE_INFO_TAG_FLOAT;
+                tinfo_float->bits = builtin_type[t->kind].bytes << 3;
+                tinfo = (Type_info*)tinfo_float;
+            }
+            break;
+        case TYPE_KIND_ARRAY:
+        case TYPE_KIND_DYNAMIC_ARRAY:
+        case TYPE_KIND_ARRAY_VIEW:
+            {
+                Type_info_array *tinfo_array = arena_alloc(&type_info_arena, sizeof(Type_info_array));
+                tinfo_array->base.tag = TYPE_INFO_TAG_ARRAY;
+                tinfo_array->array_of = job_make_type_info(jp, t->array.of);
+                tinfo_array->array_count = t->array.n;
+                if(t->kind == TYPE_KIND_ARRAY) {
+                    tinfo_array->array_kind = 0;
+                } else if(t->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+                    tinfo_array->array_kind = 1;
+                } else {
+                    tinfo_array->array_kind = 2;
+                }
+                tinfo = (Type_info*)tinfo_array;
+            }
+            break;
+        case TYPE_KIND_POINTER:
+            {
+                Type_info_pointer *tinfo_pointer = arena_alloc(&type_info_arena, sizeof(Type_info_pointer));
+                tinfo_pointer->base.tag = TYPE_INFO_TAG_POINTER;
+                tinfo_pointer->pointer_to = job_make_type_info(jp, t->pointer.to);
+                tinfo = (Type_info*)tinfo_pointer;
+            }
+            break;
+        case TYPE_KIND_STRUCT:
+        case TYPE_KIND_UNION:
+            {
+                Type_info_struct *tinfo_struct = arena_alloc(&type_info_arena, sizeof(Type_info_struct));
+                tinfo_struct->base.tag = TYPE_INFO_TAG_STRUCT;
+                tinfo_struct->name.data = t->record.name;
+                tinfo_struct->name.count = strlen(t->record.name);
+                u64 members_count = t->record.member.n;
+
+                for(u64 i = 0; i < t->record.use.n; ++i) {
+                    Type *use_t = t->record.use.types[i];
+                    members_count += use_t->record.member.n;
+                }
+
+                tinfo_struct->members.count = members_count;
+
+                Type_info_struct_member *tinfo_struct_members = arena_alloc(&type_info_arena, sizeof(Type_info_struct_member) * members_count);
+
+                tinfo_struct->members.data = tinfo_struct_members;
+
+                int member_index = 0;
+
+                for(u64 i = 0; i < t->record.use.n; ++i) {
+                    Type *use_t = t->record.use.types[i];
+                    for(u64 j = 0; j < use_t->record.member.n; ++j) {
+                        tinfo_struct_members[member_index].name.data = use_t->record.member.names[j];
+                        tinfo_struct_members[member_index].name.count = strlen(use_t->record.member.names[j]);
+                        tinfo_struct_members[member_index].type = job_make_type_info(jp, use_t->record.member.types[j]);
+                        tinfo_struct_members[member_index].offset = use_t->record.member.offsets[j] + t->record.use.offsets[i];
+
+                        member_index++;
+                    }
+                }
+
+                for(u64 i = 0; i < t->record.member.n; ++i) {
+                    tinfo_struct_members[member_index].name.data = t->record.member.names[i];
+                    tinfo_struct_members[member_index].name.count = strlen(t->record.member.names[i]);
+                    tinfo_struct_members[member_index].type = job_make_type_info(jp, t->record.member.types[i]);
+                    tinfo_struct_members[member_index].offset = t->record.member.offsets[i];
+
+                    member_index++;
+                }
+
+                assert(member_index == members_count);
+
+                tinfo = (Type_info*)tinfo_struct;
+            }
+            break;
+        case TYPE_KIND_ENUM:
+            UNIMPLEMENTED;
+            break;
+        case TYPE_KIND_PROC:
+            UNIMPLEMENTED;
+            break;
+    }
+
+    return tinfo;
 }
 
 //TODO rewrite _type_to_str()
@@ -3334,6 +3492,31 @@ AST* parse_prefix(Job *jp) {
             *lexer = unlex;
             node = parse_postfix(jp);
             break;
+        case TOKEN_SIZEOF:
+        case TOKEN_ALIGNOF:
+        case TOKEN_TYPEOF:
+        case TOKEN_TYPEINFO:
+            if(lex(lexer) != '(') {
+                job_error(jp, lexer->loc,
+                        "expected '(' after '%s' keyword",
+                        TOKEN_TO_KEYWORD(t));
+                return NULL;
+            }
+
+            expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+            expr->token = t;
+            expr->right = parse_expr(jp);
+
+            t = lex(lexer);
+
+            if(t != ')') {
+                job_error(jp, lexer->loc, "unbalanced parenthesis");
+                return NULL;
+            }
+
+            node = (AST*)expr;
+            node->weight += expr->right->weight;
+            break;
         case TOKEN_CAST:
             t = lex(lexer);
 
@@ -3916,7 +4099,7 @@ void print_value(Value *v) {
             printf("%s (%zu bytes, %zu align)", global_type_to_str(v->val.type), v->val.type->bytes, v->val.type->align);
             break;
         case VALUE_KIND_STRING:
-            UNIMPLEMENTED;
+            printf("%s", v->val.str);
             break;
         case VALUE_KIND_ARRAY:
             printf("[ ");
@@ -7344,6 +7527,24 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 IRvalue imm = { .integer = node->value_annotation->val.integer };
                 u64 *reg_destp = &(jp->reg_alloc);
 
+                if(node->token == TOKEN_TYPEINFO && result_value->kind == VALUE_KIND_TYPEINFO) {
+                    assert(result_type->kind == TYPE_KIND_POINTER && result_type->pointer.to->kind == TYPE_KIND_STRUCT);
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_ADDRVAR,
+                            .addrvar = {
+                                .segment = IRSEG_TYPE,
+                                .offset = (u64)(void*)(result_value->val.typeinfo),
+                                .reg_dest = jp->reg_alloc++,
+                            },
+                        };
+
+                    inst.loc = jp->cur_loc;
+                    arrpush(jp->instructions, inst);
+                    arrpush(type_stack, result_type);
+                    continue;
+                }
+
                 if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind)) {
                     printf("result_type = %s\n", job_type_to_str(jp, result_type));
                     if(result_type->kind == TYPE_KIND_ARRAY) {
@@ -7397,6 +7598,9 @@ void ir_gen_expr(Job *jp, AST *ast) {
             if(node->token == TOKEN_AND || node->token == TOKEN_OR || node->token == '!') {
                 ir_gen_logical_expr(jp, cur_ast);
             } else if(node->token == '.') {
+                //TODO using dot on struct pointers has not been properly tested
+                //     foo_type_info.members[1].type.tag;
+                //     this expression from test/test_type_info.jpl should generate an extra load for .tag
                 Type *result_type = node->type_annotation;
                 AST_atom *left = (AST_atom*)(node->left);
 
@@ -7405,6 +7609,10 @@ void ir_gen_expr(Job *jp, AST *ast) {
                     operand_type = left->type_annotation;
                 } else {
                     operand_type = arrpop(type_stack);
+                    if(operand_type->kind == TYPE_KIND_POINTER) {
+                        assert(TYPE_KIND_IS_RECORD(operand_type->pointer.to->kind));
+                        operand_type = operand_type->pointer.to;
+                    }
                     jp->reg_alloc--;
                 }
 
@@ -7893,7 +8101,24 @@ void ir_gen_expr(Job *jp, AST *ast) {
                             arrpush(jp->instructions, inst);
 
                             if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind)) {
-                                UNIMPLEMENTED;
+
+                                if(TYPE_KIND_IS_RECORD(result_type->kind)) {
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = IROP_CALCPTROFFSET,
+                                            .calcptroffset = {
+                                                .reg_dest = *result_regp,
+                                                .reg_src_ptr = a_reg,
+                                                .offset_reg = b_reg,
+                                                .stride = result_type->bytes,
+                                            },
+                                        };
+                                    inst.loc = jp->cur_loc;
+                                    arrpush(jp->instructions, inst);
+                                } else {
+                                    UNIMPLEMENTED;
+                                }
+
                             } else if(TYPE_KIND_IS_FLOAT(result_type->kind)) {
                                 inst =
                                     (IRinst) {
@@ -9247,7 +9472,7 @@ void job_runner(char *src, char *src_path) {
                                 } else {
                                     u64 offset = align_up(bytes, using_type->align);
                                     record_type->record.use.offsets[i] = offset;
-                                    bytes = offset + using_type->bytes;
+                                    bytes = align_up(offset + using_type->bytes, record_type->align);
                                 }
 
                                 record_type->bytes = bytes;
@@ -9620,6 +9845,13 @@ void job_runner(char *src, char *src_path) {
                                     break;
                                 }
 
+                                if(jp->state == JOB_STATE_ERROR) {
+                                    job_report_all_messages(jp);
+                                    job_die(jp);
+                                    ++i;
+                                    continue;
+                                }
+
                                 arrsetlen(jp->type_stack, 0);
                                 arrsetlen(jp->value_stack, 0);
                                 arrsetlen(jp->expr, 0);
@@ -9839,14 +10071,14 @@ void job_runner(char *src, char *src_path) {
         }
     }
 
-    if(!had_error) {
-        for(int i = 0; i < shlen(global_scope); ++i) {
-            if(global_scope[i].value) {
-                print_sym(global_scope[i].value[0]);
-                printf("\n");
-            }
-        }
-    }
+//    if(!had_error) {
+//        for(int i = 0; i < shlen(global_scope); ++i) {
+//            if(global_scope[i].value) {
+//                print_sym(global_scope[i].value[0]);
+//                printf("\n");
+//            }
+//        }
+//    }
 
     arrfree(job_queue);
     arrfree(job_queue_next);
@@ -9856,7 +10088,7 @@ Value *atom_to_value(Job *jp, AST_atom *atom) {
     Value *vp = NULL;
     switch(atom->token) {
         default:
-            UNIMPLEMENTED;
+            UNREACHABLE;
         case TOKEN_STRINGLIT:
             vp = job_alloc_value(jp, VALUE_KIND_STRING);
             vp->val.str = atom->text;
@@ -9904,7 +10136,7 @@ Type *atom_to_type(Job *jp, AST_atom *atom) {
     Type *tp = NULL;
     switch(atom->token) {
         default:
-            UNIMPLEMENTED;
+            UNREACHABLE;
         case TOKEN_STRINGLIT:
             tp = job_alloc_type(jp, TYPE_KIND_ARRAY);
             tp->array.n = strlen(atom->text);
@@ -9943,12 +10175,56 @@ Type *atom_to_type(Job *jp, AST_atom *atom) {
 }
 
 Value* evaluate_unary(Job *jp, Value *a, AST_expr *op_ast) {
-    if(a->kind == VALUE_KIND_NIL)
-        return a;
-
     Value *result = NULL;
 
     Token op = op_ast->token;
+
+    //TODO yet another reason to unify Sym, Type and Value
+    if(!a) {
+        switch(op) {
+            case TOKEN_SIZEOF:
+                result = job_alloc_value(jp, VALUE_KIND_UINT);
+                result->val.uinteger = ((AST_expr_base*)(op_ast->right))->type_annotation->bytes;
+                break;
+            case TOKEN_ALIGNOF:
+                result = job_alloc_value(jp, VALUE_KIND_UINT);
+                result->val.uinteger = ((AST_expr_base*)(op_ast->right))->type_annotation->align;
+                break;
+            case TOKEN_TYPEOF:
+                result = job_alloc_value(jp, VALUE_KIND_TYPE);
+                result->val.type = ((AST_expr_base*)(op_ast->right))->type_annotation;
+                break;
+            case TOKEN_TYPEINFO:
+                result = job_alloc_value(jp, VALUE_KIND_TYPEINFO);
+                result->val.typeinfo = job_make_type_info(jp, ((AST_expr_base*)(op_ast->right))->type_annotation);
+                break;
+        }
+
+        return result;
+    }
+
+    if(a->kind == VALUE_KIND_NIL) {
+        switch(op) {
+            case TOKEN_SIZEOF:
+                result = job_alloc_value(jp, VALUE_KIND_UINT);
+                result->val.uinteger = ((AST_expr_base*)(op_ast->right))->type_annotation->bytes;
+                break;
+            case TOKEN_ALIGNOF:
+                result = job_alloc_value(jp, VALUE_KIND_UINT);
+                result->val.uinteger = ((AST_expr_base*)(op_ast->right))->type_annotation->align;
+                break;
+            case TOKEN_TYPEOF:
+                result = job_alloc_value(jp, VALUE_KIND_TYPE);
+                result->val.type = ((AST_expr_base*)(op_ast->right))->type_annotation;
+                break;
+            case TOKEN_TYPEINFO:
+                result = job_alloc_value(jp, VALUE_KIND_TYPEINFO);
+                result->val.typeinfo = job_make_type_info(jp, ((AST_expr_base*)(op_ast->right))->type_annotation);
+                break;
+        }
+
+        return result;
+    }
 
     switch(op) {
         default:
@@ -9961,6 +10237,8 @@ Value* evaluate_unary(Job *jp, Value *a, AST_expr *op_ast) {
                 result = job_alloc_value(jp, VALUE_KIND_TYPE);
                 result->val.type = job_alloc_type(jp, TYPE_KIND_ARRAY_VIEW);
                 result->val.type->array.of = a->val.type;
+                assert(op_ast->type_annotation->kind == TYPE_KIND_TYPE);
+                op_ast->type_annotation->type.what = result->val.type;
             } else {
                 UNREACHABLE;
             }
@@ -9991,8 +10269,10 @@ Value* evaluate_unary(Job *jp, Value *a, AST_expr *op_ast) {
                 result = job_alloc_value(jp, VALUE_KIND_TYPE);
                 result->val.type = job_alloc_type(jp, TYPE_KIND_POINTER);
                 result->val.type->pointer.to = a->val.type;
+                assert(op_ast->type_annotation->kind == TYPE_KIND_TYPE);
+                op_ast->type_annotation->type.what = result->val.type;
             } else {
-                result = builtin_value+VALUE_KIND_NIL;
+                UNREACHABLE;
             }
             break;
     }
@@ -10028,6 +10308,8 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
                     if(result->val.type->array.n == 0)
                         job_error(jp, op_ast->base.loc, "static array size expression evaluates to 0");
                 }
+                assert(op_ast->type_annotation->kind == TYPE_KIND_TYPE);
+                op_ast->type_annotation->type.what = result->val.type;
             } else {
                 result = builtin_value+VALUE_KIND_NIL;
             }
@@ -10253,6 +10535,23 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op) {
         switch(op) {
             default:
                 UNREACHABLE;
+            case TOKEN_SIZEOF:
+                return builtin_type+TYPE_KIND_U64;
+                break;
+            case TOKEN_ALIGNOF:
+                return builtin_type+TYPE_KIND_U64;
+                break;
+            case TOKEN_TYPEOF:
+                return builtin_type+TYPE_KIND_TYPE;
+                break;
+            case TOKEN_TYPEINFO:
+                {
+                    Type *result = job_alloc_type(jp, TYPE_KIND_POINTER);
+                    Sym *sym_type_info = global_scope_lookup(jp, "Type_info");
+                    result->pointer.to = sym_type_info->value->val.type;
+                    return result;
+                }
+                break;
             case TOKEN_PLUSPLUS: case TOKEN_MINUSMINUS:
                 if(a->kind == TYPE_KIND_BOOL)  return a;
                 if(a->kind == TYPE_KIND_CHAR)  return a;
@@ -10344,8 +10643,8 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op) {
                         Type *b_rec = b->pointer.to;
 
                         if(a_rec->record.name && b_rec->record.name) {
-                            for(u64 i = 0; i < b_rec->record.use.n; ++i) {
-                                if(a_rec == b_rec->record.use.types[i]) {
+                            for(u64 i = 0; i < a_rec->record.use.n; ++i) {
+                                if(b_rec == a_rec->record.use.types[i]) {
                                     return a;
                                 }
                             }
@@ -10669,6 +10968,10 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op) {
 Type* typecheck_dot(Job *jp, Type *a, char *field, u64 *offsetp) {
     Type *result = NULL;
 
+    if(a->kind == TYPE_KIND_POINTER) {
+        a = a->pointer.to;
+    }
+
     if(a->kind == TYPE_KIND_STRUCT || a->kind == TYPE_KIND_UNION) {
         for(u64 i = 0; i < a->record.member.n; ++i) {
             if(!strcmp(field, a->record.member.names[i])) {
@@ -10746,13 +11049,9 @@ void typecheck_expr(Job *jp) {
 
             } else {
                 Type *t = atom_to_type(jp, atom);
-                Value *v = atom_to_value(jp, atom);
-
-                if(t->kind == TYPE_KIND_TYPE && v) {
-                    t->type.what = v->val.type;
-                }
-
                 atom->type_annotation = t;
+
+                Value *v = atom_to_value(jp, atom);
                 atom->value_annotation = v;
 
                 arrpush(type_stack, t);
@@ -10768,6 +11067,7 @@ void typecheck_expr(Job *jp) {
                 Type *a_type = arrpop(type_stack);
 
                 result_type = typecheck_operation(jp, a_type, NULL, node->token);
+                node->type_annotation = result_type;
                 if(!result_type) {
                     job_error(jp, node->base.loc, "invalid type '%s' to '%s' operator",
                             job_type_to_str(jp, a_type),
@@ -10779,12 +11079,7 @@ void typecheck_expr(Job *jp) {
 
                 result_value = evaluate_unary(jp, a_value, node);
 
-                node->type_annotation = result_type;
                 node->value_annotation = result_value;
-
-                if(result_type->kind == TYPE_KIND_TYPE && result_value) {
-                    result_type->type.what = result_value->val.type;
-                }
 
                 arrpush(type_stack, result_type);
                 arrpush(value_stack, result_value);
@@ -10833,6 +11128,7 @@ void typecheck_expr(Job *jp) {
                 }
 
                 result_type = typecheck_operation(jp, a_type, b_type, node->token);
+                node->type_annotation = result_type;
                 if(!result_type) {
                     job_error(jp, node->base.loc, "invalid types '%s' and '%s' to '%s' operator",
                             job_type_to_str(jp, a_type),
@@ -10843,12 +11139,7 @@ void typecheck_expr(Job *jp) {
 
                 result_value = evaluate_binary(jp, a_value, b_value, node);
 
-                node->type_annotation = result_type;
                 node->value_annotation = result_value;
-
-                if(result_type->kind == TYPE_KIND_TYPE && result_value) {
-                    result_type->type.what = result_value->val.type;
-                }
 
                 arrpush(type_stack, result_type);
                 arrpush(value_stack, result_value);
@@ -11650,7 +11941,7 @@ void typecheck_structdecl(Job *jp) {
             .loc = ast->base.loc,
             .declared_by = jp->id,
             .constant = true,
-            .type = builtin_type+TYPE_KIND_TYPE,
+            .type = builtin_type+TYPE_KIND_TYPE, //TODO type can't be builtin if we have the .what
             .value = sym_value,
         };
 
@@ -12024,7 +12315,7 @@ void typecheck_vardecl(Job *jp) {
             init_value = ((AST_expr*)ast->init)->value_annotation;
             init_type = ((AST_expr*)ast->init)->type_annotation;
 
-            if(is_top_level && (TYPE_KIND_IS_NOT_SCALAR(init_type->kind) || init_type->kind == TYPE_KIND_POINTER)) {
+            if(!ast->constant && is_top_level && (TYPE_KIND_IS_NOT_SCALAR(init_type->kind) || init_type->kind == TYPE_KIND_POINTER)) {
                 job_error(jp, ast->base.loc,
                         "initialization of non scalar global variables is currently unimplemented");
                 return;
@@ -12150,7 +12441,7 @@ void typecheck_vardecl(Job *jp) {
         } else {
             u64 offset = align_up(record_type->bytes, bind_type->align);
             record_type->record.member.offsets[i] = offset;
-            record_type->bytes = offset + bind_type->bytes;
+            record_type->bytes = align_up(offset + bind_type->bytes, record_type->align);
         }
 
     } else {
@@ -12210,6 +12501,7 @@ void print_sym(Sym sym) {
 }
 
 //TODO type info
+//TODO enums
 //TODO varargs
 //TODO proc types and proc pointers
 //TODO implicit context
@@ -12217,7 +12509,6 @@ void print_sym(Sym sym) {
 //TODO directives (#load, #import, #assert, etc)
 //TODO for loops on arrays
 //TODO test full C interop
-//TODO big refactor to bring Sym, Type and Value in to one struct
 //TODO output assembly
 //TODO improve 'defer'
 //TODO prevent shadowing of global constants
@@ -12226,6 +12517,7 @@ void print_sym(Sym sym) {
 //TODO sort stack variables by size
 //TODO macros, struct and proc polymorphism
 //TODO compiler intercept and event loop
+//TODO big refactor to bring Sym, Type and Value in to one struct
 
 //TODO too much implicit state
 //     A lot of the code generator depends on the current value of jp->reg_alloc,
@@ -12235,7 +12527,15 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
-    char *path = "test/globals.jpl";
+    arena_init(&type_info_arena);
+
+    char *preload_path = "preload.jpl";
+    assert(FileExists(preload_path));
+    char *preload_src = LoadFileText(preload_path);
+
+    job_runner(preload_src, preload_path);
+
+    char *path = "test/test_type_info.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 

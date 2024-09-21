@@ -56,6 +56,10 @@
     X(F32,                             "f32")\
     X(F64,                             "f64")\
     X(CAST,                           "cast")\
+    X(SIZEOF,                       "sizeof")\
+    X(ALIGNOF,                     "alignof")\
+    X(TYPEOF,                       "typeof")\
+    X(TYPEINFO,                   "typeinfo")\
     X(LESSEQUAL,                        "<=")\
     X(GREATEQUAL,                       ">=")\
     X(EXCLAMEQUAL,                      "!=")\
@@ -145,7 +149,7 @@ u64 token_keyword_lengths[] = {
 #undef X
 };
 
-char token_chars[] = "!\"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~";
+char token_chars[] = "!\"#$%&\'()*+,-./:;<=>?@[\\]^`{|}~";
 
 
 INLINE void lexer_init(Lexer *l, char *src, char *src_path) {

@@ -1,0 +1,25 @@
+proc main() int {
+    foo: Foo;
+    foo_type_info := cast(*Type_info_struct) typeinfo(foo);
+    t := foo_type_info.members[1].type;
+    return t.tag;
+    //return foo_type_info.members[1].type.tag;
+}
+
+struct Foo {
+    i: int;
+    s: s16;
+    c: char;
+}
+
+proc read(fd: s32, buf: *void, bytes: size_t) size_t #system;
+proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
+proc putchar(c: s32) s32 #system;
+
+size_t :: u64;
+
+STDIN  :: 0;
+STDOUT :: 1;
+STDERR :: 2;
+
+#run main();
