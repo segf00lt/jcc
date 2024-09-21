@@ -1,14 +1,29 @@
 proc main() int {
+    bar: Bar;
     foo: Foo;
+    foo.bar = @bar;
     foo_type_info := cast(*Type_info_struct) typeinfo(foo);
-    t := foo_type_info.members[1].type;
-    return t.tag;
-    //return foo_type_info.members[1].type.tag;
+    //t := foo_type_info.members[1].type;
+    //return t.tag;
+    //return cast(int) y;
+    return cast(u32) foo.bar.bill.y + foo_type_info.members[1].type.tag;
+}
+
+struct Bill {
+    c: char;
+    y: float = 5.3;
+}
+
+struct Bar {
+    x: float;
+    bill: Bill;
+    y: float = 5.3;
 }
 
 struct Foo {
     i: int;
     s: s16;
+    bar: *Bar;
     c: char;
 }
 

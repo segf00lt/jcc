@@ -1678,6 +1678,8 @@ Type_info* job_make_type_info(Job *jp, Type *t) {
             break;
     }
 
+    arrpush(type_info_table, tinfo);
+
     return tinfo;
 }
 
@@ -3614,6 +3616,7 @@ AST* parse_postfix(Job *jp) {
             //    job_error(jp, expr->base.loc, "operand of subscript operator must be lvalue");
         } else if(t == '.') {
             t = lex(lexer);
+
             if(t != TOKEN_IDENT) {
                 job_error(jp, lexer->loc, "identifier expected on right of '.' operator");
                 return NULL;
@@ -7604,6 +7607,8 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 Type *result_type = node->type_annotation;
                 AST_atom *left = (AST_atom*)(node->left);
 
+                bool operand_is_record_pointer = false;
+
                 Type *operand_type;
                 if(left->type_annotation->kind == TYPE_KIND_ARRAY) {
                     operand_type = left->type_annotation;
@@ -7611,7 +7616,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                     operand_type = arrpop(type_stack);
                     if(operand_type->kind == TYPE_KIND_POINTER) {
                         assert(TYPE_KIND_IS_RECORD(operand_type->pointer.to->kind));
-                        operand_type = operand_type->pointer.to;
+                        operand_is_record_pointer = true;
                     }
                     jp->reg_alloc--;
                 }
@@ -7702,15 +7707,9 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
                 } else if(operand_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
                     UNIMPLEMENTED;
-                } else if(TYPE_KIND_IS_RECORD(operand_type->kind)) {
+                } else if(operand_is_record_pointer || TYPE_KIND_IS_RECORD(operand_type->kind)) {
 
                     u64 field_offset = node->dot_offset_annotation;
-
-                    AST_expr *e = node;
-                    while(e->left->kind == AST_KIND_expr && ((AST_expr*)(e->left))->token == '.') {
-                        e = (AST_expr*)(e->left);
-                        field_offset += e->dot_offset_annotation;
-                    }
 
                     if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind)) {
                         inst = (IRinst) {
@@ -11698,18 +11697,7 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
         }
 
         if(expr->token == '.') {
-            AST_expr_base *left = (AST_expr_base*)(expr->left);
-
-            if(left->type_annotation->kind != TYPE_KIND_ARRAY) {
-                AST_expr *e = expr;
-
-                while(e->left->kind == AST_KIND_expr && ((AST_expr*)(e->left))->token == '.') {
-                    e = (AST_expr*)(e->left);
-                }
-
-                ir_expr = ir_linearize_expr(ir_expr, e->left);
-            }
-
+            ir_expr = ir_linearize_expr(ir_expr, expr->left);
             arrpush(ir_expr, ast);
             return ir_expr;
         }
