@@ -115,6 +115,7 @@
     X(F32)                              \
     X(F64)                              \
     X(TYPE)                             \
+    X(STRING)                           \
     X(ARRAY)                            \
     X(DYNAMIC_ARRAY)                    \
     X(ARRAY_VIEW)                       \
@@ -207,6 +208,7 @@
     X(GLOBAL)                           \
     X(BSS)                              \
     X(TYPE)                             \
+    X(STRING)                           \
     X(CODE)                             \
 
 #define PLATFORMS    \
@@ -230,6 +232,8 @@
 #define TYPE_KIND_IS_INTEGER_OR_FLOAT(kind) ((bool)(TYPE_KIND_IS_INTEGER(kind) || TYPE_KIND_IS_FLOAT(kind)))
 
 #define TYPE_KIND_IS_ARRAY_LIKE(kind) ((bool)(kind >= TYPE_KIND_ARRAY && kind <= TYPE_KIND_ARRAY_VIEW))
+
+#define TYPE_KIND_IS_VIEW_LIKE(kind) ((bool)(kind == TYPE_KIND_ARRAY_VIEW || kind == TYPE_KIND_STRING))
 
 
 typedef struct Scope_entry* Scope;
@@ -911,7 +915,7 @@ struct Value {
         f32 floating;
         f64 dfloating;
         Token token;
-        char *str;
+        String_view str;
         Type *type;
         Type_info *typeinfo;
         /*
@@ -1094,7 +1098,7 @@ void        procedure_table_add(IRinst *proc, int procid, char *name, u64 length
 void        foreign_procedure_table_add(IR_foreign_proc proc, int procid, char *name);
 
 bool        types_are_same(Type *a, Type *b);
-Type*       typecheck_operation(Job *jp, Type *a, Type *b, Token op);
+Type*       typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST **right);
 Type*       typecheck_dot(Job *jp, Type *a, char *field, u64 *offsetp);
 void        typecheck_expr(Job *jp);
 void        typecheck_vardecl(Job *jp);
@@ -1183,6 +1187,8 @@ Value builtin_value[] = {
 Arena                      global_scratch_allocator;
 Pool                       global_sym_allocator;
 Scope                      global_scope;
+
+Arena                      string_arena;
 
 Arena                      type_info_arena;
 Arr(Type_info*)            type_info_table;
@@ -1285,8 +1291,9 @@ Value* job_alloc_value(Job *jp, Valuekind kind) {
     return ptr;
 }
 
+//TODO memoize allocation of Type's
 Type* job_alloc_type(Job *jp, Typekind kind) {
-    if(kind >= TYPE_KIND_VOID && kind <= TYPE_KIND_TYPE)
+    if(kind >= TYPE_KIND_VOID && kind < TYPE_KIND_TYPE)
         return builtin_type + kind;
     Type *ptr = pool_alloc(&jp->allocator.type);
     ptr->kind = kind;
@@ -1302,13 +1309,17 @@ Type* job_alloc_type(Job *jp, Typekind kind) {
             ptr->bytes = 8;
             ptr->align = 8;
             break;
+        case TYPE_KIND_STRING:
+            ptr->bytes = sizeof(String_view);
+            ptr->align = _Alignof(String_view);
+            break;
         case TYPE_KIND_DYNAMIC_ARRAY:
-            ptr->bytes = 24; // needs to be bigger for allowing an allocator pointer
-            ptr->align = 8;
+            ptr->bytes = sizeof(Dynamic_array); // needs to be bigger for allowing an allocator pointer
+            ptr->align = _Alignof(Dynamic_array);
             break;
         case TYPE_KIND_ARRAY_VIEW:
-            ptr->bytes = 16;
-            ptr->align = 8;
+            ptr->bytes = sizeof(Array_view);
+            ptr->align = _Alignof(Array_view);
             break;
         case TYPE_KIND_ARRAY:
             ptr->bytes = 0;
@@ -1352,12 +1363,46 @@ void job_ast_allocator_from_save(Job *jp, Pool_save save[AST_KIND_MAX]) {
 char* job_alloc_text(Job *jp, char *s, char *e) {
     char *ptr = arena_alloc(&jp->allocator.scratch, (e - s) + 1);
     char *p = ptr;
+    u64 len = (e - s);
 
-    while(s < e) {
-        *p = *s;
-        ++p;
-        ++s;
+    u64 r = 0, w = 0;
+
+    while(r < len) {
+        if(s[r] == '\\') {
+            switch(s[r+1]) {
+                case 'n':
+                    r++;
+                    p[w++] = '\n';
+                    break;
+                case 'b':
+                    r++;
+                    p[w++] = '\b';
+                    break;
+                case 't':
+                    r++;
+                    p[w++] = '\t';
+                    break;
+                case 'v':
+                    r++;
+                    p[w++] = '\v';
+                    break;
+                case 'r':
+                    r++;
+                    p[w++] = '\r';
+                    break;
+                case '"':
+                case '\'':
+                case '\\':
+                    break;
+            }
+        } else {
+            p[w++] = s[r];
+        }
+
+        r++;
     }
+
+    arena_step_back(&jp->allocator.scratch, r - w);
 
     return ptr;
 }
@@ -1627,8 +1672,13 @@ Type_info* job_make_type_info(Job *jp, Type *t) {
             {
                 Type_info_struct *tinfo_struct = arena_alloc(&type_info_arena, sizeof(Type_info_struct));
                 tinfo_struct->base.tag = TYPE_INFO_TAG_STRUCT;
-                tinfo_struct->name.data = t->record.name;
-                tinfo_struct->name.count = strlen(t->record.name);
+
+                String_view s;
+
+                s.len = strlen(t->record.name);
+                s.data = memcpy(arena_alloc(&string_arena, s.len), t->record.name, s.len);
+                tinfo_struct->name = s;
+
                 u64 members_count = t->record.member.n;
 
                 for(u64 i = 0; i < t->record.use.n; ++i) {
@@ -1647,8 +1697,10 @@ Type_info* job_make_type_info(Job *jp, Type *t) {
                 for(u64 i = 0; i < t->record.use.n; ++i) {
                     Type *use_t = t->record.use.types[i];
                     for(u64 j = 0; j < use_t->record.member.n; ++j) {
-                        tinfo_struct_members[member_index].name.data = use_t->record.member.names[j];
-                        tinfo_struct_members[member_index].name.count = strlen(use_t->record.member.names[j]);
+
+                        s.len = strlen(use_t->record.member.names[j]);
+                        s.data = memcpy(arena_alloc(&string_arena, s.len), use_t->record.member.names[j], s.len);
+                        tinfo_struct_members[member_index].name = s;
                         tinfo_struct_members[member_index].type = job_make_type_info(jp, use_t->record.member.types[j]);
                         tinfo_struct_members[member_index].offset = use_t->record.member.offsets[j] + t->record.use.offsets[i];
 
@@ -1657,8 +1709,9 @@ Type_info* job_make_type_info(Job *jp, Type *t) {
                 }
 
                 for(u64 i = 0; i < t->record.member.n; ++i) {
-                    tinfo_struct_members[member_index].name.data = t->record.member.names[i];
-                    tinfo_struct_members[member_index].name.count = strlen(t->record.member.names[i]);
+                    s.len = strlen(t->record.member.names[i]);
+                    s.data = memcpy(arena_alloc(&string_arena, s.len), t->record.member.names[i], s.len);
+                    tinfo_struct_members[member_index].name = s;
                     tinfo_struct_members[member_index].type = job_make_type_info(jp, t->record.member.types[i]);
                     tinfo_struct_members[member_index].offset = t->record.member.offsets[i];
 
@@ -1687,6 +1740,14 @@ Type_info* job_make_type_info(Job *jp, Type *t) {
 Arr(char) _type_to_str(Type *t, Arr(char) tmp_buf) {
     if(t->kind >= TYPE_KIND_VOID && t->kind <= TYPE_KIND_TYPE) {
         char *tstr = builtin_type_to_str[t->kind];
+        char *p = arraddnptr(tmp_buf, strlen(tstr));
+        while(*tstr) {
+            *p = *tstr;
+            ++p;
+            ++tstr;
+        }
+    } else if(t->kind == TYPE_KIND_STRING) {
+        char *tstr = "string";
         char *p = arraddnptr(tmp_buf, strlen(tstr));
         while(*tstr) {
             *p = *tstr;
@@ -3734,6 +3795,7 @@ AST* parse_term(Job *jp) {
         case TOKEN_U8:   case TOKEN_U16:  case TOKEN_U32:  case TOKEN_U64:
         case TOKEN_S8:   case TOKEN_S16:  case TOKEN_S32:  case TOKEN_S64:
         case TOKEN_F32:  case TOKEN_F64:
+        case TOKEN_STRING:
             atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
             atom->token = t;
             node = (AST*)atom;
@@ -3761,11 +3823,13 @@ AST* parse_term(Job *jp) {
             node->weight = 1;
             break;
         case TOKEN_STRINGLIT:
-            atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
-            atom->token = t;
-            atom->text = job_alloc_text(jp, lexer->text.s, lexer->text.e);
-            node = (AST*)atom;
-            node->weight = 1;
+            {
+                atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
+                atom->token = t;
+                atom->text = job_alloc_text(jp, lexer->text.s, lexer->text.e);
+                node = (AST*)atom;
+                node->weight = 1;
+            }
             break;
     }
 
@@ -4102,7 +4166,7 @@ void print_value(Value *v) {
             printf("%s (%zu bytes, %zu align)", global_type_to_str(v->val.type), v->val.type->bytes, v->val.type->align);
             break;
         case VALUE_KIND_STRING:
-            printf("%s", v->val.str);
+            printf("%s", v->val.str.data);
             break;
         case VALUE_KIND_ARRAY:
             printf("[ ");
@@ -4487,16 +4551,9 @@ void ir_gen_foreign_proc_x64(Job *jp) {
         "    f64 floating64;\n"
         "} IRvalue;\n"
         "typedef struct IRmachine {\n"
-        "    Arr(u64) pc_stack;\n"
-        "    Arr(int) procid_stack;\n"
-        "    Arr(u8*) local_base_stack;\n"
-        "    Arr(u64*) jump_table_stack;\n"
-        "    u8 *global_segment;\n"
-        "    u8 *local_segment;\n"
-        "    u64 iregs[8];\n"
-        "    f32 f32regs[8];\n"
-        "    f64 f64regs[8];\n"
-        "    Arr(IRvalue) ports;\n"
+#define X(x) #x "\n"
+        IRMACHINE_BODY
+#undef X
         "} IRmachine;\n";
 
     Sym *proc_sym = ast_proc->symbol_annotation;
@@ -5812,8 +5869,8 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 if(left_expr->token == '[') {
                     ir_gen_expr(jp, left_expr->left);
 
-                    Type *array_type = ((AST_expr_base*)(left_expr->left))->type_annotation;
-                    if(array_type->kind == TYPE_KIND_ARRAY_VIEW || array_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+                    Type *subscripted_type = ((AST_expr_base*)(left_expr->left))->type_annotation;
+                    if(TYPE_KIND_IS_VIEW_LIKE(subscripted_type->kind) || subscripted_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
                         inst =
                             (IRinst) {
                                 .opcode = IROP_LOAD,
@@ -5826,7 +5883,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                         inst.loc = jp->cur_loc;
                         arrpush(jp->instructions, inst);
                     } else {
-                        assert(array_type->kind == TYPE_KIND_ARRAY || array_type->kind == TYPE_KIND_POINTER);
+                        assert(subscripted_type->kind == TYPE_KIND_ARRAY || subscripted_type->kind == TYPE_KIND_POINTER);
                     }
 
                     ir_gen_expr(jp, left_expr->right);
@@ -6980,6 +7037,48 @@ void ir_gen_block(Job *jp, AST *ast) {
                                 }
                             }
 
+                        } else if(var_type->kind == TYPE_KIND_STRING) {
+                            if(init_expr) {
+                                ir_gen_expr(jp, init_expr);
+                                assert(jp->reg_alloc == 1);
+
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_ADDRVAR,
+                                        .addrvar = {
+                                            .segment = IRSEG_LOCAL,
+                                            .offset = sym->segment_offset,
+                                            .reg_dest = jp->reg_alloc,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+
+                                ir_gen_memorycopy(jp, var_type->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+
+                                jp->reg_alloc--;
+
+                                assert(jp->reg_alloc == 0);
+
+                            } else {
+                                u64 total_bytes = var_type->bytes;
+                                u64 offset = sym->segment_offset;
+                                for(u64 b = 0, step = 8; b < total_bytes; b += step) {
+                                    while(b + step > total_bytes) step >>= 1;
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = IROP_SETVAR,
+                                            .setvar = {
+                                                .segment = IRSEG_LOCAL,
+                                                .offset = offset + b,
+                                                .bytes = step,
+                                                .immediate = true,
+                                            },
+                                        };
+                                    inst.loc = jp->cur_loc;
+                                    arrpush(jp->instructions, inst);
+                                }
+                            }
                         } else {
                             UNIMPLEMENTED;
                         }
@@ -7485,7 +7584,57 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 arrpush(type_stack, atom_type);
 
                 if(TYPE_KIND_IS_NOT_SCALAR(atom_type->kind)) {
-                    UNIMPLEMENTED;
+                    if(atom_type->kind == TYPE_KIND_STRING) {
+                        Value *v = atom->value_annotation;
+                        char *s = arena_alloc(&string_arena, v->val.str.len);
+
+                        for(int i = 0; i < v->val.str.len; ++i)
+                            s[i] = v->val.str.data[i];
+
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_SETVAR,
+                                .setvar = {
+                                    .segment = IRSEG_LOCAL,
+                                    .offset = arrlast(jp->local_offset) + offsetof(String_view, data),
+                                    .imm.integer = (u64)(void*)s,
+                                    .bytes = 8,
+                                    .immediate = true,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_SETVAR,
+                                .setvar = {
+                                    .segment = IRSEG_LOCAL,
+                                    .offset = arrlast(jp->local_offset) + offsetof(String_view, len),
+                                    .imm.integer = v->val.str.len,
+                                    .bytes = 8,
+                                    .immediate = true,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_ADDRVAR,
+                                .addrvar = {
+                                    .segment = IRSEG_LOCAL,
+                                    .offset = arrlast(jp->local_offset),
+                                    .reg_dest = jp->reg_alloc++,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        arrlast(jp->local_offset) += sizeof(String_view);
+                    } else {
+                        UNIMPLEMENTED;
+                    }
                 } else {
                     IRop opcode = IROP_LOAD;
                     IRvalue imm = { .integer = atom->value_annotation->val.integer };
@@ -7600,6 +7749,8 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
             if(node->token == TOKEN_AND || node->token == TOKEN_OR || node->token == '!') {
                 ir_gen_logical_expr(jp, cur_ast);
+                assert(node->type_annotation->kind == TYPE_KIND_BOOL);
+                arrpush(type_stack, node->type_annotation);
             } else if(node->token == '.') {
                 //TODO using dot on struct pointers has not been properly tested
                 //     foo_type_info.members[1].type.tag;
@@ -7627,6 +7778,9 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 if(operand_type->kind == TYPE_KIND_ARRAY) {
                     if(!strcmp(field, "count")) {
                         assert(operand_type->array.n > 0);
+
+                        arrsetlen(jp->instructions, arrlen(jp->instructions) - 1); // cancel previous instruction
+
                         inst =
                             (IRinst) {
                                 .opcode = IROP_LOAD,
@@ -7637,52 +7791,11 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                     .immediate = true,
                                 },
                             };
-                    } else if(!strcmp(field, "data")) {
-                        // doing this to a local and to an array that was passed as a parameter are different
-                        //TODO what if there's an expression on the left?
-                        Sym *sym = left->symbol_annotation;
-                        assert(sym->type->kind != TYPE_KIND_VOID);
-                        assert(sym->type->kind >= TYPE_KIND_ARRAY && sym->type->kind <= TYPE_KIND_ARRAY_VIEW);
-                        Type *elem_type;
-                        for(elem_type = sym->type->array.of; elem_type->kind == TYPE_KIND_ARRAY; elem_type = elem_type->array.of);
-                        Type *t = job_alloc_type(jp, TYPE_KIND_POINTER);
-                        t->pointer.to = elem_type;
-                        arrpush(type_stack, t);
-                        if(sym->is_argument) {
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_GETVAR,
-                                    .getvar = {
-                                        .segment = IRSEG_LOCAL,
-                                        .offset = sym->segment_offset,
-                                        .reg_dest = jp->reg_alloc++,
-                                        .bytes = 8,
-                                    },
-                                };
-                        } else {
-                            IRsegment segment = IRSEG_LOCAL;
-
-                            if(sym->is_global) {
-                                if(sym->value) {
-                                    segment = IRSEG_GLOBAL;
-                                } else {
-                                    segment = IRSEG_BSS;
-                                }
-                            }
-
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_ADDRVAR,
-                                    .addrvar = {
-                                        .segment = segment,
-                                        .offset = sym->segment_offset,
-                                        .reg_dest = jp->reg_alloc++,
-                                    },
-                                };
-                        }
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+                    } else  {
+                        assert(!strcmp(field, "data"));
                     }
-                    inst.loc = jp->cur_loc;
-                    arrpush(jp->instructions, inst);
                 } else if(operand_type->kind == TYPE_KIND_ARRAY_VIEW) {
                     assert(!strcmp(field, "data") || !strcmp(field, "count"));
 
@@ -7749,6 +7862,28 @@ void ir_gen_expr(Job *jp, AST *ast) {
                     }
                     inst.loc = jp->cur_loc;
                     arrpush(jp->instructions, inst);
+
+                } else if(operand_type->kind == TYPE_KIND_STRING) {
+                    assert(!strcmp(field, "data") || !strcmp(field, "len"));
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_LOAD,
+                            .load = {
+                                .reg_dest = jp->reg_alloc,
+                                .reg_src_ptr = jp->reg_alloc,
+                                .bytes = 8,
+                            },
+                        };
+
+                    if(!strcmp(field, "len")) {
+                        inst.load.has_immediate_offset = true;
+                        inst.load.byte_offset_imm = 8;
+                    }
+                    inst.loc = jp->cur_loc;
+                    arrpush(jp->instructions, inst);
+
+                    jp->reg_alloc++;
 
                 } else {
                     UNIMPLEMENTED;
@@ -7829,7 +7964,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                             }
 
                         } else if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind) && TYPE_KIND_IS_NOT_SCALAR(operand_type->kind)) {
-                            UNIMPLEMENTED;
+                            PASS;
                         } else if(result_type->kind == TYPE_KIND_POINTER && TYPE_KIND_IS_ARRAY_LIKE(operand_type->kind)) {
                             if(operand_type->kind == TYPE_KIND_ARRAY_VIEW) {
                                 inst =
@@ -7886,24 +8021,6 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                 inst.loc = jp->cur_loc;
                                 arrpush(jp->instructions, inst);
                             }
-                            /*TODO is this really necessary??
-                            else if(result_type->bytes > operand_type->bytes && result_type->bytes < sizeof(u64)) {
-                                assert((result_type->kind < TYPE_KIND_FLOAT || result_type->kind > TYPE_KIND_F64) &&
-                                       (operand_type->kind < TYPE_KIND_FLOAT || operand_type->kind > TYPE_KIND_F64));
-                                inst =
-                                    (IRinst) {
-                                        .opcode = IROP_AND,
-                                        .arith = {
-                                            .operand_bytes = { result_type->bytes, operand_type->bytes, result_type->bytes },
-                                            .reg = { jp->reg_alloc, jp->reg_alloc },
-                                            .imm.integer = ((u64)((u64)1 << (result_type->bytes << (u64)3)) - (u64)1),
-                                            .immediate = true,
-                                        }
-                                    };
-
-                                arrpush(jp->instructions, inst);
-                            }
-                            */
                         }
 
                         (*reg_destp)++;
@@ -8086,7 +8203,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                 arrpush(jp->instructions, inst);
                             }
 
-                        } else if(a_type->kind == TYPE_KIND_ARRAY_VIEW) {
+                        } else if(a_type->kind == TYPE_KIND_ARRAY_VIEW || a_type->kind == TYPE_KIND_STRING) {
                             inst =
                                 (IRinst) {
                                     .opcode = IROP_LOAD,
@@ -8831,7 +8948,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                         inst.loc = jp->cur_loc;
                         arrpush(jp->instructions, inst);
                     }
-                } else if(p->type_annotation->kind == TYPE_KIND_ARRAY_VIEW) {
+                } else if(TYPE_KIND_IS_VIEW_LIKE(p->type_annotation->kind)) {
                     //TODO pass view by const ref
                     ir_gen_expr(jp, p->value);
                     jp->reg_alloc--;
@@ -9711,7 +9828,7 @@ void job_runner(char *src, char *src_path) {
 
                                 Type *type = ((AST_expr*)(ast_statement->left))->type_annotation;
 
-                                Type *t = typecheck_operation(jp, type, NULL, ast_statement->assign_op);
+                                Type *t = typecheck_operation(jp, type, NULL, ast_statement->assign_op, &(ast_statement->left), NULL);
 
                                 if(!t) {
                                     job_error(jp, ast_statement->base.loc,
@@ -9772,13 +9889,28 @@ void job_runner(char *src, char *src_path) {
                             Type *type_right = NULL;
                             if(ast_statement->right) type_right = ((AST_expr_base*)(ast_statement->right))->type_annotation;
 
-                            Type *t = typecheck_operation(jp, type_left, type_right, ast_statement->assign_op);
+                            Type *t = typecheck_operation(jp,
+                                    type_left, type_right,
+                                    ast_statement->assign_op,
+                                    &(ast_statement->left), &(ast_statement->right));
 
                             if(!t) {
                                 job_error(jp, ast_statement->base.loc,
                                         "invalid assignment of '%s' to '%s'",
                                         job_type_to_str(jp, type_right),
                                         job_type_to_str(jp, type_left));
+                            }
+
+                            if(ast_statement->left->kind == AST_KIND_expr) {
+                                AST_expr *left_expr = (AST_expr*)(ast_statement->left);
+                                if(left_expr->token == '.') {
+                                    AST_expr_base *left_left = (AST_expr_base*)(left_expr->left);
+                                    if(TYPE_KIND_IS_ARRAY_LIKE(left_left->type_annotation->kind) || left_left->type_annotation->kind == TYPE_KIND_STRING) {
+                                        job_error(jp, left_expr->base.loc,
+                                                "cannot assign to fields of '%s'",
+                                                job_type_to_str(jp, left_left->type_annotation));
+                                    } 
+                                }
                             }
 
                             if(jp->state == JOB_STATE_ERROR) {
@@ -9859,7 +9991,7 @@ void job_runner(char *src, char *src_path) {
                                 Type *ret_expr_type = ret_expr->type_annotation;
                                 Type *expect_type = cur_proc_type->proc.ret.types[expr_list_pos];
 
-                                Type *t = typecheck_operation(jp, expect_type, ret_expr_type, '=');
+                                Type *t = typecheck_operation(jp, expect_type, ret_expr_type, '=', NULL, &(jp->expr_list[expr_list_pos]->expr));
                                 if(!t) {
                                     job_error(jp, ret_expr->base.loc,
                                             "in return from '%s' expected type '%s', got '%s'",
@@ -10090,7 +10222,8 @@ Value *atom_to_value(Job *jp, AST_atom *atom) {
             UNREACHABLE;
         case TOKEN_STRINGLIT:
             vp = job_alloc_value(jp, VALUE_KIND_STRING);
-            vp->val.str = atom->text;
+            vp->val.str.data = atom->text;
+            vp->val.str.len = strlen(atom->text);
             break;
         case TOKEN_TWODOT:
             vp = job_alloc_value(jp, VALUE_KIND_TOKEN);
@@ -10112,6 +10245,7 @@ Value *atom_to_value(Job *jp, AST_atom *atom) {
         case TOKEN_FLOAT:
         case TOKEN_F32: case TOKEN_F64:
         case TOKEN_INT:
+        case TOKEN_STRING:
             vp = job_alloc_value(jp, VALUE_KIND_TYPE);
             vp->val.type = job_alloc_type(jp, TOKEN_TO_TYPEKIND(atom->token));
             break;
@@ -10137,11 +10271,7 @@ Type *atom_to_type(Job *jp, AST_atom *atom) {
         default:
             UNREACHABLE;
         case TOKEN_STRINGLIT:
-            tp = job_alloc_type(jp, TYPE_KIND_ARRAY);
-            tp->array.n = strlen(atom->text);
-            tp->array.of = builtin_type+TYPE_KIND_CHAR;
-            tp->align = tp->array.of->align;
-            tp->bytes += tp->array.n;
+            tp = job_alloc_type(jp, TYPE_KIND_STRING);
             break;
         case TOKEN_TWODOT: /* we do this to make checking array constructors easier */
             tp = job_alloc_type(jp, TYPE_KIND_U64);
@@ -10158,6 +10288,7 @@ Type *atom_to_type(Job *jp, AST_atom *atom) {
         case TOKEN_F32: case TOKEN_F64:
         case TOKEN_FLOAT:
         case TOKEN_CHAR:
+        case TOKEN_STRING:
             tp = job_alloc_type(jp, TYPE_KIND_TYPE);
             break;
         case TOKEN_UINTLIT: case TOKEN_HEXLIT: case TOKEN_BINLIT:
@@ -10480,6 +10611,9 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
 bool types_are_same(Type *a, Type *b) {
     if(a->kind != b->kind) return false;
 
+    if(a->kind == TYPE_KIND_STRING && b->kind == TYPE_KIND_STRING)
+        return true;
+
     if(a->kind <= TYPE_KIND_TYPE) return true;
 
     if(a->kind == TYPE_KIND_POINTER)
@@ -10529,7 +10663,7 @@ bool types_are_same(Type *a, Type *b) {
     return false;
 }
 
-Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op) {
+Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST **right) {
     if(!(a && b)) { /* unary operators */
         switch(op) {
             default:
@@ -10622,9 +10756,15 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op) {
                 if(TYPE_KIND_IS_INTEGER_OR_FLOAT(a->kind) && TYPE_KIND_IS_INTEGER_OR_FLOAT(b->kind))
                     return a;
 
+                if(TYPE_KIND_IS_INTEGER(a->kind) && b->kind == TYPE_KIND_POINTER && b->pointer.to->kind == TYPE_KIND_VOID)
+                    return a;
+
+                if(TYPE_KIND_IS_INTEGER(b->kind) && a->kind == TYPE_KIND_POINTER && a->pointer.to->kind == TYPE_KIND_VOID)
+                    return a;
+
                 if(a->kind == TYPE_KIND_POINTER && b->kind == TYPE_KIND_POINTER) {
                     if(a->pointer.to->kind == TYPE_KIND_POINTER && b->pointer.to->kind == TYPE_KIND_POINTER) {
-                        return typecheck_operation(jp, a->pointer.to, b->pointer.to, op);
+                        return typecheck_operation(jp, a->pointer.to, b->pointer.to, op, NULL, NULL);
                     }
 
                     if(a->pointer.to == b->pointer.to)
@@ -10661,6 +10801,29 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op) {
                     if(types_are_same(a->pointer.to, b->array.of))
                         return a;
 
+                {
+                    Sym *sym_String_view   = global_scope_lookup(jp, "_String_view");
+                    Sym *sym_Array_view    = global_scope_lookup(jp, "_Array_view");
+                    Sym *sym_Dynamic_array = global_scope_lookup(jp, "_Dynamic_array");
+                    Sym *sym_Any           = global_scope_lookup(jp, "Any");
+
+                    Type *type_String_view   = sym_String_view->value->val.type;
+                    Type *type_Array_view    = sym_Array_view->value->val.type;
+                    Type *type_Dynamic_array = sym_Dynamic_array->value->val.type;
+                    Type *type_Any           = sym_Any->value->val.type;
+
+                    if(a == type_Any) return a;
+                    if(b == type_Any) return a;
+
+                    if(a == type_String_view              && b->kind == TYPE_KIND_STRING)        return a;
+                    if(a == type_Array_view               && b->kind == TYPE_KIND_ARRAY_VIEW)    return a;
+                    if(a == type_Dynamic_array            && b->kind == TYPE_KIND_DYNAMIC_ARRAY) return a;
+                    if(a->kind == TYPE_KIND_STRING        && b       == type_String_view)        return a;
+                    if(a->kind == TYPE_KIND_ARRAY_VIEW    && b       == type_Array_view)         return a;
+                    if(a->kind == TYPE_KIND_DYNAMIC_ARRAY && b       == type_Dynamic_array)      return a;
+                }
+
+
                 if(TYPE_KIND_IS_RECORD(a->kind) && TYPE_KIND_IS_RECORD(b->kind)) {
                     if(a->record.name && b->record.name) {
                         for(u64 i = 0; i < b->record.use.n; ++i) {
@@ -10678,6 +10841,7 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op) {
 
                 if(a->kind == TYPE_KIND_TYPE)        return a;
                 if(a->kind == TYPE_KIND_POINTER)     return a->pointer.to;
+                if(a->kind == TYPE_KIND_STRING)      return builtin_type+TYPE_KIND_CHAR;
                 if(TYPE_KIND_IS_ARRAY_LIKE(a->kind)) return a->array.of;
 
                 break;
@@ -10688,6 +10852,8 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op) {
                     return NULL;
             case '*': case '/':
             case '+': case '-':
+                assert(left && right);
+
                 if(a->kind > b->kind) { /* type commutative */
                     Type *tmp = a;
                     a = b;
@@ -10917,32 +11083,131 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op) {
                     b = tmp;
                 }
 
-                if(a->kind == TYPE_KIND_STRUCT || b->kind == TYPE_KIND_STRUCT) return NULL;
-                if(a->kind == TYPE_KIND_UNION  || b->kind == TYPE_KIND_UNION)  return NULL;
+                if(TYPE_KIND_IS_RECORD(a->kind) || TYPE_KIND_IS_RECORD(b->kind)) return NULL;
 
                 return builtin_type+TYPE_KIND_BOOL;
 
                 break;
             case '=':
-                if(types_are_same(a, b))
-                    return a;
+                {
+                    bool checked = false;
 
-                if(TYPE_KIND_IS_FLOAT(a->kind)   && b->kind == TYPE_KIND_INT)      return a;
-                if(TYPE_KIND_IS_FLOAT(a->kind)   && TYPE_KIND_IS_FLOAT(b->kind))   return a;
-                if(TYPE_KIND_IS_INTEGER(a->kind) && TYPE_KIND_IS_INTEGER(b->kind)) return a;
+                    if(types_are_same(a, b))
+                        return a;
 
-                if(a->kind == TYPE_KIND_ARRAY && b->kind == TYPE_KIND_ARRAY
-                        && typecheck_operation(jp, a->array.of, b->array.of, '=') && a->array.n == b->array.n)
-                    return a;
+                    if(TYPE_KIND_IS_FLOAT(a->kind) && TYPE_KIND_IS_FLOAT(b->kind))                 checked = true;
+                    if(!checked && TYPE_KIND_IS_INTEGER(a->kind) && TYPE_KIND_IS_INTEGER(b->kind)) checked = true;
+                    if(!checked && TYPE_KIND_IS_FLOAT(a->kind) && b->kind == TYPE_KIND_INT)        checked = true;
 
-                if(a->kind == TYPE_KIND_ARRAY_VIEW && TYPE_KIND_IS_ARRAY_LIKE(b->kind) 
-                        && typecheck_operation(jp, a->array.of, b->array.of, '='))
-                    return a;
+                    if(!checked
+                            && a->kind == TYPE_KIND_POINTER && TYPE_KIND_IS_ARRAY_LIKE(b->kind)
+                            && typecheck_operation(jp, a->pointer.to, b->array.of, '=', NULL, NULL)) {
+                        checked = true;
+                    }
 
-                if(a->kind == TYPE_KIND_DYNAMIC_ARRAY && TYPE_KIND_IS_ARRAY_LIKE(b->kind)
-                        && typecheck_operation(jp, a->array.of, b->array.of, '='))
-                    return a;
+                    if(!checked
+                            && a->kind == TYPE_KIND_POINTER && b->kind == TYPE_KIND_STRING
+                            && typecheck_operation(jp, a->pointer.to, builtin_type+TYPE_KIND_CHAR, '=', NULL, NULL)) {
+                        checked = true;
+                    }
 
+                    if(!checked
+                            && a->kind == TYPE_KIND_ARRAY && b->kind == TYPE_KIND_ARRAY
+                            && typecheck_operation(jp, a->array.of, b->array.of, '=', NULL, NULL) && a->array.n == b->array.n) {
+                        checked = true;
+                    }
+
+                    if(!checked
+                            && a->kind == TYPE_KIND_ARRAY_VIEW && TYPE_KIND_IS_ARRAY_LIKE(b->kind) 
+                            && typecheck_operation(jp, a->array.of, b->array.of, '=', NULL, NULL)) {
+                        checked = true;
+                    }
+
+                    if(!checked
+                            && a->kind == TYPE_KIND_DYNAMIC_ARRAY && TYPE_KIND_IS_ARRAY_LIKE(b->kind)
+                            && typecheck_operation(jp, a->array.of, b->array.of, '=', NULL, NULL)) {
+                        checked = true;
+                    }
+
+                    if(!checked
+                            && a->kind == TYPE_KIND_ARRAY_VIEW && b->kind == TYPE_KIND_STRING 
+                            && typecheck_operation(jp, a->array.of, builtin_type+TYPE_KIND_CHAR, '=', NULL, NULL)) {
+                        checked = true;
+                    }
+
+                    if(!checked) {
+                        Sym *sym_String_view   = global_scope_lookup(jp, "_String_view");
+                        Sym *sym_Array_view    = global_scope_lookup(jp, "_Array_view");
+                        Sym *sym_Dynamic_array = global_scope_lookup(jp, "_Dynamic_array");
+                        Sym *sym_Any           = global_scope_lookup(jp, "Any");
+
+                        Type *type_String_view   = sym_String_view->value->val.type;
+                        Type *type_Array_view    = sym_Array_view->value->val.type;
+                        Type *type_Dynamic_array = sym_Dynamic_array->value->val.type;
+                        Type *type_Any           = sym_Any->value->val.type;
+
+                        if(a == type_Any)                                                                 checked = true;
+                        else if(b == type_Any)                                                            checked = true;
+                        else if(a == type_String_view              && b->kind == TYPE_KIND_STRING)        checked = true;
+                        else if(a == type_Array_view               && b->kind == TYPE_KIND_ARRAY_VIEW)    checked = true;
+                        else if(a == type_Dynamic_array            && b->kind == TYPE_KIND_DYNAMIC_ARRAY) checked = true;
+                        else if(a->kind == TYPE_KIND_STRING        && b       == type_String_view)        checked = true;
+                        else if(a->kind == TYPE_KIND_ARRAY_VIEW    && b       == type_Array_view)         checked = true;
+                        else if(a->kind == TYPE_KIND_DYNAMIC_ARRAY && b       == type_Dynamic_array)      checked = true;
+                    }
+
+                    if(checked) {
+                        if(right) {
+                            assert(*right);
+
+                            if(a->kind == TYPE_KIND_POINTER && TYPE_KIND_IS_NOT_SCALAR(b->kind)) {
+                                if(TYPE_KIND_IS_ARRAY_LIKE(b->kind) || b->kind == TYPE_KIND_STRING) {
+                                    AST_expr *dot_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+                                    AST_atom *field_atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
+                                    field_atom->text = "data";
+                                    dot_expr->token = '.';
+                                    dot_expr->left = *right;
+                                    dot_expr->right = (AST*)field_atom;
+                                    dot_expr->type_annotation = job_alloc_type(jp, TYPE_KIND_POINTER);
+                                    dot_expr->type_annotation->pointer.to =
+                                        (b->kind == TYPE_KIND_STRING) ? (builtin_type+TYPE_KIND_CHAR) : b->array.of;
+                                    *right = (AST*)dot_expr;
+                                } else {
+                                    AST_expr *addr_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+                                    addr_expr->token = '@';
+                                    addr_expr->right = *right;
+                                    addr_expr->type_annotation = job_alloc_type(jp, TYPE_KIND_POINTER);
+                                    addr_expr->type_annotation->pointer.to = b;
+                                    *right = (AST*)addr_expr;
+                                }
+                            } else if((a->kind == TYPE_KIND_DYNAMIC_ARRAY || a->kind == TYPE_KIND_ARRAY_VIEW) && b->kind == TYPE_KIND_ARRAY) {
+                                PASS;
+                                //AST_expr *dot_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+                                //AST_atom *field_atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
+                                //field_atom->text = "data";
+                                //dot_expr->token = '.';
+                                //dot_expr->left = *right;
+                                //dot_expr->right = (AST*)field_atom;
+                                //dot_expr->type_annotation = job_alloc_type(jp, TYPE_KIND_POINTER);
+                                //dot_expr->type_annotation->pointer.to = b->array.of;
+                                //*right = (AST*)dot_expr;
+                            } else if(a->kind == TYPE_KIND_ARRAY && b->kind == TYPE_KIND_ARRAY) {
+                                assert(right[0]->kind == AST_KIND_array_literal);
+                                AST_array_literal *right_array = (AST_array_literal*)*right;
+                                right_array->type_annotation = a;
+                            } else {
+                                AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+                                cast_expr->token = TOKEN_CAST;
+                                cast_expr->right = *right;
+                                cast_expr->type_annotation = a;
+                                *right = (AST*)cast_expr;
+                            }
+                        }
+
+                        return a;
+                    }
+
+                }
                 break;
             case TOKEN_PLUSEQUAL: case TOKEN_MINUSEQUAL:
                 if(a->kind == TYPE_KIND_POINTER && TYPE_KIND_IS_INTEGER(b->kind)
@@ -10991,7 +11256,14 @@ Type* typecheck_dot(Job *jp, Type *a, char *field, u64 *offsetp) {
         }
     } else if(a->kind == TYPE_KIND_ENUM) {
         UNIMPLEMENTED;
-    } else if(a->kind >= TYPE_KIND_ARRAY && a->kind <= TYPE_KIND_ARRAY_VIEW) {
+    } else if(a->kind == TYPE_KIND_STRING) {
+        if(!strcmp(field, "len")) {
+            result = job_alloc_type(jp, TYPE_KIND_U64);
+        } else if(!strcmp(field, "data")) {
+            result = job_alloc_type(jp, TYPE_KIND_POINTER);
+            result->pointer.to = builtin_type+TYPE_KIND_CHAR;
+        }
+    } else if(TYPE_KIND_IS_ARRAY_LIKE(a->kind)) {
         if(!strcmp(field, "count")) {
             result = job_alloc_type(jp, TYPE_KIND_U64);
         } else if(!strcmp(field, "cap") && a->kind == TYPE_KIND_DYNAMIC_ARRAY) {
@@ -11065,7 +11337,7 @@ void typecheck_expr(Job *jp) {
             if(!(node->left && node->right)) {
                 Type *a_type = arrpop(type_stack);
 
-                result_type = typecheck_operation(jp, a_type, NULL, node->token);
+                result_type = typecheck_operation(jp, a_type, NULL, node->token, &(node->left), &(node->right));
                 node->type_annotation = result_type;
                 if(!result_type) {
                     job_error(jp, node->base.loc, "invalid type '%s' to '%s' operator",
@@ -11126,7 +11398,7 @@ void typecheck_expr(Job *jp) {
                     node->left = NULL; // the type will already be on the cast
                 }
 
-                result_type = typecheck_operation(jp, a_type, b_type, node->token);
+                result_type = typecheck_operation(jp, a_type, b_type, node->token, &(node->left), &(node->right));
                 node->type_annotation = result_type;
                 if(!result_type) {
                     job_error(jp, node->base.loc, "invalid types '%s' and '%s' to '%s' operator",
@@ -11163,26 +11435,21 @@ void typecheck_expr(Job *jp) {
                 array_elem_type = type_stack[i++];
             }
 
-            for(; i < arrlen(type_stack); ++i) {
-                Type *t = typecheck_operation(jp, array_elem_type, type_stack[i], '=');
+            {
+                AST_expr_list *array_elem_list = array_lit->elements;
 
-                if(!t) {
-                    job_error(jp, array_lit->base.loc,
-                            "cannot have element of type '%s' in array literal with element type '%s'",
-                            job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
-                    break;
-                }
+                for(; i < arrlen(type_stack); ++i) {
+                    Type *t = typecheck_operation(jp, array_elem_type, type_stack[i], '=', NULL, &(array_elem_list->expr));
 
-                /*
-                if(!types_are_same(array_elem_type, type_stack[i])) {
-                    AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
-                    cast_expr->token = TOKEN_CAST;
-                    cast_expr->left = NULL;
-                    cast_expr->type_annotation = array_elem_type;
-                    cast_expr->right = ast_statement->right;
-                    ast_statement->right = (AST*)cast_expr;
+                    if(!t) {
+                        job_error(jp, array_elem_list->base.loc,
+                                "cannot have element of type '%s' in array literal with element type '%s'",
+                                job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
+                        break;
+                    }
+
+                    array_elem_list = array_elem_list->next;
                 }
-                */
             }
 
             Value **elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n_elements);
@@ -11278,28 +11545,37 @@ void typecheck_expr(Job *jp) {
             int base_index = arrlen(type_stack) - callp->n_params;
             int n_positional_params = callp->has_named_params ? callp->first_named_param : callp->n_params;
 
-            for(int i = 0; i < n_positional_params && i < proc_type->proc.param.n; ++i) {
-                Type *param_type = type_stack[base_index + i];
-                Type *expected_type = proc_type->proc.param.types[i];
+            {
+                AST_param *param_list = callp->params;
 
-                Type *t = typecheck_operation(jp, expected_type, param_type, '=');
+                for(int i = 0; i < n_positional_params && i < proc_type->proc.param.n; ++i) {
+                    Type *param_type = type_stack[base_index + i];
+                    Type *expected_type = proc_type->proc.param.types[i];
 
-                if(!t) {
-                    if(proc_type->proc.name == NULL) {
-                        job_error(jp, callp->base.loc,
-                                "cannot pass type '%s' to parameter of type '%s'",
-                                job_type_to_str(jp, param_type),
-                                job_type_to_str(jp, expected_type));
-                    } else {
-                        job_error(jp, callp->base.loc,
-                                "cannot pass type '%s' to parameter '%s' of type '%s'",
-                                job_type_to_str(jp, param_type),
-                                proc_type->proc.param.names[i],
-                                job_type_to_str(jp, expected_type));
+                    assert(param_type == param_list->type_annotation);
+
+                    Type *t = typecheck_operation(jp, expected_type, param_type, '=', NULL, &(param_list->value));
+                    param_list->type_annotation = t;
+
+                    if(!t) {
+                        if(proc_type->proc.name == NULL) {
+                            job_error(jp, param_list->base.loc,
+                                    "cannot pass type '%s' to parameter of type '%s'",
+                                    job_type_to_str(jp, param_type),
+                                    job_type_to_str(jp, expected_type));
+                        } else {
+                            job_error(jp, param_list->base.loc,
+                                    "cannot pass type '%s' to parameter '%s' of type '%s'",
+                                    job_type_to_str(jp, param_type),
+                                    proc_type->proc.param.names[i],
+                                    job_type_to_str(jp, expected_type));
+                        }
                     }
-                }
 
-                params_passed[i] = 1;
+                    param_list = param_list->next;
+
+                    params_passed[i] = 1;
+                }
             }
 
             if(callp->has_named_params) {
@@ -11307,9 +11583,13 @@ void typecheck_expr(Job *jp) {
 
                 base_index = arrlen(type_stack) - callp->n_params + callp->first_named_param;
 
+                AST_param *param_list = callp->params;
+
                 for(int i = 0; i < callp->n_params && i < proc_type->proc.param.n; ++i) {
                     Type *param_type = type_stack[base_index + i];
                     char *param_name = value_stack[base_index + i]->name;
+
+                    assert(param_type == param_list->type_annotation);
 
                     Type *expected_type = NULL;
                     int param_index = 0;
@@ -11334,16 +11614,19 @@ void typecheck_expr(Job *jp) {
 
                     params_passed[param_index] = 1;
 
-                    Type *t = typecheck_operation(jp, expected_type, param_type, '=');
+                    Type *t = typecheck_operation(jp, expected_type, param_type, '=', NULL, &(param_list->value));
+                    param_list->type_annotation = t;
 
                     if(!t) {
-                        job_error(jp, callp->base.loc,
+                        job_error(jp, param_list->base.loc,
                                 "invalid type '%s' passed to parameter '%s' in call to '%s', expected type '%s'",
                                 job_type_to_str(jp, param_type),
                                 proc_type->proc.param.names[param_index],
                                 proc_type->proc.name,
                                 job_type_to_str(jp, expected_type));
                     }
+
+                    param_list = param_list->next;
                 }
             }
 
@@ -11849,7 +12132,7 @@ void typecheck_structdecl(Job *jp) {
                     job_error(jp, p->base.loc,
                             "parameter default values must evaluate at compile time");
 
-                Type *t = typecheck_operation(jp, bind_type, init_type, '=');
+                Type *t = typecheck_operation(jp, bind_type, init_type, '=', NULL, &(p->init));
 
                 if(!t) {
                     job_error(jp, p->base.loc,
@@ -11858,28 +12141,6 @@ void typecheck_structdecl(Job *jp) {
                 }
 
                 if(jp->state == JOB_STATE_ERROR) return;
-
-                if(!types_are_same(t, init_type)) {
-                    if(TYPE_KIND_IS_NOT_SCALAR(t->kind) && TYPE_KIND_IS_NOT_SCALAR(init_type->kind)) {
-                        DUNNO;
-                    } else {
-                        if(TYPE_KIND_IS_FLOAT32(t->kind) && init_value->kind == VALUE_KIND_INT) {
-                            init_value->kind = VALUE_KIND_FLOAT;
-                            init_value->val.floating = (float)init_value->val.integer;
-                        } else if(t->kind == TYPE_KIND_F64 && init_value->kind == VALUE_KIND_FLOAT) {
-                            init_value->kind = VALUE_KIND_DFLOAT;
-                            init_value->val.dfloating = (f64)init_value->val.floating;
-                        } else if(t->kind == TYPE_KIND_F64 && init_value->kind == VALUE_KIND_INT) {
-                            init_value->kind = VALUE_KIND_DFLOAT;
-                            init_value->val.dfloating = (f64)init_value->val.integer;
-                        } else if(TYPE_KIND_IS_FLOAT32(t->kind) && init_value->kind == VALUE_KIND_UINT) {
-                            init_value->kind = VALUE_KIND_FLOAT;
-                            init_value->val.floating = (float)init_value->val.uinteger;
-                        }
-
-                        ((AST_expr_base*)p->init)->type_annotation = t;
-                    }
-                }
 
                 bind_type = t;
             }
@@ -12060,7 +12321,7 @@ void typecheck_procdecl(Job *jp) {
                     job_error(jp, p->base.loc,
                             "parameter default values must evaluate at compile time");
 
-                Type *t = typecheck_operation(jp, bind_type, init_type, '=');
+                Type *t = typecheck_operation(jp, bind_type, init_type, '=', NULL, &(p->init));
 
                 if(!t) {
                     job_error(jp, p->base.loc,
@@ -12069,29 +12330,6 @@ void typecheck_procdecl(Job *jp) {
                 }
 
                 if(jp->state == JOB_STATE_ERROR) return;
-
-                //TODO f64
-                if(!types_are_same(t, init_type)) {
-                    if(TYPE_KIND_IS_NOT_SCALAR(t->kind) && TYPE_KIND_IS_NOT_SCALAR(init_type->kind)) {
-                        DUNNO;
-                    } else {
-                        if(TYPE_KIND_IS_FLOAT32(t->kind) && init_value->kind == VALUE_KIND_INT) {
-                            init_value->kind = VALUE_KIND_FLOAT;
-                            init_value->val.floating = (float)init_value->val.integer;
-                        } else if(t->kind == TYPE_KIND_F64 && init_value->kind == VALUE_KIND_FLOAT) {
-                            init_value->kind = VALUE_KIND_DFLOAT;
-                            init_value->val.dfloating = (f64)init_value->val.floating;
-                        } else if(t->kind == TYPE_KIND_F64 && init_value->kind == VALUE_KIND_INT) {
-                            init_value->kind = VALUE_KIND_DFLOAT;
-                            init_value->val.dfloating = (f64)init_value->val.integer;
-                        } else if(TYPE_KIND_IS_FLOAT32(t->kind) && init_value->kind == VALUE_KIND_UINT) {
-                            init_value->kind = VALUE_KIND_FLOAT;
-                            init_value->val.floating = (float)init_value->val.uinteger;
-                        }
-                        
-                        ((AST_expr_base*)p->init)->type_annotation = t;
-                    }
-                }
 
                 bind_type = t;
             }
@@ -12317,7 +12555,7 @@ void typecheck_vardecl(Job *jp) {
                     init_type->array.n = bind_type->array.n;
                 }
 
-                Type *t = typecheck_operation(jp, bind_type, init_type, '=');
+                Type *t = typecheck_operation(jp, bind_type, init_type, '=', NULL, &(ast->init));
 
                 if(!t) {
                     job_error(jp, ast->base.loc,
@@ -12326,29 +12564,6 @@ void typecheck_vardecl(Job *jp) {
                 }
 
                 if(jp->state == JOB_STATE_ERROR) return;
-
-
-                if(!types_are_same(t, init_type)) {
-                    if(TYPE_KIND_IS_NOT_SCALAR(t->kind) && TYPE_KIND_IS_NOT_SCALAR(init_type->kind)) {
-                        DUNNO;
-                    } else {
-                        if(TYPE_KIND_IS_FLOAT32(t->kind) && init_value->kind == VALUE_KIND_INT) {
-                            init_value->kind = VALUE_KIND_FLOAT;
-                            init_value->val.floating = (float)init_value->val.integer;
-                        } else if(t->kind == TYPE_KIND_F64 && init_value->kind == VALUE_KIND_FLOAT) {
-                            init_value->kind = VALUE_KIND_DFLOAT;
-                            init_value->val.dfloating = (f64)init_value->val.floating;
-                        } else if(t->kind == TYPE_KIND_F64 && init_value->kind == VALUE_KIND_INT) {
-                            init_value->kind = VALUE_KIND_DFLOAT;
-                            init_value->val.dfloating = (f64)init_value->val.integer;
-                        } else if(TYPE_KIND_IS_FLOAT32(t->kind) && init_value->kind == VALUE_KIND_UINT) {
-                            init_value->kind = VALUE_KIND_FLOAT;
-                            init_value->val.floating = (float)init_value->val.uinteger;
-                        }
-
-                        ((AST_expr_base*)ast->init)->type_annotation = t;
-                    }
-                }
 
                 bind_type = t;
             } else {
@@ -12488,9 +12703,9 @@ void print_sym(Sym sym) {
     printf("size_in_bytes: %lu\n", sym.type->bytes);
 }
 
-//TODO type info
-//TODO enums
 //TODO varargs
+//TODO print()
+//TODO enums
 //TODO proc types and proc pointers
 //TODO implicit context
 //TODO dynamic arrays
@@ -12515,6 +12730,7 @@ int main(void) {
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
+    arena_init(&string_arena);
     arena_init(&type_info_arena);
 
     char *preload_path = "preload.jpl";
@@ -12523,7 +12739,7 @@ int main(void) {
 
     job_runner(preload_src, preload_path);
 
-    char *path = "test/test_type_info.jpl";
+    char *path = "test/string.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 

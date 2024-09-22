@@ -32,7 +32,7 @@ typedef struct Any Any;
 
 struct String_view {
     char *data;
-    u64 count;
+    u64 len;
 };
 
 struct Array_view {

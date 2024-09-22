@@ -1,0 +1,35 @@
+proc main() int {
+    s: string = "this is a test string\n";
+    dp: *char = s;
+    s_len := s.len;
+    test(s);
+    //s.data = cast(*char)cast(*void)0;
+
+    s_view: _String_view = s;
+    s_view.data = cast(*char)cast(*void)0;
+    c := s[2];
+    s[2] = 100;
+    putchar(c);
+    putchar(s[2]);
+    putchar();
+
+    print_string(s);
+
+    return s_view.len == s.len && s_view.len == s_len;
+}
+
+proc print_string(s: string) {
+    write(STDOUT, cast(*void) s.data, s.len);
+}
+
+proc test(cp: *char) char {
+    return >cp;
+}
+
+proc putchar(c: s32 = 10) s32 #system;
+proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
+
+size_t :: u64;
+STDOUT :: 1;
+
+#run main();

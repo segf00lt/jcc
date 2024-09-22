@@ -3,6 +3,7 @@
 #include <string.h>
 
 
+//TODO make these things order independent
 #define TOKENS                               \
     X(IDENT,                              "")\
     X(INTLIT,                             "")\
@@ -56,6 +57,7 @@
     X(F32,                             "f32")\
     X(F64,                             "f64")\
     X(CAST,                           "cast")\
+    X(STRING,                       "string")\
     X(SIZEOF,                       "sizeof")\
     X(ALIGNOF,                     "alignof")\
     X(TYPEOF,                       "typeof")\

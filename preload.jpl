@@ -68,7 +68,7 @@ struct Type_info_proc {
 
 struct _String_view { // struct definition for a builtin string
     data: *char;
-    count: u64;
+    len:   u64;
 }
 
 struct _Array_view {
@@ -82,7 +82,7 @@ struct _Dynamic_array {
     cap:   u64;
 }
 
-struct _Any {
+struct Any {
     data: *void;
     type: *Type_info;
 }
