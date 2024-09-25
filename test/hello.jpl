@@ -1,33 +1,7 @@
-/*
-proc string_concat(a: string, b: string) string {
-    s_view: _String_view = ---;
-    s_view.len = a.len + b.len;
-    s_view.data = cast(*char)malloc(s_view.len);
+#run main();
 
-    w := s_view.data;
-
-    i := 0;
-    while i < a.len {
-        w[i] = a[i];
-        i++;
-    }
-
-    w += a.len;
-    i = 0;
-    while i < b.len {
-        w[i] = b[i];
-        i++;
-    }
-
-    s: string = s_view;
-
-    return s;
-}
-*/
-
-proc debug_here() {
-    s := "here!!!!!!!!\n";
-    write(STDOUT, cast(*void)s.data, s.len);
+proc main() {
+    print("hello world \n", 42);
 }
 
 proc print(fmt: string, args: ..) {
@@ -52,6 +26,12 @@ proc print(fmt: string, args: ..) {
         while >end_fmt_slice != 37 && fmt.len > (end_fmt_slice - fmt.data) {
             end_fmt_slice++;
         }
+
+        if fmt.len == (end_fmt_slice - fmt.data) {
+            write(STDOUT, cast(*void)fmt.data, fmt.len);
+            return;
+        }
+
         write(STDOUT, cast(*void)begin_fmt_slice, cast(size_t)(end_fmt_slice - begin_fmt_slice));
         end_fmt_slice++;
         begin_fmt_slice = end_fmt_slice;
@@ -71,6 +51,8 @@ proc print(fmt: string, args: ..) {
                 if x < 0 {
                     n = -x;
                     negative = 1;
+                } else {
+                    n = x;
                 }
             } else if t_int.bits == 64 && !t_int.sign {
                 n = >cast(*u64)v;
@@ -80,6 +62,8 @@ proc print(fmt: string, args: ..) {
                 if x < 0 {
                     n = -x;
                     negative = 1;
+                } else {
+                    n = x;
                 }
             } else if t_int.bits == 32 && !t_int.sign {
                 n = >cast(*u32)v;
@@ -89,6 +73,8 @@ proc print(fmt: string, args: ..) {
                 if x < 0 {
                     n = -x;
                     negative = 1;
+                } else {
+                    n = x;
                 }
             } else if t_int.bits == 16 && !t_int.sign {
                 n = >cast(*u16)v;
@@ -98,6 +84,8 @@ proc print(fmt: string, args: ..) {
                 if x < 0 {
                     n = -x;
                     negative = 1;
+                } else {
+                    n = x;
                 }
             } else if t_int.bits == 8  && !t_int.sign {
                 n = >cast(*u8)v;
@@ -152,25 +140,8 @@ proc print(fmt: string, args: ..) {
 
 }
 
+proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
+
 STDOUT :: 1;
 size_t :: u64;
 
-proc sleep(seconds: u32) u32 #system;
-proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
-proc malloc(bytes: size_t) *void #system;
-proc realloc(ptr: *void, bytes: size_t) *void #system;
-proc free(ptr: *void) void #system;
-
-proc main() {
-    print("abc %\n", 12);
-    print("hello world, % % %\n", 12, 12, 12);
-    print("hello sailor, % %\n", 12, 2);
-    //s1 := "hello world\n";
-    //s2 := "world, hello\n";
-    //s3 := string_concat(s1, s2);
-    //print(s3);
-    //free(cast(*void)s3.data);
-}
-
-//#run print("abc %\n", 12);
-#run main();
