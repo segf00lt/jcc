@@ -53,6 +53,7 @@
     X(array_literal)                    \
     X(struct_literal)                   \
     X(call)                             \
+    X(proctype)                         \
 
 #define OPERATOR_PREC_TABLE             \
     /* indexing */\
@@ -247,6 +248,7 @@ typedef struct IRinst IRinst;
 typedef union  IRvalue IRvalue;
 typedef struct IRmachine IRmachine;
 typedef void (*IR_foreign_proc)(IRmachine *);
+typedef struct IRproc IRproc;
 typedef struct Job Job;
 typedef struct Job_memory Job_memory;
 typedef struct Job_typechecker_context Job_typechecker_context;
@@ -403,7 +405,6 @@ struct IRinst {
             u64 id_imm;
             char *name;
             bool c_call;
-            bool is_foreign;
             bool immediate;
         } call;
 
@@ -494,6 +495,24 @@ struct IRinst {
     };
 
     Loc_info loc;
+};
+
+struct IRproc {
+    int procid;
+    char *name;
+    bool is_foreign;
+    union {
+        struct {
+            IRinst *instructions;
+            u64 n_instructions;
+            u64 *jump_table;
+            u64 local_segment_size;
+        };
+        struct {
+            IR_foreign_proc foreign_proc;
+            void *wrapper_dll;
+        };
+    };
 };
 
 struct Scope_entry {
@@ -738,6 +757,16 @@ struct AST_expr_list {
     AST base;
     AST *expr;
     AST_expr_list *next;
+};
+
+struct AST_proctype {
+    AST base;
+    Type *type_annotation;
+    Value *value_annotation;
+    AST_expr_list *params;
+    AST_expr_list *rets;
+    int n_params;
+    int n_rets;
 };
 
 #define AST_RECORD_BODY         \
@@ -1006,11 +1035,11 @@ struct Type {
                 Type  **types;
                 char  **names;
                 Value **values;
-                u64     n;
+                int     n;
             } param;
             struct {
                 Type  **types;
-                u64     n;
+                int     n;
             } ret;
         } proc;
 
@@ -1096,8 +1125,7 @@ Type*       atom_to_type(Job *jp, AST_atom *atom);
 Value*      evaluate_unary(Job *jp, Value *a, AST_expr *op_ast);
 Value*      evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast);
 
-void        procedure_table_add(IRinst *proc, int procid, char *name, u64 length, u64 local_segment_size, u64 *jump_table);
-void        foreign_procedure_table_add(IR_foreign_proc proc, int procid, char *name);
+void        proc_table_add(int procid, IRproc procdata);
 
 bool        types_are_same(Type *a, Type *b);
 Type*       typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST **right);
@@ -1201,17 +1229,8 @@ Arr(Sym*)                  global_data_table;
 u64                        bss_segment_offset;
 Arr(Sym*)                  bss_data_table;
 
+Map(int, IRproc)           proc_table;
 int                        procid_alloc;
-u64                        n_procedures;
-u64                        n_foreign_procedures;
-Map(u64, IRinst*)          procedure_table;
-Map(u64, char*)            procedure_names;
-Map(u64, u64)              procedure_lengths;
-Map(u64, u64)              local_segment_size_table;
-Map(u64, u64*)             procedure_local_jump_table;
-Map(u64, IR_foreign_proc)  foreign_procedure_table;
-Map(u64, char*)            foreign_procedure_names;
-Arr(void*)                 loaded_wrapper_dlls;
 
 Platform                   target_platform;
 
@@ -1794,10 +1813,10 @@ Arr(char) _type_to_str(Type *t, Arr(char) tmp_buf) {
             }
 
             if(t->proc.varargs) {
-                for(int i = 0; t->proc.param.vararg_name[i]; ++i)
-                    arrpush(tmp_buf, t->proc.param.vararg_name[i]);
-                arrpush(tmp_buf, ':');
-                arrpush(tmp_buf, ' ');
+                //for(int i = 0; t->proc.param.vararg_name[i]; ++i)
+                //    arrpush(tmp_buf, t->proc.param.vararg_name[i]);
+                //arrpush(tmp_buf, ':');
+                //arrpush(tmp_buf, ' ');
                 arrpush(tmp_buf, '.');
                 arrpush(tmp_buf, '.');
                 arrpush(tmp_buf, ')');
@@ -2373,7 +2392,7 @@ INLINE void print_ir_inst(IRinst inst, FILE *f) {
             if(inst.call.immediate)
                 fprintf(f, "%s %s %s %lu\n", opstr, inst.call.c_call ? "#c_call": "", inst.call.name, inst.call.id_imm);
             else
-                fprintf(f, "%s %s %s r_%lu\n", opstr, inst.call.c_call ? "#c_call": "", inst.call.name, inst.call.id_reg);
+                fprintf(f, "%s r_%lu\n", opstr, inst.call.id_reg);
 			break;
 		case IROP_RET:
             fprintf(f, "%s %s\n", opstr, inst.call.c_call ? "#c_call": "");
@@ -2541,34 +2560,26 @@ INLINE void print_ir_inst(IRinst inst, FILE *f) {
 
 }
 
-INLINE void procedure_table_add(IRinst *proc, int procid, char *name, u64 length, u64 local_segment_size, u64 *jump_table) {
-    fprintf(stderr, "begin code for '%s'()\n\n", name);
-    IRinst inst = {0};
-    for(u64 i = 0; i < length; ++i) {
-        bool loc_changed = (inst.loc.line != proc[i].loc.line);
-        inst = proc[i];
-        if(loc_changed) {
-            fprintf(stderr, "\n");
-            show_ir_loc(inst);
+INLINE void proc_table_add(int procid, IRproc procdata) {
+    if(!procdata.is_foreign) {
+        IRinst *instructions = procdata.instructions;
+        fprintf(stderr, "begin code for '%s'()\n\n", procdata.name);
+        IRinst inst = {0};
+        for(u64 i = 0; i < procdata.n_instructions; ++i) {
+            bool loc_changed = (inst.loc.line != instructions[i].loc.line);
+            inst = instructions[i];
+            if(loc_changed) {
+                fprintf(stderr, "\n");
+                show_ir_loc(inst);
+            }
+
+            fprintf(stderr, "%lu: ", i);
+            print_ir_inst(inst, stderr);
         }
-
-        fprintf(stderr, "%lu: ", i);
-        print_ir_inst(inst, stderr);
+        fprintf(stderr, "\nend code for '%s'()\n\n\n", procdata.name);
     }
-    fprintf(stderr, "\nend code for '%s'()\n\n\n", name);
 
-    hmput(procedure_table, procid, proc);
-    hmput(procedure_names, procid, name);
-    hmput(procedure_lengths, procid, length);
-    hmput(local_segment_size_table, procid, local_segment_size);
-    hmput(procedure_local_jump_table, procid, jump_table);
-    n_procedures++;
-}
-
-INLINE void foreign_procedure_table_add(IR_foreign_proc proc, int procid, char *name) {
-    hmput(foreign_procedure_table, procid, proc);
-    hmput(foreign_procedure_names, procid, name);
-    n_foreign_procedures++;
+    hmput(proc_table, procid, procdata);
 }
 
 int getprec(Token t) {
@@ -3728,6 +3739,88 @@ AST* parse_term(Job *jp) {
         default:
             *lexer = unlex;
             return NULL;
+        case TOKEN_PROC:
+            // Allocator :: proc (s32, s64, s64, *void, *void, s64) *void;
+            // multi_return: proc (s32, int) (*int, bool);
+            //
+            {
+                t = lex(lexer);
+                if(t != '(') {
+                    job_error(jp, lexer->loc, "expected '(' after 'proc' keyword");
+                    return NULL;
+                }
+
+                AST_expr_list head = {0};
+                AST_expr_list *param_list = &head;
+
+                int n_params = 0;
+
+                t = ',';
+                while(t == ',') {
+                    AST *expr = parse_expr(jp);
+
+                    if(!expr) return NULL;
+                    param_list->next = (AST_expr_list*)job_alloc_ast(jp, AST_KIND_expr_list);
+                    param_list = param_list->next;
+                    param_list->expr = expr;
+
+                    t = lex(lexer);
+                    n_params++;
+                }
+
+                param_list = head.next;
+
+                if(t != ')') {
+                    job_error(jp, lexer->loc, "expected ')' to terminate proc type parameter list");
+                    return NULL;
+                }
+
+                head = (AST_expr_list){0};
+                AST_expr_list *ret_list = &head;
+
+                unlex = *lexer;
+                t = lex(lexer);
+
+                int n_rets = 0;
+                if(t == '(') {
+                    t = ',';
+                    while(t == ',') {
+                        AST *expr = parse_expr(jp);
+
+                        if(!expr) return NULL;
+                        ret_list->next = (AST_expr_list*)job_alloc_ast(jp, AST_KIND_expr_list);
+                        ret_list = ret_list->next;
+                        ret_list->expr = expr;
+
+                        t = lex(lexer);
+                        n_rets++;
+                    }
+
+                    if(t != ')') {
+                        job_error(jp, lexer->loc, "expected ')' to terminate proc type return list");
+                        return NULL;
+                    }
+                } else {
+                    *lexer = unlex;
+                    AST *expr = parse_expr(jp);
+                    if(!expr) return NULL;
+                    ret_list->next = (AST_expr_list*)job_alloc_ast(jp, AST_KIND_expr_list);
+                    ret_list = ret_list->next;
+                    ret_list->expr = expr;
+                    n_rets = 1;
+                }
+
+                ret_list = head.next;
+
+                AST_proctype *proctype = (AST_proctype*)job_alloc_ast(jp, AST_KIND_proctype);
+                proctype->params = param_list;
+                proctype->rets = ret_list;
+                proctype->n_params = n_params;
+                proctype->n_rets = n_rets;
+
+                node = (AST*)proctype;
+            }
+            break;
         case TOKEN_RUN_DIRECTIVE:
             *lexer = unlex;
             node = parse_run_directive(jp);
@@ -4424,7 +4517,7 @@ void ir_gen(Job *jp) {
             arrpush(jp->instructions, end);
         }
 
-        u64 *jump_table = malloc(sizeof(u64) * jp->label_alloc);
+        u64 *jump_table = global_alloc_scratch(sizeof(u64) * jp->label_alloc);
 
         for(int i = 0; i < arrlen(jp->instructions); ++i) {
             IRinst *inst = jp->instructions + i;
@@ -4433,14 +4526,29 @@ void ir_gen(Job *jp) {
         }
         jp->label_alloc = 0;
 
-        u64 n = sizeof(IRinst) * arrlen(jp->instructions);
-        IRinst *proc = malloc(n);
-        memcpy(proc, jp->instructions, n);
-        u64 length = arrlen(jp->instructions);
+        u64 n_instructions = arrlen(jp->instructions);
+
+        IRinst *instructions = global_alloc_scratch(sizeof(IRinst) * n_instructions);
+        memcpy(instructions, jp->instructions, n_instructions * sizeof(IRinst));
+
         arrsetlen(jp->instructions, 0);
 
+        assert(sym->is_foreign == false);
+
+        IRproc proc_data = {
+            .procid = sym->procid,
+            .name = sym->name,
+            .is_foreign = false,
+            .instructions = instructions,
+            .n_instructions = n_instructions,
+            .jump_table = jump_table,
+            .local_segment_size = jp->max_local_offset,
+        };
+
         //printf("%s max_local_offset: %lu\n", sym->name, jp->max_local_offset);
-        procedure_table_add(proc, sym->procid, sym->name, length, jp->max_local_offset, jump_table);
+        //procedure_table_add(proc, sym->procid, sym->name, length, jp->max_local_offset, jump_table);
+        proc_table_add(sym->procid, proc_data);
+
         sym->ir_generated = true;
 
         for(int i = 0; i < arrlen(jp->run_dependencies); ++i) {
@@ -4803,14 +4911,24 @@ void ir_gen_foreign_proc_x64(Job *jp) {
     void *wrapper_module = dlopen(full_wrapper_dl_path, RTLD_NOW);
     printf("%s\n", dlerror());
     assert(wrapper_module);
-    arrpush(loaded_wrapper_dlls, wrapper_module);
+    //arrpush(loaded_wrapper_dlls, wrapper_module);
     IR_foreign_proc foreign_proc = (IR_foreign_proc)dlsym(wrapper_module, wrapper_name);
 
     if(!foreign_proc) {
         assert("didn't find symbol"&&0);
     }
 
-    foreign_procedure_table_add(foreign_proc, proc_sym->procid, wrapper_name);
+    IRproc proc_data = {
+        .procid = proc_sym->procid,
+        .name = proc_sym->name,
+        .is_foreign = true,
+        .foreign_proc = foreign_proc,
+        .wrapper_dll = wrapper_module,
+    };
+
+    proc_table_add(proc_sym->procid, proc_data);
+    //foreign_procedure_table_add(foreign_proc, proc_sym->procid, wrapper_name);
+
     proc_sym->ready_to_run = true;
 
     arena_from_save(&(jp->allocator.scratch), scratch_save);
@@ -4822,14 +4940,13 @@ void ir_run(Job *jp, int procid) {
     // we assume the necessary setup to run has already been done
     // data is put in and extracted from the IRmachine elsewhere
 
-    IRinst *procedure;
-    u64 *jump_table = NULL;
-    if(procid == -1) {
-        procedure = jp->instructions;
-    } else {
-        procedure = hmget(procedure_table, procid);
-        jump_table = hmget(procedure_local_jump_table, procid);
-    }
+    IRproc procedure = hmget(proc_table, procid);
+    IRinst *instructions = procedure.instructions;
+    u64 n_instructions = procedure.n_instructions;
+    u64 *jump_table = procedure.jump_table;
+
+    assert(procedure.is_foreign == false);
+
     u64 pc = 0;
     u8 *local_base = interp.local_segment;
 
@@ -4839,10 +4956,9 @@ void ir_run(Job *jp, int procid) {
     u64 imask;
     bool go = true;
 
-    while(go) {
-        assert(procedure != NULL);
-        //bool loc_changed = (inst.loc.line != procedure[pc].loc.line && inst.loc.line != 0 && procedure[pc].loc.line != 0);
-        inst = procedure[pc];
+    while(go && pc < n_instructions) {
+        //bool loc_changed = (inst.loc.line != instructions[pc].loc.line && inst.loc.line != 0 && instructions[pc].loc.line != 0);
+        inst = instructions[pc];
         imask = 0;
 
         u8 *varptr = NULL;
@@ -4974,29 +5090,28 @@ void ir_run(Job *jp, int procid) {
                 pc = jump_table[inst.branch.label_id];
                 continue;
             case IROP_CALL:
-                if(inst.call.is_foreign) {
+                {
                     u64 new_procid = inst.call.id_imm;
                     if(!inst.call.immediate) new_procid = interp.iregs[inst.call.id_reg];
-                    IR_foreign_proc foreign_proc = hmget(foreign_procedure_table, new_procid);
-                    foreign_proc(&interp);
-                    ++pc;
-                } else {
-                    u64 new_procid = inst.call.id_imm;
-                    if(!inst.call.immediate) new_procid = interp.iregs[inst.call.id_reg];
-                    arrpush(interp.local_base_stack, local_base);
-                    arrpush(interp.procid_stack, procid);
-                    arrpush(interp.jump_table_stack, jump_table);
-                    arrpush(interp.pc_stack, pc + 1);
-                    if(procid >= 0) {
-                        local_base += hmget(local_segment_size_table, procid);
+                    IRproc new_procedure = hmget(proc_table, new_procid);
+
+                    if(new_procedure.is_foreign) {
+                        IR_foreign_proc foreign_proc = new_procedure.foreign_proc;
+                        foreign_proc(&interp);
+                        ++pc;
                     } else {
-                        printf("cur_run_local_segment_size = %lu\n", jp->cur_run_local_segment_size);
-                        local_base += jp->cur_run_local_segment_size;
+                        arrpush(interp.local_base_stack, local_base);
+                        arrpush(interp.procid_stack, procid);
+                        arrpush(interp.jump_table_stack, jump_table);
+                        arrpush(interp.pc_stack, pc + 1);
+                        local_base += new_procedure.local_segment_size;
+                        procid = new_procid;
+                        jump_table = new_procedure.jump_table;
+                        instructions = new_procedure.instructions;
+                        n_instructions = new_procedure.n_instructions;
+                        procedure = new_procedure;
+                        pc = 0;
                     }
-                    procid = new_procid;
-                    procedure = hmget(procedure_table, procid);
-                    jump_table = hmget(procedure_local_jump_table, procid);
-                    pc = 0;
                 }
                 continue;
             case IROP_RET:
@@ -5005,14 +5120,15 @@ void ir_run(Job *jp, int procid) {
                     go = false;
                     continue;
                 }
+
                 local_base = arrpop(interp.local_base_stack);
                 jump_table = arrpop(interp.jump_table_stack);
-                procid = arrpop(interp.procid_stack);
                 pc = arrpop(interp.pc_stack);
-                if(procid == -1)
-                    procedure = jp->instructions;
-                else
-                    procedure = hmget(procedure_table, procid);
+                procid = arrpop(interp.procid_stack);
+
+                procedure = hmget(proc_table, procid);
+                instructions = procedure.instructions;
+                n_instructions = procedure.n_instructions;
                 continue;
             case IROP_LOAD:
                 if(inst.load.immediate) {
@@ -5764,6 +5880,36 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 jp->reg_alloc -= 2;
                 assert(jp->reg_alloc == 0);
             }
+        } else if(left_type->kind == TYPE_KIND_PROC) {
+            assert(ast_statement->right);
+
+            ir_gen_expr(jp, ast_statement->right);
+            assert(jp->reg_alloc == 1);
+
+            jp->reg_alloc--;
+
+            if(ast_statement->left->kind == AST_KIND_atom) {
+                AST_atom *left_atom = (AST_atom*)(ast_statement->left);
+                Sym *sym = left_atom->symbol_annotation;
+                assert(sym->type->kind == TYPE_KIND_PROC);
+
+                IRinst inst = {
+                    .opcode = IROP_SETVAR,
+                    .setvar = {
+                        .segment = IRSEG_LOCAL,
+                        .offset = sym->segment_offset,
+                        .reg_src = jp->reg_alloc,
+                        .bytes = 8,
+                    },
+                };
+                inst.loc = jp->cur_loc;
+                arrpush(jp->instructions, inst);
+
+                assert(jp->reg_alloc == 0);
+            } else {
+                UNIMPLEMENTED;
+            }
+
         } else {
             UNIMPLEMENTED;
         }
@@ -7101,6 +7247,44 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     arrpush(jp->instructions, inst);
                                 }
                             }
+                        } else if(var_type->kind == TYPE_KIND_PROC) {
+                            arrlast(jp->local_offset) += var_type->bytes;
+
+                            if(init_expr) {
+                                ir_gen_expr(jp, init_expr);
+                                assert(jp->reg_alloc == 1);
+
+                                jp->reg_alloc--;
+
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_SETVAR,
+                                        .setvar = {
+                                            .segment = IRSEG_LOCAL,
+                                            .offset = sym->segment_offset,
+                                            .reg_src = jp->reg_alloc,
+                                            .bytes = 8,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+
+                                assert(jp->reg_alloc == 0);
+
+                            } else {
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_SETVAR,
+                                        .setvar = {
+                                            .segment = IRSEG_LOCAL,
+                                            .offset = sym->segment_offset,
+                                            .bytes = 8,
+                                            .immediate = true,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+                            }
                         } else {
                             UNIMPLEMENTED;
                         }
@@ -7480,7 +7664,26 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
                 if(sym->constant) {
                     if(TYPE_KIND_IS_NOT_SCALAR(sym->type->kind)) {
-                        UNIMPLEMENTED;
+                        //TODO refactor proc tables to allow for variable procedures
+                        //     to be native or foreign
+                        if(sym->type->kind == TYPE_KIND_PROC) {
+                            assert(sym->ready_to_run);
+                            assert(!sym->is_foreign); //TODO
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_LOAD,
+                                    .load = {
+                                        .reg_dest = jp->reg_alloc++,
+                                        .imm.integer = sym->procid,
+                                        .bytes = 8,
+                                        .immediate = true,
+                                    },
+                                };
+                            inst.loc = jp->cur_loc;
+                            arrpush(jp->instructions, inst);
+                        } else {
+                            UNIMPLEMENTED;
+                        }
                     } else {
                         IRop opcode = IROP_LOAD;
                         IRvalue imm = { .integer = sym->value->val.integer };
@@ -8644,7 +8847,6 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
 
     bool varargs = callee_type->proc.varargs;
     bool c_call = callee_type->proc.c_call;
-    bool is_foreign = callee_symbol->is_foreign;
 
     Type *return_type = NULL;
     if(ast_call->n_types_returned > 0)
@@ -8677,43 +8879,55 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         }
     }
 
-    for(AST_param *p = ast_call->params; p; p = p->next) {
-        p->has_nested_call = has_nested_call(p->value);
+    if(callee_type->proc.param.names == NULL) {
+        for(AST_param *p = ast_call->params; p; p = p->next) {
+            p->has_nested_call = has_nested_call(p->value);
 
-        if(p->name) {
-            for(u64 i = 0; i < callee_type->proc.param.n; ++i) {
-                if(!strcmp(p->name, callee_type->proc.param.names[i])) {
-                    p->index = i;
-                    break;
+            if(p->index >= callee_type->proc.param.n)
+                p->is_vararg = true;
+
+            params[p->index] = p;
+            params_passed[p->index] = true;
+        }
+    } else {
+        for(AST_param *p = ast_call->params; p; p = p->next) {
+            p->has_nested_call = has_nested_call(p->value);
+
+            if(p->name) {
+                for(u64 i = 0; i < callee_type->proc.param.n; ++i) {
+                    if(!strcmp(p->name, callee_type->proc.param.names[i])) {
+                        p->index = i;
+                        break;
+                    }
                 }
+            } else {
+                p->name = callee_type->proc.param.names[p->index];
             }
-        } else {
-            p->name = callee_type->proc.param.names[p->index];
+
+            if(p->index >= callee_type->proc.param.n)
+                p->is_vararg = true;
+
+            params[p->index] = p;
+            params_passed[p->index] = true;
         }
 
-        if(p->index >= callee_type->proc.param.n)
-            p->is_vararg = true;
+        /* handle default parameters*/
 
-        params[p->index] = p;
-        params_passed[p->index] = true;
-    }
+        //TODO maybe we should have a helper function to generate the IR for a value of a given type
 
-    /* handle default parameters*/
-
-    //TODO maybe we should have a helper function to generate the IR for a value of a given type
-
-    for(int i = 0; i < callee_type->proc.param.n; ++i) {
-        if(params_passed[i]) continue;
-        AST_param *p = (AST_param *)job_alloc_ast(jp, AST_KIND_param);
-        p->index = i;
-        p->name = callee_type->proc.param.names[i];
-        p->type_annotation = callee_type->proc.param.types[i];
-        p->value_annotation = callee_type->proc.param.values[i];
-        p->value = job_alloc_ast(jp, AST_KIND_atom);
-        ((AST_atom*)(p->value))->type_annotation = p->type_annotation; //TODO this is a terrible hack
-        ((AST_atom*)(p->value))->value_annotation = p->value_annotation;
-        params[i] = p;
-        params_passed[i] = true;
+        for(int i = 0; i < callee_type->proc.param.n; ++i) {
+            if(params_passed[i]) continue;
+            AST_param *p = (AST_param *)job_alloc_ast(jp, AST_KIND_param);
+            p->index = i;
+            p->name = callee_type->proc.param.names[i];
+            p->type_annotation = callee_type->proc.param.types[i];
+            p->value_annotation = callee_type->proc.param.values[i];
+            p->value = job_alloc_ast(jp, AST_KIND_atom);
+            ((AST_atom*)(p->value))->type_annotation = p->type_annotation; //TODO this is a terrible hack
+            ((AST_atom*)(p->value))->value_annotation = p->value_annotation;
+            params[i] = p;
+            params_passed[i] = true;
+        }
     }
 
     //TODO this is error prone, need a better way of saving the registers
@@ -8840,15 +9054,12 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         }
     }
 
-    // TODO
-    // varargs need to be processed before the rest of the arguments
-    //
-    // allocate local data for an array of 'Any' structs then allocate a view
-    // struct for the array and pass the pointer to the procedure as the
-    // last argument
     if(varargs) {
         u64 begin_varargs_array_offset = arrlast(jp->local_offset);
         u64 n_varargs = arrlen(params) - callee_type->proc.param.n;
+
+        arrlast(jp->local_offset) += n_varargs * sizeof(Any);
+        u64 cur_varargs_array_offset = arrlast(jp->local_offset) - sizeof(Any);
 
         while(arrlen(params) > callee_type->proc.param.n) {
             AST_param *p = arrpop(params);
@@ -8873,7 +9084,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                     .opcode = IROP_SETVAR,
                     .setvar = {
                         .segment = IRSEG_LOCAL,
-                        .offset = arrlast(jp->local_offset) + offsetof(Any, data),
+                        .offset = cur_varargs_array_offset + offsetof(Any, data),
                         .reg_src = jp->reg_alloc,
                         .bytes = 8,
                     },
@@ -8886,7 +9097,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                     .opcode = IROP_SETVAR,
                     .setvar = {
                         .segment = IRSEG_LOCAL,
-                        .offset = arrlast(jp->local_offset) + offsetof(Any, type),
+                        .offset = cur_varargs_array_offset + offsetof(Any, type),
                         .imm.integer = (u64)(void*)job_make_type_info(jp, p->type_annotation),
                         .bytes = 8,
                         .immediate = true,
@@ -8895,8 +9106,12 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
             inst.loc = jp->cur_loc;
             arrpush(jp->instructions, inst);
 
-            arrlast(jp->local_offset) += sizeof(Any);
+            cur_varargs_array_offset -= sizeof(Any);
+            //arrlast(jp->local_offset) += sizeof(Any);
         }
+        //printf("cur_varargs_array_offset = %lu\narrlast(jp->local_offset) = %lu\n", cur_varargs_array_offset, arrlast(jp->local_offset) - ((n_varargs + 1) * sizeof(Any)));
+        //UNREACHABLE;
+        assert(cur_varargs_array_offset == arrlast(jp->local_offset) - ((n_varargs + 1) * sizeof(Any)));
 
         inst =
             (IRinst) {
@@ -9249,19 +9464,45 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         arrpush(jp->instructions, inst);
     }
 
-    inst =
-        (IRinst) {
-            .opcode = IROP_CALL,
-            .call = {
-                .name = callee_symbol->name,
-                .id_imm = callee_symbol->procid,
-                .immediate = true, //TODO indirect calls
-                .c_call = c_call,
-                .is_foreign = is_foreign,
-            },
-        };
-    inst.loc = jp->cur_loc;
-    arrpush(jp->instructions, inst);
+    if(callee_symbol->constant == false) {
+        inst =
+            (IRinst) {
+                .opcode = IROP_GETVAR,
+                .getvar = {
+                    .segment = callee_symbol->segment,
+                    .offset = callee_symbol->segment_offset,
+                    .reg_dest = jp->reg_alloc,
+                    .bytes = 8,
+                },
+            };
+        inst.loc = jp->cur_loc;
+        arrpush(jp->instructions, inst);
+
+        inst =
+            (IRinst) {
+                .opcode = IROP_CALL,
+                .call = {
+                    .id_reg = jp->reg_alloc,
+                    .immediate = false, //TODO indirect calls
+                    .c_call = c_call,
+                },
+            };
+        inst.loc = jp->cur_loc;
+        arrpush(jp->instructions, inst);
+    } else {
+        inst =
+            (IRinst) {
+                .opcode = IROP_CALL,
+                .call = {
+                    .name = callee_symbol->name,
+                    .id_imm = callee_symbol->procid,
+                    .immediate = true, //TODO indirect calls
+                    .c_call = c_call,
+                },
+            };
+        inst.loc = jp->cur_loc;
+        arrpush(jp->instructions, inst);
+    }
 
     //TODO this might be wrong
     if(arrlen(iregs_saved) > 0) jp->reg_alloc = arrlast(iregs_saved) + 1;
@@ -10050,6 +10291,7 @@ void job_runner(char *src, char *src_path) {
                                         job_type_to_str(jp, type_left));
                             }
 
+                            /* this is actually kind of inconvenient
                             if(ast_statement->left->kind == AST_KIND_expr) {
                                 AST_expr *left_expr = (AST_expr*)(ast_statement->left);
                                 if(left_expr->token == '.') {
@@ -10061,6 +10303,7 @@ void job_runner(char *src, char *src_path) {
                                     } 
                                 }
                             }
+                            */
 
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
@@ -10257,9 +10500,13 @@ void job_runner(char *src, char *src_path) {
                             continue;
                         }
 
-                        for(int i = 0; i < hmget(procedure_lengths, handling_sym->procid); ++i) {
-                            printf("%i: ",i);
-                            print_ir_inst(hmget(procedure_table, handling_sym->procid)[i], stdout);
+                        IRproc procedure = hmget(proc_table, handling_sym->procid);
+                        if(!procedure.is_foreign) {
+                            IRinst *instructions = procedure.instructions;
+                            for(int i = 0; i < procedure.n_instructions; ++i) {
+                                printf("%i: ",i);
+                                print_ir_inst(instructions[i], stdout);
+                            }
                         }
                         ++i;
                         break;
@@ -10272,8 +10519,14 @@ void job_runner(char *src, char *src_path) {
         if(arrlen(job_queue_next) == arrlen(job_queue)) {
             int waiting_count = 0;
             for(int i = 0; i < arrlen(job_queue_next); ++i) {
-                if(job_queue[i].state == JOB_STATE_WAIT)
-                    ++waiting_count;
+                if(job_queue[i].state == JOB_STATE_WAIT) {
+                    Job *jp = job_queue + i;
+                    if(global_scope_lookup(jp, jp->waiting_on_name)) {
+                        jp->state = JOB_STATE_READY;
+                    } else {
+                        ++waiting_count;
+                    }
+                }
             }
 
             if(arrlen(job_queue) == waiting_count) {
@@ -10299,6 +10552,8 @@ void job_runner(char *src, char *src_path) {
     }
 
     if(all_waiting) {
+        u64 n_jobs = arrlen(job_queue);
+        printf("%zu\n",n_jobs);
         Dict(char*) name_graph = NULL;
         Dict(Job*) job_graph = NULL;
         Dict(bool) reported_undeclared_names = NULL;
@@ -10376,14 +10631,14 @@ void job_runner(char *src, char *src_path) {
         }
     }
 
-//    if(!had_error) {
-//        for(int i = 0; i < shlen(global_scope); ++i) {
-//            if(global_scope[i].value) {
-//                print_sym(global_scope[i].value[0]);
-//                printf("\n");
-//            }
-//        }
-//    }
+    //if(!had_error) {
+    //    for(int i = 0; i < shlen(global_scope); ++i) {
+    //        if(global_scope[i].value) {
+    //            print_sym(global_scope[i].value[0]);
+    //            printf("\n");
+    //        }
+    //    }
+    //}
 
     arrfree(job_queue);
     arrfree(job_queue_next);
@@ -10800,7 +11055,28 @@ bool types_are_same(Type *a, Type *b) {
         return types_are_same(a->array.of, b->array.of);
 
     if(a->kind == TYPE_KIND_PROC) {
-        UNIMPLEMENTED;
+        //TODO add something to require names of parameters to be checked as well
+        //     this will be good for documenting intent
+        if(a->proc.param.n != b->proc.param.n)
+            return false;
+
+        if(a->proc.ret.n != b->proc.ret.n)
+            return false;
+
+        int n_params = a->proc.param.n;
+        int n_rets = a->proc.ret.n;
+
+        for(int i = 0; i < n_params; ++i) {
+            if(!types_are_same(a->proc.param.types[i], b->proc.param.types[i]))
+                return false;
+        }
+
+        for(int i = 0; i < n_rets; ++i) {
+            if(!types_are_same(a->proc.ret.types[i], b->proc.ret.types[i]))
+                return false;
+        }
+
+        return true;
     }
 
     if(a->kind == TYPE_KIND_ENUM) {
@@ -10948,6 +11224,9 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                         return a;
 
                     if(a->pointer.to->kind == TYPE_KIND_VOID || b->pointer.to->kind == TYPE_KIND_VOID)
+                        return a;
+
+                    if(!TYPE_KIND_IS_NOT_SCALAR(a->pointer.to->kind) && !TYPE_KIND_IS_NOT_SCALAR(b->pointer.to->kind))
                         return a;
 
                     if(TYPE_KIND_IS_RECORD(a->pointer.to->kind) && TYPE_KIND_IS_RECORD(b->pointer.to->kind)) {
@@ -11146,7 +11425,7 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                 if(a->kind == TYPE_KIND_POINTER && b->kind == TYPE_KIND_POINTER && types_are_same(a, b)) return builtin_type+TYPE_KIND_U64;
 
                 break;
-            case '<':
+            case '<': //TODO the comparison operators need their own rules
             case '>': //TODO signed and unsigned comparisons need to be distinguished
             case TOKEN_LESSEQUAL:
             case TOKEN_GREATEQUAL:
@@ -11459,13 +11738,14 @@ void typecheck_expr(Job *jp) {
                 if(sym->constant) {
                     atom->value_annotation = sym->value;
                     arrpush(value_stack, sym->value);
+
+                    if(sym->type->kind == TYPE_KIND_PROC)
+                        arrpush(jp->run_dependencies, sym);
+
                 } else {
                     atom->value_annotation = builtin_value+VALUE_KIND_NIL;
                     arrpush(value_stack, builtin_value+VALUE_KIND_NIL);
                 }
-
-                if(sym->type->kind == TYPE_KIND_PROC)
-                    arrpush(jp->run_dependencies, sym);
 
             } else {
                 Type *t = atom_to_type(jp, atom);
@@ -11931,6 +12211,14 @@ void typecheck_expr(Job *jp) {
                 jp->reg_alloc = 0;
                 jp->label_alloc = 0;
 
+                IRproc run_directive_tmp_procedure = {
+                    .procid = -1,
+                    .instructions = jp->instructions,
+                    .n_instructions = arrlen(jp->instructions),
+                    .local_segment_size = jp->cur_run_local_segment_size,
+                };
+                proc_table_add(-1, run_directive_tmp_procedure);
+
                 printf("running '%s'\n", proc_type->proc.name);
                 ir_run(jp, -1);
 
@@ -12022,6 +12310,50 @@ void typecheck_expr(Job *jp) {
             } else if(!is_call_expr) {
                 arrpush(value_stack, builtin_value+VALUE_KIND_NIL);
             }
+        } else if(kind == AST_KIND_proctype) {
+            //TODO allow names to be given to the parameters in the proctype
+            //NOTE I think this and other features should be added after we do an
+            //     overhaul of the compiler pipeline to unify types, ASTs, syms and values
+            //
+
+            AST_proctype *ast_proctype = (AST_proctype*)(expr[pos]);
+            Type *proc_type = job_alloc_type(jp, TYPE_KIND_PROC);
+
+            proc_type->proc.param.types = job_alloc_scratch(jp, sizeof(Type*) * ast_proctype->n_params);
+            proc_type->proc.ret.types   = job_alloc_scratch(jp, sizeof(Type*) * ast_proctype->n_rets);
+            proc_type->proc.param.n     = ast_proctype->n_params;
+            proc_type->proc.ret.n       = ast_proctype->n_rets;
+
+            for(int i = ast_proctype->n_rets - 1; i >= 0; --i) {
+                Type *t  = arrpop(type_stack);
+                Value *v = arrpop(value_stack);
+
+                assert(t->kind == TYPE_KIND_TYPE);
+                //assert(t->type.what == v->val.type); TODO this isn't working
+
+                proc_type->proc.ret.types[i] = v->val.type;
+            }
+
+            for(int i = ast_proctype->n_params - 1; i >= 0; --i) {
+                Type *t  = arrpop(type_stack);
+                Value *v = arrpop(value_stack);
+
+                assert(t->kind == TYPE_KIND_TYPE);
+                //assert(t->type.what == v->val.type);
+
+                proc_type->proc.param.types[i] = v->val.type;
+            }
+
+            Type *tpush = job_alloc_type(jp, TYPE_KIND_TYPE);
+            tpush->type.what = proc_type;
+            Value *vpush = job_alloc_value(jp, VALUE_KIND_TYPE);
+            vpush->val.type = proc_type;
+
+            ast_proctype->type_annotation = tpush;
+            ast_proctype->value_annotation = vpush;
+
+            arrpush(type_stack, tpush);
+            arrpush(value_stack, vpush);
         } else {
             UNIMPLEMENTED;
         }
@@ -12073,6 +12405,24 @@ void linearize_expr(Job *jp, AST *ast) {
         }
         linearize_expr(jp, (AST*)(callp->params));
         linearize_expr(jp, callp->callee);
+        arrpush(jp->expr, ast);
+    } else if(ast->kind == AST_KIND_proctype) {
+        AST_proctype *proctype = (AST_proctype*)ast;
+
+        AST_expr_list *list = proctype->params;
+
+        while(list) {
+            linearize_expr(jp, list->expr);
+            list = list->next;
+        }
+
+        list = proctype->rets;
+
+        while(list) {
+            linearize_expr(jp, list->expr);
+            list = list->next;
+        }
+
         arrpush(jp->expr, ast);
     } else {
         UNIMPLEMENTED;
@@ -12855,12 +13205,12 @@ void print_sym(Sym sym) {
     printf("size_in_bytes: %lu\n", sym.type->bytes);
 }
 
-//TODO make int implicit cast to all other int's
-//TODO print()
-//TODO enums
-//TODO proc types and proc pointers
-//TODO implicit context
+//TODO align the stack
 //TODO dynamic arrays
+//TODO enums
+//TODO proc types with argument names
+//TODO implicit context
+//TODO print()
 //TODO directives (#load, #import, #assert, etc)
 //TODO for loops on arrays
 //TODO test full C interop
@@ -12896,13 +13246,17 @@ int main(void) {
     type_Dynamic_array  = shget(global_scope, "_Dynamic_array")->value->val.type;
     type_Any            = shget(global_scope, "Any")->value->val.type;
 
-    char *path = "test/hello.jpl";
+    char *path = "test/proc_type.jpl";
     assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 
     job_runner(test_src_file, path);
 
-    for(int i = 0; i < arrlen(loaded_wrapper_dlls); ++i)
-        dlclose(loaded_wrapper_dlls[i]);
+    for(int i = 0; i < hmlen(proc_table); ++i) {
+        IRproc p = (proc_table + i)->value;
+        if(p.is_foreign) {
+            dlclose(p.wrapper_dll);
+        }
+    }
     return 0;
 }

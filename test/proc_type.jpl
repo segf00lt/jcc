@@ -1,8 +1,40 @@
 #run main();
 
 proc main() {
-    print("hello world %\n", 42);
+    fact: Factorial_proc;
+
+    fact = factorial_recurse;
+
+    n := 12;
+    n_fact := fact(n);
+    print("factorial(%) = %\n", n, n_fact);
+
+    fact = factorial_iterate;
+    n_fact = fact(n);
+    print("factorial(%) = %\n", n, n_fact);
 }
+
+Factorial_proc :: proc (int) int;
+
+proc factorial_recurse(n: int) int {
+    if n == 0 return 1; //TODO better parser syntax error checking
+    return n * factorial_recurse(n - 1);
+}
+
+proc factorial_iterate(n: int) int {
+    if n == 0 return 1;
+
+    result := 1;
+    i := 2;
+
+    while i <= n {
+        result *= i;
+        i++;
+    }
+
+    return result;
+}
+
 
 proc print(fmt: string, args: ..) {
 

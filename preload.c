@@ -25,7 +25,15 @@ typedef enum Type_info_tag {
 #undef X
 } Type_info_tag;
 
+typedef enum Allocator_mode {
+    ALLOC_MODE_ALLOCATE = 0,
+    ALLOC_MODE_RESIZE   = 1,
+    ALLOC_MODE_FREE     = 2,
+    ALLOC_MODE_FREE_ALL = 3,
+} Allocator_mode;
+
 typedef struct String_view String_view; // this will be our internal version of the language's string
+typedef void* (*Allocator)(s32 mode, s64 size, s64 oldsize, void *old_memory_ptr, void *allocator_data, s64 options);
 typedef struct Array_view Array_view;
 typedef struct Dynamic_array Dynamic_array;
 typedef struct Any Any;
@@ -44,6 +52,8 @@ struct Dynamic_array {
     void *data;
     u64 count;
     u64 cap;
+    Allocator allocator;
+    void *allocator_data;
 };
 
 struct Any {
