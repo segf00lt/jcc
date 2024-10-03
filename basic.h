@@ -35,6 +35,7 @@
 #define VEC2_ORIGIN ((Vector2){0.0f,0.0f})
 #define VEC2_ZERO ((Vector2){0.0f,0.0f})
 #define F32_NEGATIVE_ZERO (u32)(0x80000000)
+#define member_size(type, member) sizeof(((type*)0)->member)
 
 typedef int64_t s64;
 typedef uint64_t u64;

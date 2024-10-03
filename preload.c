@@ -34,6 +34,8 @@ typedef enum Allocator_mode {
 
 typedef struct String_view String_view; // this will be our internal version of the language's string
 typedef void* (*Allocator)(s32 mode, s64 size, s64 oldsize, void *old_memory_ptr, void *allocator_data, s64 options);
+typedef struct Temporary_storage Temporary_storage;
+typedef struct Context Context;
 typedef struct Array_view Array_view;
 typedef struct Dynamic_array Dynamic_array;
 typedef struct Any Any;
@@ -113,3 +115,18 @@ struct Type_info_proc {
     Array_view return_types;
 };
 
+struct Context {
+    u32 thread_index;
+
+    Allocator allocator;
+    void *allocator_data;
+
+    Temporary_storage *temporary_storage;
+};
+
+struct Temporary_storage {
+    u8 *data;
+    s32 occupied;
+    s32 size;
+    s32 max_size;
+};

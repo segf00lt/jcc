@@ -1,5 +1,5 @@
-Allocator :: *void; //TODO add function type syntax
-Logger :: *void; //TODO add function type syntax
+Allocator :: proc (s32, s64, s64, *void, *void, s64) *void;
+//Logger :: *void;
 
 Type_info_tag :: u32;
 
@@ -50,7 +50,7 @@ struct Type_info_array {
 }
 
 struct Type_info_struct_member {
-    name:    string; //TODO strings
+    name:    string;
     type:   *Type_info;
     offset:  u64;
 }
@@ -98,8 +98,8 @@ struct Context {
     allocator: Allocator;
     allocator_data: *void;
 
-    logger: Logger;
-    logger_data: *void;
+    //logger: Logger;
+    //logger_data: *void;
 
     temporary_storage: *Temporary_storage;
 }

@@ -1,0 +1,25 @@
+proc main() {
+    arr: [..]int;
+    buf: [12]int;
+    arr.data = buf.data;
+    arr.cap  = sizeof(buf);
+    arr[0] = 12;
+    array_int_push(@arr, 13);
+
+    arr2: [..]int;
+    arr3: [..]int;
+    arr2 = arr3;
+    arr4 := array_int_make(53);
+    arr4 = array_int_make(12);
+}
+
+proc array_int_make(cap: u64) [..]int {
+    arr: [..]int;
+    arr.cap = cap;
+    return arr;
+}
+
+proc array_int_push(arr: *[..]int, x: int) {
+    (>arr)[arr.count] = x;
+    arr.count++;
+}
