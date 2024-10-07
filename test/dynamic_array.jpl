@@ -20,6 +20,6 @@ proc array_int_make(cap: u64) [..]int {
 }
 
 proc array_int_push(arr: *[..]int, x: int) {
-    (>arr)[arr.count] = x;
+    arr[][arr.count] = x;
     arr.count++;
 }

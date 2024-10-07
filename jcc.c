@@ -366,12 +366,15 @@ struct IRlabel {
 #define IRMACHINE_BODY                \
     X(Arr(u64) pc_stack;)             \
     X(Arr(int) procid_stack;)         \
-    X(Arr(u8*) local_base_stack;)     \
     X(Arr(u64*) jump_table_stack;)    \
                                       \
     X(u8 *global_segment;)            \
     X(u8 *bss_segment;)               \
     X(u8 *local_segment;)             \
+                                      \
+    X(u64 global_segment_size;)       \
+    X(u64 bss_segment_size;)          \
+    X(u64 local_segment_size;)        \
                                       \
     X(u64 iregs[8];)                  \
     X(f32 f32regs[8];)                \
@@ -384,6 +387,8 @@ struct IRmachine {
     IRMACHINE_BODY
 #undef X
 };
+
+const u64 IR_LOCAL_SEGMENT_BYTES = 1<<16;
 
 struct IRinst {
     IRop opcode;
@@ -1168,6 +1173,7 @@ void        global_scope_enter(Job *jp, Sym *sym);
 
 void        print_sym(Sym sym);
 void        print_ir_inst(IRinst inst, FILE *f);
+void        print_ir_machine(IRmachine *machine, FILE *f);
 void        print_ast_expr(AST *expr, int indent);
 
 /* globals */
@@ -2312,6 +2318,71 @@ INLINE void show_ir_loc(IRinst inst) {
     fprintf(stderr, "jcc:%i:%i: showing IR inst location\n| %i    %.*s\n%*s^^^\n",
             inst.loc.line, inst.loc.col, inst.loc.line, (int)(inst.loc.text.e - inst.loc.text.s), inst.loc.text.s,
             inst.loc.col + 6 + count_digits(inst.loc.line), "");
+}
+
+INLINE void print_ir_machine(IRmachine *machine, FILE *f) {
+    fprintf(f, "IRmachine = {\n");
+
+    fprintf(f, "  pc_stack = { ");
+    for (int i = 0; i < arrlen(machine->pc_stack); i++) {
+        fprintf(f, "%lu ", machine->pc_stack[i]);
+    }
+    fprintf(f, "}\n");
+
+    fprintf(f, "  procid_stack = { ");
+    for (int i = 0; i < arrlen(machine->procid_stack); i++) {
+        fprintf(f, "%d ", machine->procid_stack[i]);
+    }
+    fprintf(f, "}\n");
+
+    fprintf(f, "  jump_table_stack = { ");
+    for (int i = 0; i < arrlen(machine->jump_table_stack); i++) {
+        fprintf(f, "0x%p ", machine->jump_table_stack[i]);
+    }
+    fprintf(f, "}\n");
+
+    fprintf(f, "  global_segment = { ");
+    for(int i = 0; i < machine->global_segment_size; ++i)
+        fprintf(f, "%X ", machine->global_segment[i]);
+    fprintf(f, "}\n");
+
+    fprintf(f, "  bss_segment = { ");
+    for(int i = 0; i < machine->bss_segment_size; ++i)
+        fprintf(f, "%X ", machine->bss_segment[i]);
+    fprintf(f, "}\n");
+
+    fprintf(f, "  local_segment = { ");
+    for(int i = 0; i < machine->local_segment_size; ++i)
+        fprintf(f, "%X ", machine->local_segment[i]);
+    fprintf(f, "}\n");
+
+    fprintf(f, "  iregs = { ");
+    for (int i = 0; i < 4; i++) {
+        fprintf(f, "%lu ", machine->iregs[i]);
+    }
+    fprintf(f, "}\n");
+
+    fprintf(f, "  f32regs = { ");
+    for (int i = 0; i < 4; i++) {
+        fprintf(f, "%f ", machine->f32regs[i]);
+    }
+    fprintf(f, "}\n");
+
+    fprintf(f, "  f64regs = { ");
+    for (int i = 0; i < 4; i++) {
+        fprintf(f, "%lf ", machine->f64regs[i]);
+    }
+    fprintf(f, "}\n");
+
+    /*
+    fprintf(f, "  ports = { ");
+    for (int i = 0; i < arrlen(machine->ports); i++) {
+        __builtin_dump_struct(&machine->ports[i], fprintf, f);
+    }
+    fprintf(f, "}\n");
+    */
+
+    fprintf(f, "}\n");
 }
 
 INLINE void print_ir_inst(IRinst inst, FILE *f) {
@@ -3686,17 +3757,26 @@ AST* parse_postfix(Job *jp) {
         if(t == '[') {
             expr->right = parse_expr(jp);
             if(expr->right == NULL) {
-                return (AST*)expr;
-            }
-            expr->base.weight += expr->right->weight;
-            t = lex(lexer);
-            if(t != ']') {
-                job_error(jp, lexer->loc, "unbalanced square bracket");
-                return NULL;
-            }
+                unlex = *lexer;
+                t = lex(lexer);
+                if(t == ']') {
+                    expr->token = '>';
+                    expr->right = expr->left;
+                    expr->left = NULL;
+                } else {
+                    return (AST*)expr;
+                }
+            } else {
+                expr->base.weight += expr->right->weight;
+                t = lex(lexer);
+                if(t != ']') {
+                    job_error(jp, lexer->loc, "unbalanced square bracket");
+                    return NULL;
+                }
 
-            //if(!is_lvalue(expr->left))
-            //    job_error(jp, expr->base.loc, "operand of subscript operator must be lvalue");
+                //if(!is_lvalue(expr->left))
+                //    job_error(jp, expr->base.loc, "operand of subscript operator must be lvalue");
+            }
         } else if(t == '.') {
             t = lex(lexer);
 
@@ -4946,6 +5026,7 @@ void ir_run(Job *jp, int procid) {
     IRinst *instructions = procedure.instructions;
     u64 n_instructions = procedure.n_instructions;
     u64 *jump_table = procedure.jump_table;
+    interp.local_segment_size = procedure.local_segment_size;
 
     assert(procedure.is_foreign == false);
 
@@ -4962,6 +5043,7 @@ void ir_run(Job *jp, int procid) {
         //bool loc_changed = (inst.loc.line != instructions[pc].loc.line && inst.loc.line != 0 && instructions[pc].loc.line != 0);
         inst = instructions[pc];
         imask = 0;
+        
 
         u8 *varptr = NULL;
 
@@ -4993,6 +5075,7 @@ void ir_run(Job *jp, int procid) {
         //    fprintf(stderr, "\n");
         //    show_ir_loc(inst);
         //}
+        //print_ir_machine(&interp, stderr);
         //fprintf(stderr, "%lu: ", pc);
         //print_ir_inst(inst, stderr);
         //sleep(1);
@@ -5102,11 +5185,11 @@ void ir_run(Job *jp, int procid) {
                         foreign_proc(&interp);
                         ++pc;
                     } else {
-                        arrpush(interp.local_base_stack, local_base);
                         arrpush(interp.procid_stack, procid);
                         arrpush(interp.jump_table_stack, jump_table);
                         arrpush(interp.pc_stack, pc + 1);
-                        local_base += new_procedure.local_segment_size;
+                        local_base += procedure.local_segment_size;
+                        assert(local_base < interp.local_segment + IR_LOCAL_SEGMENT_BYTES);
                         procid = new_procid;
                         jump_table = new_procedure.jump_table;
                         instructions = new_procedure.instructions;
@@ -5118,17 +5201,19 @@ void ir_run(Job *jp, int procid) {
                 continue;
             case IROP_RET:
                 if(arrlen(interp.pc_stack) == 0) {
-                    assert(arrlen(interp.local_base_stack) == 0 && arrlen(interp.procid_stack) == 0);
+                    assert(local_base == interp.local_segment);
+                    assert(arrlen(interp.procid_stack) == 0);
                     go = false;
                     continue;
                 }
 
-                local_base = arrpop(interp.local_base_stack);
                 jump_table = arrpop(interp.jump_table_stack);
                 pc = arrpop(interp.pc_stack);
                 procid = arrpop(interp.procid_stack);
 
                 procedure = hmget(proc_table, procid);
+                local_base -= procedure.local_segment_size;
+                assert(local_base >= interp.local_segment);
                 instructions = procedure.instructions;
                 n_instructions = procedure.n_instructions;
                 continue;
@@ -9105,7 +9190,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
     Arr(AST_param*) params = NULL;
     Arr(u64) saved_param_offsets = NULL;
 
-    arrsetlen(params, ast_call->n_params);
+    arrsetlen(params, MAX(ast_call->n_params, callee_type->proc.param.n));
     //arrsetlen(saved_param_offsets, ast_call->n_params);
     bool params_passed[arrlen(params)];
     for(int i = 0; i < STATICARRLEN(params_passed); ++i) params_passed[i] = false;
@@ -10754,14 +10839,14 @@ void job_runner(char *src, char *src_path) {
                             continue;
                         }
 
-                        IRproc procedure = hmget(proc_table, handling_sym->procid);
-                        if(!procedure.is_foreign) {
-                            IRinst *instructions = procedure.instructions;
-                            for(int i = 0; i < procedure.n_instructions; ++i) {
-                                printf("%i: ",i);
-                                print_ir_inst(instructions[i], stdout);
-                            }
-                        }
+                        //IRproc procedure = hmget(proc_table, handling_sym->procid);
+                        //if(!procedure.is_foreign) {
+                        //    IRinst *instructions = procedure.instructions;
+                        //    for(int i = 0; i < procedure.n_instructions; ++i) {
+                        //        printf("%i: ",i);
+                        //        print_ir_inst(instructions[i], stdout);
+                        //    }
+                        //}
                         ++i;
                         break;
                     }
@@ -12403,7 +12488,7 @@ void typecheck_expr(Job *jp) {
                 }
 
                 if(!jp->interp.local_segment)
-                    jp->interp.local_segment = malloc(1<<15);
+                    jp->interp.local_segment = malloc(IR_LOCAL_SEGMENT_BYTES);
 
                 //NOTE leaving this dirty for testing purposes
                 //memset(jp->interp.local_segment, 0, 1<<15);
@@ -13482,15 +13567,21 @@ void print_sym(Sym sym) {
 //     A lot of the code generator depends on the current value of jp->reg_alloc,
 //     this is becoming flimsy and we need a better way of allocating registers
 
-int main(void) {
+int main(int argc, char **argv) {
+    assert(argc == 2);
+
+    char *preload_path = "preload.jpl";
+    assert(FileExists(preload_path));
+
+    char *path = argv[1];
+    assert(FileExists(path));
+
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
 
     arena_init(&string_arena);
     arena_init(&type_info_arena);
 
-    char *preload_path = "preload.jpl";
-    assert(FileExists(preload_path));
     char *preload_src = LoadFileText(preload_path);
 
     job_runner(preload_src, preload_path);
@@ -13500,8 +13591,6 @@ int main(void) {
     type_Dynamic_array  = shget(global_scope, "_Dynamic_array")->value->val.type;
     type_Any            = shget(global_scope, "Any")->value->val.type;
 
-    char *path = "test/dynamic_array.jpl";
-    assert(FileExists(path));
     char *test_src_file = LoadFileText(path);
 
     job_runner(test_src_file, path);

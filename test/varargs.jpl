@@ -67,6 +67,7 @@ proc print(fmt: string, args: ..) {
 
             if t_int.bits == 64 &&  t_int.sign {
                 x := >cast(*s64)v;
+                n = x;
 
                 if x < 0 {
                     n = -x;
@@ -76,6 +77,7 @@ proc print(fmt: string, args: ..) {
                 n = >cast(*u64)v;
             } else if t_int.bits == 32 &&  t_int.sign {
                 x := >cast(*s32)v;
+                n = x;
 
                 if x < 0 {
                     n = -x;
@@ -85,6 +87,7 @@ proc print(fmt: string, args: ..) {
                 n = >cast(*u32)v;
             } else if t_int.bits == 16 &&  t_int.sign {
                 x := >cast(*s16)v;
+                n = x;
 
                 if x < 0 {
                     n = -x;
@@ -94,6 +97,7 @@ proc print(fmt: string, args: ..) {
                 n = >cast(*u16)v;
             } else if t_int.bits == 8  &&  t_int.sign {
                 x := >cast(*s8)v;
+                n = x;
 
                 if x < 0 {
                     n = -x;
