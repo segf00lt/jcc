@@ -23,3 +23,5 @@ proc array_int_push(arr: *[..]int, x: int) {
     arr[][arr.count] = x;
     arr.count++;
 }
+
+#run main();

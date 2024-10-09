@@ -46,12 +46,12 @@ struct String_view {
 };
 
 struct Array_view {
-    void *data;
+    u8 *data;
     u64 count;
 };
 
 struct Dynamic_array {
-    void *data;
+    u8 *data;
     u64 count;
     u64 cap;
     Allocator allocator;
@@ -65,6 +65,8 @@ struct Any {
 
 struct Type_info {
     Type_info_tag tag;
+    u32 align;
+    u64 bytes;
 };
 
 struct Type_info_int {

@@ -2,146 +2,29 @@
 
 proc main() {
     print("hello world %\n", 42);
-}
+    s := "jimmy";
+    s2 := "bob";
+    jimmy_age := 33;
+    bob_age := 29;
+    print("% is % years old, % is % years younger than %\n", s, jimmy_age, s2, cast(f32)(jimmy_age - bob_age), s);
+    print("%\n", 124.91);
+    
+    testarr: [..]float;
+    arr_push(@testarr, 1.2);
+    print("here 1!!!!!\n");
+    arr_push(@testarr, 3.2);
+    print("here 2!!!!!\n");
+    arr_push(@testarr, 9.4);
+    print("here 3!!!!!\n");
+    arr_push(@testarr, 2.3);
+    print("here 4!!!!!\n");
 
-proc print(fmt: string, args: ..) {
-
-    if args.count == 0 {
-        write(STDOUT, cast(*void)fmt.data, fmt.len);
-        return;
+    i := 0;
+    print("testarr = [");
+    while i < testarr.count - 1 {
+        defer i++;
+        print("%, ", testarr[i]);
     }
-
-    argi: u64 = 0;
-
-    begin_fmt_slice := fmt.data;
-    end_fmt_slice := fmt.data;
-
-    //output: string;
-
-    int_format_buf: [65]char = ---;
-
-    while argi < args.count {
-        defer argi++;
-
-        while >end_fmt_slice != 37 && fmt.len > (end_fmt_slice - fmt.data) {
-            end_fmt_slice++;
-        }
-
-        if fmt.len == (end_fmt_slice - fmt.data) {
-            write(STDOUT, cast(*void)fmt.data, fmt.len);
-            return;
-        }
-
-        write(STDOUT, cast(*void)begin_fmt_slice, cast(size_t)(end_fmt_slice - begin_fmt_slice));
-        end_fmt_slice++;
-        begin_fmt_slice = end_fmt_slice;
-
-
-        t: *Type_info = args[argi].type;
-        v := args[argi].data;
-
-        if t.tag == TYPE_INFO_TAG_INT {
-            t_int := cast(*Type_info_int) t;
-            n: u64 = ---;
-            negative: bool;
-
-            if t_int.bits == 64 &&  t_int.sign {
-                x := >cast(*s64)v;
-
-                if x < 0 {
-                    n = -x;
-                    negative = 1;
-                } else {
-                    n = x;
-                }
-            } else if t_int.bits == 64 && !t_int.sign {
-                n = >cast(*u64)v;
-            } else if t_int.bits == 32 &&  t_int.sign {
-                x := >cast(*s32)v;
-
-                if x < 0 {
-                    n = -x;
-                    negative = 1;
-                } else {
-                    n = x;
-                }
-            } else if t_int.bits == 32 && !t_int.sign {
-                n = >cast(*u32)v;
-            } else if t_int.bits == 16 &&  t_int.sign {
-                x := >cast(*s16)v;
-
-                if x < 0 {
-                    n = -x;
-                    negative = 1;
-                } else {
-                    n = x;
-                }
-            } else if t_int.bits == 16 && !t_int.sign {
-                n = >cast(*u16)v;
-            } else if t_int.bits == 8  &&  t_int.sign {
-                x := >cast(*s8)v;
-
-                if x < 0 {
-                    n = -x;
-                    negative = 1;
-                } else {
-                    n = x;
-                }
-            } else if t_int.bits == 8  && !t_int.sign {
-                n = >cast(*u8)v;
-            }
-
-            if n == 0 {
-                int_format_buf[0] = 48;
-                write(STDOUT, cast(*void)int_format_buf.data, 1);
-            } else {
-                i := 0;
-
-                while n > 0 {
-                    int_format_buf[i] = (n % 10) + 48;
-                    n /= 10;
-                    i++;
-                }
-
-                if negative {
-                    int_format_buf[i] = 45;
-                    i++;
-                }
-                
-                j := 0;
-                k := i - 1;
-                while j < k {
-                    tmp := int_format_buf[j];
-                    int_format_buf[j] = int_format_buf[k];
-                    int_format_buf[k] = tmp;
-
-                    j++;
-                    k--;
-                }
-
-                write(STDOUT, cast(*void)int_format_buf.data, i);
-            }
-
-        } else if t.tag == TYPE_INFO_TAG_FLOAT {
-            t_float := cast(*Type_info_float) t;
-        } else if t.tag == TYPE_INFO_TAG_STRING {
-            s := >cast(*string)v;
-
-        } else if t.tag == TYPE_INFO_TAG_ARRAY {
-            x := 0; // TODO allow empty statements
-        } else if t.tag == TYPE_INFO_TAG_STRUCT {
-            x := 0;
-        } else {
-            x := 0;
-        }
-    }
-
-    write(STDOUT, cast(*void)begin_fmt_slice, fmt.len - cast(size_t)(begin_fmt_slice - fmt.data));
-
+    print("%]\n", testarr[testarr.count-1]);
 }
-
-proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
-
-STDOUT :: 1;
-size_t :: u64;
 

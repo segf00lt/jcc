@@ -1,0 +1,222 @@
+size_t :: u64;
+STDIN  :: 0;
+STDOUT :: 1;
+STDERR :: 2;
+
+proc malloc(bytes: size_t) *void #system;
+proc realloc(ptr: *void, bytes: size_t) *void #system;
+proc free(ptr: *void) #system;
+proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
+proc read(fd: s32, buf: *void, bytes: size_t) size_t #system;
+proc memcpy(dest: *void, src: *void, n: size_t) *void #system;
+
+//ARRAY_INITIAL_CAP: u64 : 64;
+
+proc arr_push(arr: *_Dynamic_array, elem: Any) { //TODO compile-time polymorphism
+    if arr.count >= arr.cap {
+        new_cap := arr.cap << 2;
+        if new_cap == 0  new_cap = 64;
+        arr.data = realloc(arr.data, new_cap * elem.type.bytes);
+        arr.cap = new_cap;
+    }
+
+    memcpy(arr.data + arr.count * elem.type.bytes, elem.data, elem.type.bytes);
+    arr.count++;
+}
+
+proc print(fmt: string, args: ..) {
+
+    if args.count == 0 {
+        write(STDOUT, cast(*void)fmt.data, fmt.len);
+        return;
+    }
+
+    argi: u64 = 0;
+
+    begin_fmt_slice := fmt.data;
+    end_fmt_slice := fmt.data;
+
+    //output: string;
+
+    int_format_buf: [65]char = ---;
+    frac_format_buf: [65]char = ---;
+
+    while argi < args.count {
+        defer argi++;
+
+        while >end_fmt_slice != 37 && fmt.len > (end_fmt_slice - fmt.data) {
+            end_fmt_slice++;
+        }
+        write(STDOUT, cast(*void)begin_fmt_slice, cast(size_t)(end_fmt_slice - begin_fmt_slice));
+        end_fmt_slice++;
+        begin_fmt_slice = end_fmt_slice;
+
+
+        t: *Type_info = args[argi].type;
+        v := args[argi].data;
+
+        if t.tag == TYPE_INFO_TAG_INT {
+            t_int := cast(*Type_info_int) t;
+            n: u64 = ---;
+            negative: bool;
+
+            if t_int.bits == 64 &&  t_int.sign {
+                x := >cast(*s64)v;
+                n = x;
+
+                if x < 0 {
+                    n = -x;
+                    negative = 1;
+                }
+            } else if t_int.bits == 64 && !t_int.sign {
+                n = >cast(*u64)v;
+            } else if t_int.bits == 32 &&  t_int.sign {
+                x := >cast(*s32)v;
+                n = x;
+
+                if x < 0 {
+                    n = -x;
+                    negative = 1;
+                }
+            } else if t_int.bits == 32 && !t_int.sign {
+                n = >cast(*u32)v;
+            } else if t_int.bits == 16 &&  t_int.sign {
+                x := >cast(*s16)v;
+                n = x;
+
+                if x < 0 {
+                    n = -x;
+                    negative = 1;
+                }
+            } else if t_int.bits == 16 && !t_int.sign {
+                n = >cast(*u16)v;
+            } else if t_int.bits == 8  &&  t_int.sign {
+                x := >cast(*s8)v;
+                n = x;
+
+                if x < 0 {
+                    n = -x;
+                    negative = 1;
+                }
+            } else if t_int.bits == 8  && !t_int.sign {
+                n = >cast(*u8)v;
+            }
+
+            if n == 0 {
+                int_format_buf[0] = 48;
+                write(STDOUT, int_format_buf.data, 1);
+            } else {
+                i := 0;
+
+                while n > 0 {
+                    int_format_buf[i] = (n % 10) + 48;
+                    n /= 10;
+                    i++;
+                }
+
+                if negative {
+                    int_format_buf[i] = 45;
+                    i++;
+                }
+                
+                j := 0;
+                k := i - 1;
+                while j < k {
+                    tmp := int_format_buf[j];
+                    int_format_buf[j] = int_format_buf[k];
+                    int_format_buf[k] = tmp;
+
+                    j++;
+                    k--;
+                }
+
+                write(STDOUT, int_format_buf.data, i);
+            }
+
+        } else if t.tag == TYPE_INFO_TAG_FLOAT {
+            t_float := cast(*Type_info_float) t;
+
+            f: f64;
+
+            if t_float.bits == 8 {
+                f = >cast(*f64)v;
+            } else {
+                f = cast(f64)>cast(*f32)v;
+            }
+
+            negative: bool;
+
+            if f < cast(f64)0 {
+                negative = 1;
+                f = -f;
+            }
+
+            int_part := cast(int)f;
+            frac_part := f - cast(f64)int_part;
+
+            if int_part == 0 {
+                int_format_buf[0] = 48;
+                write(STDOUT, int_format_buf.data, 1);
+            } else {
+                i := 0;
+
+                while int_part > 0 {
+                    int_format_buf[i] = (int_part % 10) + 48;
+                    int_part /= 10;
+                    i++;
+                }
+
+                if negative {
+                    int_format_buf[i] = 45;
+                    i++;
+                }
+                
+                j := 0;
+                k := i - 1;
+                while j < k {
+                    tmp := int_format_buf[j];
+                    int_format_buf[j] = int_format_buf[k];
+                    int_format_buf[k] = tmp;
+
+                    j++;
+                    k--;
+                }
+
+                write(STDOUT, int_format_buf.data, i);
+            }
+
+            frac_format_buf[0] = 46;
+
+            if frac_part == cast(f64)0 {
+                frac_format_buf[1] = 48;
+                write(STDOUT, frac_format_buf.data, 2);
+            } else {
+                i := 1;
+
+                while frac_part > cast(f64)0 && i < 11 {
+                    frac_part *= 10;
+                    x: int = cast(int)frac_part;
+                    frac_format_buf[i] = x + 48;
+                    frac_part -= cast(f64)x;
+                    i++;
+                }
+
+                write(STDOUT, frac_format_buf.data, i);
+            }
+
+        } else if t.tag == TYPE_INFO_TAG_STRING {
+            s := >cast(*string)v;
+            write(STDOUT, s.data, s.len);
+        //} else if t.tag == TYPE_INFO_TAG_ARRAY {
+        //    x := 0; // TODO allow empty statements
+        //} else if t.tag == TYPE_INFO_TAG_STRUCT {
+        //    x := 0;
+        }
+        //} else {
+        //    x := 0;
+        //}
+    }
+
+    write(STDOUT, cast(*void)begin_fmt_slice, fmt.len - cast(size_t)(begin_fmt_slice - fmt.data));
+
+}

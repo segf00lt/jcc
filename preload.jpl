@@ -20,6 +20,8 @@ TYPE_INFO_TAG_ANY      : Type_info_tag :  11;
 
 struct Type_info {
     tag: Type_info_tag;
+    align: u32;
+    bytes: u64;
 }
 
 struct Type_info_int {
@@ -46,7 +48,7 @@ struct Type_info_array {
 
     array_of:    *Type_info;
     array_count:  u64;
-    array_kind:   u32; // STATIC, DYNAMIC, VIEW
+    array_kind:   u32; // 0 STATIC, 1 DYNAMIC, 2 VIEW
 }
 
 struct Type_info_struct_member {
@@ -75,12 +77,12 @@ struct _String_view { // struct definition for a builtin string
 }
 
 struct _Array_view {
-    data: *void;
+    data: *u8;
     count: u64;
 }
 
 struct _Dynamic_array {
-    data:           *void;
+    data:           *u8;
     count:           u64;
     cap:             u64;
     allocator:       Allocator;
@@ -110,3 +112,4 @@ struct Temporary_storage {
     size:     s32;
     max_size: s32;
 }
+
