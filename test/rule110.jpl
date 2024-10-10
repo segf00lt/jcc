@@ -76,8 +76,6 @@ proc rule110(N: int) void {
     putchar();
 }
 
-size_t :: u64;
-
 proc print_int(n: int) {
     buf: [64]char = ---;
     reversed_buf: [buf.count]char = ---;
@@ -114,8 +112,6 @@ proc print_char(c: char) {
 
 proc putchar(c: s32 = 10) s32 #system;
 
-proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
-
 proc test2(x: int) {
     x = fib(x);
     return;
@@ -137,8 +133,4 @@ proc test(x: int) int {
 }
 
 D :: 30;
-
-STDIN  :: 0;
-STDOUT :: 1;
-STDERR :: 2;
 

@@ -223,6 +223,8 @@
 
 #define TYPE_KIND_IS_NOT_SCALAR(kind) ((bool)(kind >= TYPE_KIND_TYPE && kind != TYPE_KIND_POINTER))
 
+#define TYPE_KIND_IS_SCALAR(kind) ((bool)(kind < TYPE_KIND_TYPE || kind == TYPE_KIND_POINTER))
+
 #define TYPE_KIND_IS_RECORD(kind) ((bool)(kind == TYPE_KIND_STRUCT || kind == TYPE_KIND_UNION))
 
 #define TYPE_KIND_IS_FLOAT(kind) ((bool)(kind >= TYPE_KIND_FLOAT && kind <= TYPE_KIND_F64))
@@ -5664,34 +5666,16 @@ u64 ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array
 
             for(AST_expr_list *elem = ast_array->elements; elem; elem = elem->next) {
                 AST_expr_base *expr_base = (AST_expr_base*)(elem->expr);
-                if(expr_base->value_annotation == NULL || expr_base->value_annotation->kind == VALUE_KIND_NIL) {
-                    inst.setvar.immediate = false;
-                    ir_gen_expr(jp, elem->expr);
-                    (*regp)--;
-                    inst.setvar.reg_src = *regp;
-                } else {
-                    inst.setvar.immediate = true;
-                    if(array_type->array.of->kind == TYPE_KIND_F64) {
-                        if(expr_base->value_annotation->kind == VALUE_KIND_INT) {
-                            inst.setvar.imm.floating64 = (f64)(expr_base->value_annotation->val.integer);
-                        } else if(expr_base->value_annotation->kind == VALUE_KIND_FLOAT) {
-                            inst.setvar.imm.floating64 = (f64)(expr_base->value_annotation->val.floating);
-                        } else {
-                            assert(expr_base->value_annotation->kind == VALUE_KIND_DFLOAT);
-                            inst.setvar.imm.floating64 = (f64)(expr_base->value_annotation->val.dfloating);
-                        }
-                    } else if(array_type->array.of->kind >= TYPE_KIND_FLOAT) {
-                        //TODO implicit casts should be resolved in the typechecker
-                        if(expr_base->value_annotation->kind == VALUE_KIND_INT) {
-                            inst.setvar.imm.floating32 = (f32)(expr_base->value_annotation->val.integer);
-                        } else {
-                            assert(expr_base->value_annotation->kind == VALUE_KIND_FLOAT);
-                            inst.setvar.imm.floating32 = expr_base->value_annotation->val.floating;
-                        }
-                    } else {
-                        inst.setvar.imm.integer = expr_base->value_annotation->val.integer;
-                    }
-                }
+
+                assert(types_are_same(expr_base->type_annotation, array_type->array.of));
+
+                inst.setvar.immediate = false;
+                ir_gen_expr(jp, elem->expr);
+                (*regp)--;
+                inst.setvar.reg_src = *regp;
+
+                //TODO strip unecessary LOAD and SETVAR instructions in a second pass
+
                 inst.loc = jp->cur_loc;
                 arrpush(jp->instructions, inst);
                 inst.setvar.offset += stride;
@@ -5891,23 +5875,16 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 ir_gen_copy_array_literal(jp, left_type, (AST_array_literal*)(ast_statement->right), 0, jp->reg_alloc - 1);
                 jp->reg_alloc--;
                 assert(jp->reg_alloc == 0);
-                //printf("offset = %lu\n", offset);
                 return;
             } else {
                 assert(right_type->kind == TYPE_KIND_ARRAY);
-                //int i = arrlen(jp->instructions);
                 ir_gen_expr(jp, ast_statement->right);
                 ir_gen_expr(jp, ast_statement->left);
                 assert(jp->reg_alloc == 2);
                 ir_gen_memorycopy(jp, left_type->bytes, jp->reg_alloc - 1, jp->reg_alloc - 2);
                 jp->reg_alloc -= 2;
                 assert(jp->reg_alloc == 0);
-                //while(i < arrlen(jp->instructions)) {
-                //    printf("%i: ", i);
-                //    print_ir_inst(jp->instructions[i]);
-                //    ++i;
-                //}
-                //assert(0);
+                return;
             }
         } else if(left_type->kind == TYPE_KIND_ARRAY_VIEW) {
             if(ast_statement->right->kind == AST_KIND_array_literal) {
@@ -5952,6 +5929,8 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 inst.loc = jp->cur_loc;
                 arrpush(jp->instructions, inst);
             } else if(right_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+                UNREACHABLE; //REFACTOR
+
                 ir_gen_expr(jp, ast_statement->right);
                 ir_gen_expr(jp, ast_statement->left);
                 assert(jp->reg_alloc == 2);
@@ -6011,6 +5990,8 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 jp->reg_alloc -= 2;
                 assert(jp->reg_alloc == 0);
             } else if(right_type->kind == TYPE_KIND_ARRAY) {
+                UNREACHABLE; //REFACTOR
+
                 ir_gen_expr(jp, ast_statement->right);
                 ir_gen_expr(jp, ast_statement->left);
                 assert(jp->reg_alloc == 2);
@@ -7681,6 +7662,8 @@ void ir_gen_block(Job *jp, AST *ast) {
                 {
                     AST_statement *ast_statement = (AST_statement*)ast;
 
+                    arrpush(jp->local_offset, arrlast(jp->local_offset));
+
                     if(ast_statement->deferred) {
                         ast = ast_statement->next;
                         ast_statement->next = (AST*)defer_list;
@@ -7689,6 +7672,9 @@ void ir_gen_block(Job *jp, AST *ast) {
                         ir_gen_statement(jp, ast_statement);
                         ast = ast_statement->next;
                     }
+
+                    if(arrlast(jp->local_offset) > jp->max_local_offset) jp->max_local_offset = arrlast(jp->local_offset);
+                    arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
 
                     jp->reg_alloc = 0;
                     jp->float_reg_alloc = 0;
@@ -7977,9 +7963,6 @@ void ir_gen_expr(Job *jp, AST *ast) {
     Arr(AST*) ir_expr = ir_linearize_expr(NULL, ast);
 
     Arr(Type*) type_stack = NULL;
-
-    //NOTE expressions may need to allocate local data for structs
-    //arrpush(jp->local_offset, arrlast(jp->local_offset));
 
     for(u64 pos = 0; pos < arrlen(ir_expr); ++pos) {
         AST *cur_ast = ir_expr[pos];
@@ -8512,6 +8495,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                     default:
                         UNREACHABLE;
                     case TOKEN_CAST:
+                    //TODO implicit cast everything
                         if(TYPE_KIND_IS_RECORD(result_type->kind) && TYPE_KIND_IS_RECORD(operand_type->kind)) {
                             u64 use_offset = 0;
 
@@ -8539,7 +8523,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
                         } else if(result_type->kind == TYPE_KIND_POINTER && operand_type->kind == TYPE_KIND_POINTER) {
 
-                            if(TYPE_KIND_IS_RECORD(result_type->pointer.to->kind) && TYPE_KIND_IS_RECORD(result_type->pointer.to->kind)) {
+                            if(TYPE_KIND_IS_RECORD(result_type->pointer.to->kind) && TYPE_KIND_IS_RECORD(operand_type->pointer.to->kind)) {
                                 Type *p_to_operand_type = operand_type->pointer.to;
                                 Type *p_to_result_type = result_type->pointer.to;
 
@@ -8566,12 +8550,76 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                     inst.loc = jp->cur_loc;
                                     arrpush(jp->instructions, inst);
                                 }
+                            } else if(TYPE_KIND_IS_NOT_SCALAR(result_type->pointer.to->kind) && TYPE_KIND_IS_NOT_SCALAR(operand_type->pointer.to->kind)) {
+                                Type *p_to_operand_type = operand_type->pointer.to;
+                                Type *p_to_result_type = result_type->pointer.to;
+
+                                if(p_to_result_type == type_String_view                   && p_to_operand_type->kind == TYPE_KIND_STRING)        PASS;
+                                else if(p_to_result_type == type_Array_view               && p_to_operand_type->kind == TYPE_KIND_ARRAY_VIEW)    PASS;
+                                else if(p_to_result_type == type_Dynamic_array            && p_to_operand_type->kind == TYPE_KIND_DYNAMIC_ARRAY) PASS;
+                                else if(p_to_result_type->kind == TYPE_KIND_STRING        && p_to_operand_type       == type_String_view)        PASS;
+                                else if(p_to_result_type->kind == TYPE_KIND_ARRAY_VIEW    && p_to_operand_type       == type_Array_view)         PASS;
+                                else if(p_to_result_type->kind == TYPE_KIND_DYNAMIC_ARRAY && p_to_operand_type       == type_Dynamic_array)      PASS;
+                                else UNIMPLEMENTED;
                             }
 
+                        } else if(result_type->kind == TYPE_KIND_ARRAY_VIEW && operand_type->kind == TYPE_KIND_ARRAY_VIEW) {
+                            PASS;
+                        } else if(result_type->kind == TYPE_KIND_ARRAY_VIEW && operand_type->kind == TYPE_KIND_ARRAY) {
+                            arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), operand_type->align);
+                            u64 operand_offset = arrlast(jp->local_offset);
+
+                            arrlast(jp->local_offset) += sizeof(Array_view);
+
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_SETVAR,
+                                    .setvar = {
+                                        .segment = IRSEG_LOCAL,
+                                        .offset = operand_offset + offsetof(Array_view, data),
+                                        .reg_src = *reg_srcp,
+                                        .bytes = member_size(Array_view, data),
+                                    },
+                                };
+                            inst.loc = jp->cur_loc;
+                            arrpush(jp->instructions, inst);
+
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_SETVAR,
+                                    .setvar = {
+                                        .segment = IRSEG_LOCAL,
+                                        .offset = operand_offset + offsetof(Array_view, count),
+                                        .imm.integer = operand_type->array.n,
+                                        .bytes = member_size(Array_view, count),
+                                        .immediate = true,
+                                    },
+                                };
+                            inst.loc = jp->cur_loc;
+                            arrpush(jp->instructions, inst);
+
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_ADDRVAR,
+                                    .addrvar = {
+                                        .segment = IRSEG_LOCAL,
+                                        .offset = operand_offset,
+                                        .reg_dest = *reg_destp,
+                                    },
+                                };
+                            inst.loc = jp->cur_loc;
+                            arrpush(jp->instructions, inst);
+
+                        } else if(result_type->kind == TYPE_KIND_ARRAY_VIEW && operand_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+                            UNIMPLEMENTED;
+                        } else if(result_type->kind == TYPE_KIND_ARRAY_VIEW && operand_type->kind == TYPE_KIND_STRING) {
+                            UNIMPLEMENTED;
+                        } else if(result_type->kind == TYPE_KIND_ARRAY && operand_type->kind == TYPE_KIND_ARRAY) {
+                            UNIMPLEMENTED;
                         } else if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind) && TYPE_KIND_IS_NOT_SCALAR(operand_type->kind)) {
                             PASS;
-                        } else if(result_type->kind == TYPE_KIND_POINTER && TYPE_KIND_IS_ARRAY_LIKE(operand_type->kind)) {
-                            if(operand_type->kind == TYPE_KIND_ARRAY_VIEW) {
+                        } else if(result_type->kind == TYPE_KIND_POINTER && (TYPE_KIND_IS_ARRAY_LIKE(operand_type->kind) || operand_type->kind == TYPE_KIND_STRING)) {
+                            if(operand_type->kind != TYPE_KIND_ARRAY) {
                                 inst =
                                     (IRinst) {
                                         .opcode = IROP_LOAD,
@@ -8583,27 +8631,10 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                     };
                                 inst.loc = jp->cur_loc;
                                 arrpush(jp->instructions, inst);
-
-                            } else if(operand_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
-                                UNIMPLEMENTED;
-                                inst =
-                                    (IRinst) {
-                                        .opcode = IROP_LOAD,
-                                        .load = {
-                                            .reg_dest = *reg_destp,
-                                            .reg_src_ptr = *reg_srcp,
-                                            .bytes = 8,
-                                        },
-                                    };
-                                inst.loc = jp->cur_loc;
-                                arrpush(jp->instructions, inst);
-
-                            } else {
-                                assert(operand_type->kind == TYPE_KIND_ARRAY);
                             }
                         } else if(result_type == type_Any) {
                             arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), operand_type->align);
-                            u64 save_operand_offset = arrlast(jp->local_offset);
+                            u64 operand_offset = arrlast(jp->local_offset);
 
                             if(TYPE_KIND_IS_NOT_SCALAR(operand_type->kind)) {
                                 UNIMPLEMENTED;
@@ -8614,7 +8645,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                         .opcode = TYPE_KIND_IS_FLOAT(operand_type->kind) ? IROP_SETVARF : IROP_SETVAR,
                                         .setvar = {
                                             .segment = IRSEG_LOCAL,
-                                            .offset = save_operand_offset,
+                                            .offset = operand_offset,
                                             .reg_src = *reg_srcp,
                                             .bytes = operand_type->bytes,
                                         },
@@ -8635,7 +8666,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                     .opcode = IROP_ADDRVAR,
                                     .addrvar = {
                                         .segment = IRSEG_LOCAL,
-                                        .offset = save_operand_offset,
+                                        .offset = operand_offset,
                                         .reg_dest = jp->reg_alloc,
                                     },
                                 };
@@ -8685,9 +8716,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
                             arrlast(jp->local_offset) += sizeof(Any);
 
-                        } else if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind) || TYPE_KIND_IS_NOT_SCALAR(operand_type->kind)) {
-                            UNIMPLEMENTED;
-                        } else {
+                        } else if(TYPE_KIND_IS_SCALAR(result_type->kind) && TYPE_KIND_IS_SCALAR(operand_type->kind)) {
                             inst =
                                 (IRinst) {
                                     .typeconv = {
@@ -8710,6 +8739,8 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                 inst.loc = jp->cur_loc;
                                 arrpush(jp->instructions, inst);
                             }
+                        } else {
+                            UNIMPLEMENTED;
                         }
 
                         (*reg_destp)++;
@@ -9177,7 +9208,22 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 }
             }
         } else if(kind == AST_KIND_array_literal) {
-            UNIMPLEMENTED;
+            AST_array_literal *array_literal = (AST_array_literal*)cur_ast;
+            u64 array_offset = ir_gen_array_literal(jp, array_literal->type_annotation, array_literal);
+
+            IRinst inst = {
+                .opcode = IROP_ADDRVAR,
+                .addrvar = {
+                    .segment = IRSEG_LOCAL,
+                    .offset = array_offset,
+                    .reg_dest = jp->reg_alloc++,
+                },
+            };
+            inst.loc = jp->cur_loc;
+            arrpush(jp->instructions, inst);
+
+            arrpush(type_stack, array_literal->type_annotation);
+
         } else if(kind == AST_KIND_call) {
             AST_call *ast_call = (AST_call*)cur_ast;
             Arr(Type*) (*ir_gen_call)(Job*, Arr(Type*), AST_call*);
@@ -9197,7 +9243,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
     }
 
     //NOTE expressions may need to allocate local data for structs
-    if(arrlast(jp->local_offset) > jp->max_local_offset) jp->max_local_offset = arrlast(jp->local_offset);
+    //if(arrlast(jp->local_offset) > jp->max_local_offset) jp->max_local_offset = arrlast(jp->local_offset);
     //arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
 
     arrfree(ir_expr);
@@ -9315,16 +9361,10 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
 
     arrsetlen(params, MAX(ast_call->n_params, callee_type->proc.param.n));
     //arrsetlen(saved_param_offsets, ast_call->n_params);
+
     bool params_passed[arrlen(params)];
+
     for(int i = 0; i < STATICARRLEN(params_passed); ++i) params_passed[i] = false;
-
-    //TODO allocate space for non scalar (struct, array) return values here
-
-    /* NOTE
-     * here we allocate local data for the return values of nested procedure calls
-     * and varargs arrays
-     */
-    arrpush(jp->local_offset, arrlast(jp->local_offset));
 
     u64 non_scalar_return_addrs[callee_type->proc.ret.n];
     int non_scalar_return_count = 0;
@@ -9464,44 +9504,24 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         arrpush(saved_param_offsets, arrlast(jp->local_offset));
 
         if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
-            if(p->type_annotation->kind == TYPE_KIND_ARRAY) {
-                UNIMPLEMENTED;
-                ir_gen_expr(jp, p->value);
-                jp->reg_alloc--;
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_SETVAR,
-                        .setvar = {
-                            .segment = IRSEG_LOCAL,
-                            .offset = arrlast(jp->local_offset),
-                            .reg_src = jp->reg_alloc,
-                            .bytes = 8,
-                        },
-                    };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
-                arrlast(jp->local_offset) += 8;
-            } else {
-                //TODO handle all non scalar returns in nested calls
-                ir_gen_expr(jp, p->value);
+            ir_gen_expr(jp, p->value);
 
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_ADDRVAR,
-                        .addrvar = {
-                            .segment = IRSEG_LOCAL,
-                            .offset = arrlast(jp->local_offset),
-                            .reg_dest = jp->reg_alloc,
-                        },
-                    };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
+            inst =
+                (IRinst) {
+                    .opcode = IROP_ADDRVAR,
+                    .addrvar = {
+                        .segment = IRSEG_LOCAL,
+                        .offset = arrlast(jp->local_offset),
+                        .reg_dest = jp->reg_alloc,
+                    },
+                };
+            inst.loc = jp->cur_loc;
+            arrpush(jp->instructions, inst);
 
-                arrlast(jp->local_offset) += p->type_annotation->bytes;
-                ir_gen_memorycopy(jp, p->type_annotation->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+            arrlast(jp->local_offset) += p->type_annotation->bytes;
+            ir_gen_memorycopy(jp, p->type_annotation->bytes, jp->reg_alloc, jp->reg_alloc - 1);
 
-                jp->reg_alloc--;
-            }
+            jp->reg_alloc--;
         } else {
             ir_gen_expr(jp, p->value);
 
@@ -9672,9 +9692,34 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         AST_param *p = arrpop(params);
 
         if(p->has_nested_call) {
-            if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
-                UNIMPLEMENTED;
-                //NOTE this is just a memory copy
+            if(TYPE_KIND_IS_RECORD(p->type_annotation->kind)) {
+
+                assert(jp->reg_alloc == 0);
+
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_ADDRVAR,
+                        .getvar = {
+                            .segment = IRSEG_LOCAL,
+                            .offset = arrpop(saved_param_offsets),
+                            .reg_dest = jp->reg_alloc,
+                        },
+                    };
+                inst.loc = jp->cur_loc;
+                arrpush(jp->instructions, inst);
+
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_SETARG,
+                        .setport = {
+                            .port = non_scalar_return_count + p->index,
+                            .reg_src = jp->reg_alloc,
+                            .bytes = 8,
+                        },
+                    };
+                inst.loc = jp->cur_loc;
+                arrpush(jp->instructions, inst);
+
             } else {
                 IRop opcode1 = IROP_GETVAR;
                 IRop opcode2 = IROP_SETARG;
@@ -9698,6 +9743,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                     };
                 inst.loc = jp->cur_loc;
                 arrpush(jp->instructions, inst);
+
                 inst =
                     (IRinst) {
                         .opcode = opcode2,
@@ -9711,185 +9757,44 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 arrpush(jp->instructions, inst);
             }
         } else {
-            if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
+            if(TYPE_KIND_IS_RECORD(p->type_annotation->kind)) {
+                ir_gen_expr(jp, p->value);
+                assert(jp->reg_alloc == 1);
 
-                bool param_is_array =
-                    (p->type_annotation->kind == TYPE_KIND_ARRAY);
-                bool param_is_record_or_view_like_or_dynamic_array =
-                    (TYPE_KIND_IS_RECORD(p->type_annotation->kind) ||
-                     TYPE_KIND_IS_VIEW_LIKE(p->type_annotation->kind) ||
-                     p->type_annotation->kind == TYPE_KIND_DYNAMIC_ARRAY);
+                arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), p->type_annotation->align);
 
-                if(param_is_array) {
-                    if(p->value->kind == AST_KIND_array_literal) {
-                        u64 offset = ir_gen_array_literal(jp, p->type_annotation, (AST_array_literal*)(p->value));
-                        inst =
-                            (IRinst) {
-                                .opcode = IROP_ADDRVAR,
-                                .addrvar = {
-                                    .segment = IRSEG_LOCAL,
-                                    .offset = offset,
-                                    .reg_dest = jp->reg_alloc,
-                                },
-                            };
-                        inst.loc = jp->cur_loc;
-                        arrpush(jp->instructions, inst);
-                    } else {
-                        ir_gen_expr(jp, p->value);
-                        jp->reg_alloc--;
-                    }
-
-                    if(callee_type->proc.param.types[p->index]->kind == TYPE_KIND_DYNAMIC_ARRAY) {
-                        UNREACHABLE;
-                    } else if(callee_type->proc.param.types[p->index]->kind == TYPE_KIND_ARRAY_VIEW) {
-                        Type *view_type = callee_type->proc.param.types[p->index];
-
-                        arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), _Alignof(Array_view));
-
-                        u64 offset = arrlast(jp->local_offset);
-                        arrlast(jp->local_offset) += view_type->bytes;
-                        inst =
-                            (IRinst) {
-                                .opcode = IROP_SETVAR,
-                                .setvar = {
-                                    .segment = IRSEG_LOCAL,
-                                    .offset = offset,
-                                    .reg_src = jp->reg_alloc,
-                                    .bytes = 8,
-                                },
-                            };
-                        inst.loc = jp->cur_loc;
-                        arrpush(jp->instructions, inst);
-                        inst =
-                            (IRinst) {
-                                .opcode = IROP_SETVAR,
-                                .setvar = {
-                                    .segment = IRSEG_LOCAL,
-                                    .offset = offset + 8,
-                                    .imm.integer = p->type_annotation->array.n,
-                                    .bytes = 8,
-                                    .immediate = true,
-                                },
-                            };
-                        inst.loc = jp->cur_loc;
-                        arrpush(jp->instructions, inst);
-                        inst =
-                            (IRinst) {
-                                .opcode = IROP_ADDRVAR,
-                                .addrvar = {
-                                    .offset = offset,
-                                    .segment = IRSEG_LOCAL,
-                                    .reg_dest = jp->reg_alloc,
-                                },
-                            };
-                        inst.loc = jp->cur_loc;
-                        arrpush(jp->instructions, inst);
-                        inst =
-                            (IRinst) {
-                                .opcode = IROP_SETARG,
-                                .setport = {
-                                    .port = non_scalar_return_count + p->index,
-                                    .reg_src = jp->reg_alloc,
-                                    .bytes = 8,
-                                },
-                            };
-                        inst.loc = jp->cur_loc;
-                        arrpush(jp->instructions, inst);
-                    } else {
-                        assert(callee_type->proc.param.types[p->index]->kind == TYPE_KIND_ARRAY);
-                        inst =
-                            (IRinst) {
-                                .opcode = IROP_SETARG,
-                                .setport = {
-                                    .port = non_scalar_return_count + p->index,
-                                    .reg_src = jp->reg_alloc,
-                                    .bytes = 8,
-                                },
-                            };
-                        inst.loc = jp->cur_loc;
-                        arrpush(jp->instructions, inst);
-                    }
-                } else if (param_is_record_or_view_like_or_dynamic_array) {
-                    ir_gen_expr(jp, p->value);
-                    assert(jp->reg_alloc == 1);
-
-                    arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), p->type_annotation->align);
-
-                    inst =
-                        (IRinst) {
-                            .opcode = IROP_ADDRVAR,
-                            .addrvar = {
-                                .segment = IRSEG_LOCAL,
-                                .offset = arrlast(jp->local_offset),
-                                .reg_dest = jp->reg_alloc,
-                            },
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_ADDRVAR,
+                        .addrvar = {
+                            .segment = IRSEG_LOCAL,
+                            .offset = arrlast(jp->local_offset),
+                            .reg_dest = jp->reg_alloc,
+                        },
                     };
-                    inst.loc = jp->cur_loc;
-                    arrpush(jp->instructions, inst);
+                inst.loc = jp->cur_loc;
+                arrpush(jp->instructions, inst);
 
-                    arrlast(jp->local_offset) += p->type_annotation->bytes;
-                    ir_gen_memorycopy(jp, p->type_annotation->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+                arrlast(jp->local_offset) += p->type_annotation->bytes;
+                ir_gen_memorycopy(jp, p->type_annotation->bytes, jp->reg_alloc, jp->reg_alloc - 1);
 
-                    inst =
-                        (IRinst) {
-                            .opcode = IROP_SETARG,
-                            .setport = {
-                                .port = non_scalar_return_count + p->index,
-                                .reg_src = jp->reg_alloc,
-                                .bytes = 8,
-                            },
-                        };
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_SETARG,
+                        .setport = {
+                            .port = non_scalar_return_count + p->index,
+                            .reg_src = jp->reg_alloc,
+                            .bytes = 8,
+                        },
+                    };
+                inst.loc = jp->cur_loc;
+                arrpush(jp->instructions, inst);
 
-                    inst.loc = jp->cur_loc;
-                    arrpush(jp->instructions, inst);
-
-                    jp->reg_alloc--;
-                } else {
-                    UNIMPLEMENTED;
-                }
+                jp->reg_alloc--;
             } else {
                 Type *expect_param_type = callee_type->proc.param.types[p->index];
 
-                if(!types_are_same(expect_param_type, p->type_annotation)) {
-
-                    AST_expr_base *value_expr = (AST_expr_base*)(p->value);
-
-                    if(p->value_annotation && p->value_annotation->kind != VALUE_KIND_NIL) {
-
-                        if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
-                            UNIMPLEMENTED;
-                        } else {
-                            if(expect_param_type->kind == TYPE_KIND_FLOAT && value_expr->type_annotation->kind == TYPE_KIND_INT) {
-                                value_expr->value_annotation->kind = VALUE_KIND_FLOAT;
-                                value_expr->value_annotation->val.floating = (f32)(value_expr->value_annotation->val.integer);
-                            } else if(expect_param_type->kind == TYPE_KIND_F64 && value_expr->type_annotation->kind == TYPE_KIND_INT) {
-                                value_expr->value_annotation->kind = VALUE_KIND_DFLOAT;
-                                value_expr->value_annotation->val.dfloating = (f64)(value_expr->value_annotation->val.integer);
-                            } else if(expect_param_type->kind == TYPE_KIND_F64 && value_expr->type_annotation->kind == TYPE_KIND_FLOAT) {
-                                value_expr->value_annotation->kind = VALUE_KIND_DFLOAT;
-                                value_expr->value_annotation->val.dfloating = (f64)(value_expr->value_annotation->val.floating);
-                            }
-                        }
-
-                        value_expr->type_annotation = expect_param_type;
-
-                    } else {
-                        if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
-                            UNIMPLEMENTED;
-                        } else {
-                            AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
-                            cast_expr->token = TOKEN_CAST;
-                            cast_expr->left = NULL;
-                            cast_expr->type_annotation = expect_param_type;
-                            cast_expr->right = p->value;
-                            p->value = (AST*)cast_expr;
-                        }
-
-                        value_expr->type_annotation = expect_param_type;
-                    }
-
-                    p->type_annotation = expect_param_type;
-                }
+                assert(types_are_same(expect_param_type, p->type_annotation));
 
                 ir_gen_expr(jp, p->value);
 
@@ -10024,10 +9929,6 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
     arrfree(register_save_offsets);
     arrfree(fregs_saved);
     arrfree(iregs_saved);
-
-    /* here we free local data for the return values of nested procedure calls and varargs arrays */
-    if(arrlast(jp->local_offset) > jp->max_local_offset) jp->max_local_offset = arrlast(jp->local_offset);
-    arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
 
     if(callee_type->proc.ret.n == 0)
         return type_stack;
@@ -12019,7 +11920,7 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                     if(types_are_same(a, b))
                         return a;
 
-                    if(TYPE_KIND_IS_FLOAT(a->kind) && TYPE_KIND_IS_FLOAT(b->kind))                 checked = true;
+                    if(!checked && TYPE_KIND_IS_FLOAT(a->kind) && TYPE_KIND_IS_FLOAT(b->kind))     checked = true;
                     if(!checked && TYPE_KIND_IS_INTEGER(a->kind) && TYPE_KIND_IS_INTEGER(b->kind)) checked = true;
                     if(!checked && TYPE_KIND_IS_FLOAT(a->kind) && b->kind == TYPE_KIND_INT)        checked = true;
 
@@ -12050,11 +11951,11 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                         checked = true;
                     }
 
-                    if(!checked
-                            && a->kind == TYPE_KIND_DYNAMIC_ARRAY && TYPE_KIND_IS_ARRAY_LIKE(b->kind)
-                            && typecheck_operation(jp, a->array.of, b->array.of, '=', NULL, NULL)) {
-                        checked = true;
-                    }
+                    //if(!checked
+                    //        && a->kind == TYPE_KIND_DYNAMIC_ARRAY && TYPE_KIND_IS_ARRAY_LIKE(b->kind)
+                    //        && typecheck_operation(jp, a->array.of, b->array.of, '=', NULL, NULL)) {
+                    //    checked = true;
+                    //}
 
                     if(!checked
                             && a->kind == TYPE_KIND_ARRAY_VIEW && b->kind == TYPE_KIND_STRING 
@@ -12083,6 +11984,30 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                                 a->kind == TYPE_KIND_POINTER &&
                                 a->pointer.to == type_Dynamic_array)
                             checked = true;
+
+                        else if(a->kind == TYPE_KIND_POINTER &&
+                                a->pointer.to->kind == TYPE_KIND_ARRAY_VIEW &&
+                                b->kind == TYPE_KIND_POINTER &&
+                                b->pointer.to == type_Array_view)
+                            checked = true;
+
+                        else if(b->kind == TYPE_KIND_POINTER &&
+                                b->pointer.to->kind == TYPE_KIND_ARRAY_VIEW &&
+                                a->kind == TYPE_KIND_POINTER &&
+                                a->pointer.to == type_Array_view)
+                            checked = true;
+
+                        else if(a->kind == TYPE_KIND_POINTER &&
+                                a->pointer.to->kind == TYPE_KIND_STRING &&
+                                b->kind == TYPE_KIND_POINTER &&
+                                b->pointer.to == type_String_view)
+                            checked = true;
+
+                        else if(b->kind == TYPE_KIND_POINTER &&
+                                b->pointer.to->kind == TYPE_KIND_STRING &&
+                                a->kind == TYPE_KIND_POINTER &&
+                                a->pointer.to == type_String_view)
+                            checked = true;
                     }
 
                     if(checked) {
@@ -12102,15 +12027,16 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                                         (b->kind == TYPE_KIND_STRING) ? (builtin_type+TYPE_KIND_CHAR) : b->array.of;
                                     *right = (AST*)dot_expr;
                                 } else {
-                                    AST_expr *addr_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
-                                    addr_expr->token = '@';
-                                    addr_expr->right = *right;
-                                    addr_expr->type_annotation = job_alloc_type(jp, TYPE_KIND_POINTER);
-                                    addr_expr->type_annotation->pointer.to = b;
-                                    *right = (AST*)addr_expr;
+                                    UNREACHABLE;
+                                    //AST_expr *addr_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+                                    //addr_expr->token = '@';
+                                    //addr_expr->right = *right;
+                                    //addr_expr->type_annotation = job_alloc_type(jp, TYPE_KIND_POINTER);
+                                    //addr_expr->type_annotation->pointer.to = b;
+                                    //*right = (AST*)addr_expr;
                                 }
-                            } else if((a->kind == TYPE_KIND_DYNAMIC_ARRAY || a->kind == TYPE_KIND_ARRAY_VIEW) && b->kind == TYPE_KIND_ARRAY) {
-                                PASS;
+                            //} else if((a->kind == TYPE_KIND_DYNAMIC_ARRAY || a->kind == TYPE_KIND_ARRAY_VIEW) && b->kind == TYPE_KIND_ARRAY) {
+                            //    PASS;
                                 //AST_expr *dot_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
                                 //AST_atom *field_atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
                                 //field_atom->text = "data";
@@ -12120,7 +12046,7 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                                 //dot_expr->type_annotation = job_alloc_type(jp, TYPE_KIND_POINTER);
                                 //dot_expr->type_annotation->pointer.to = b->array.of;
                                 //*right = (AST*)dot_expr;
-                            } else if(a->kind == TYPE_KIND_ARRAY && b->kind == TYPE_KIND_ARRAY) {
+                            } else if(a->kind == TYPE_KIND_ARRAY && b->kind == TYPE_KIND_ARRAY && right[0]->kind == AST_KIND_array_literal) {
                                 assert(right[0]->kind == AST_KIND_array_literal);
                                 AST_array_literal *right_array = (AST_array_literal*)*right;
                                 right_array->type_annotation = a;
@@ -12361,26 +12287,26 @@ void typecheck_expr(Job *jp) {
                             job_type_to_str(jp, t));
                 array_elem_type = t_value->val.type;
                 i = arrlen(type_stack) - array_lit->n_elements;
+            } else if(array_lit->type_annotation) {
+                array_elem_type = array_lit->type_annotation->array.of;
             } else {
                 i = arrlen(type_stack) - array_lit->n_elements;
                 array_elem_type = type_stack[i++];
             }
 
-            {
-                AST_expr_list *array_elem_list = array_lit->elements;
+            AST_expr_list *array_elem_list = array_lit->elements;
 
-                for(; i < arrlen(type_stack); ++i) {
-                    Type *t = typecheck_operation(jp, array_elem_type, type_stack[i], '=', NULL, &(array_elem_list->expr));
+            for(; i < arrlen(type_stack); ++i) {
+                Type *t = typecheck_operation(jp, array_elem_type, type_stack[i], '=', NULL, &(array_elem_list->expr));
 
-                    if(!t) {
-                        job_error(jp, array_elem_list->base.loc,
-                                "cannot have element of type '%s' in array literal with element type '%s'",
-                                job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
-                        break;
-                    }
-
-                    array_elem_list = array_elem_list->next;
+                if(!t) {
+                    job_error(jp, array_elem_list->base.loc,
+                            "cannot have element of type '%s' in array literal with element type '%s'",
+                            job_type_to_str(jp, type_stack[i]), job_type_to_str(jp, array_elem_type));
+                    break;
                 }
+
+                array_elem_list = array_elem_list->next;
             }
 
             Value **elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n_elements);
@@ -12396,24 +12322,28 @@ void typecheck_expr(Job *jp) {
 
             Value *array_val = job_alloc_value(jp, VALUE_KIND_ARRAY);
             array_val->val.array.n = array_lit->n_elements;
-            //array_val->val.array.type = array_elem_type;
             array_val->val.array.elements = elements;
+            array_lit->value_annotation = array_val;
+            arrsetlen(value_stack, arrlen(value_stack) - array_lit->n_elements);
+            arrpush(value_stack, array_val);
+
 
             arrsetlen(type_stack, arrlen(type_stack) - array_lit->n_elements);
-            arrsetlen(value_stack, arrlen(value_stack) - array_lit->n_elements);
 
-            Type *array_type = job_alloc_type(jp, TYPE_KIND_ARRAY);
-            array_type->array.of = array_elem_type;
-            array_type->array.n = array_lit->n_elements;
-            array_type->array.element_stride = array_elem_type->bytes;
-            array_type->bytes = array_type->array.element_stride * array_type->array.n;
-            array_type->align = array_elem_type->align;
+            if(array_lit->type_annotation) {
+                arrpush(type_stack, array_lit->type_annotation);
+            } else {
+                Type *array_type = job_alloc_type(jp, TYPE_KIND_ARRAY);
+                array_type->array.of = array_elem_type;
+                array_type->array.n = array_lit->n_elements;
+                array_type->array.element_stride = array_elem_type->bytes;
+                array_type->bytes = array_type->array.element_stride * array_type->array.n;
+                array_type->align = array_elem_type->align;
 
-            array_lit->type_annotation = array_type;
-            array_lit->value_annotation = array_val;
+                array_lit->type_annotation = array_type;
+                arrpush(type_stack, array_type);
+            }
 
-            arrpush(type_stack, array_type);
-            arrpush(value_stack, array_val);
         } else if(kind == AST_KIND_param) {
             AST_param *paramp = (AST_param*)expr[pos];
             Value *v = arrpop(value_stack);
@@ -12697,7 +12627,13 @@ void typecheck_expr(Job *jp) {
                 arrsetlen(jp->interp.ports, 16);
                 for(int i = 0; i < 16; ++i) jp->interp.ports[i] = (IRvalue){0};
 
+                arrpush(jp->local_offset, arrlast(jp->local_offset));
+
                 ir_gen_expr(jp, (AST*)call_to_run);
+
+                if(arrlast(jp->local_offset) > jp->max_local_offset) jp->max_local_offset = arrlast(jp->local_offset);
+                arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
+
                 jp->cur_run_local_segment_size = jp->max_local_offset;
                 IRinst ret_inst = { .opcode = IROP_RET };
                 arrpush(jp->instructions, ret_inst);
@@ -12998,7 +12934,7 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
     } else if(ast->kind == AST_KIND_atom) {
         arrpush(ir_expr, ast);
     } else if(ast->kind == AST_KIND_array_literal) {
-        UNREACHABLE;
+        arrpush(ir_expr, ast);
     } else if(ast->kind == AST_KIND_call) {
         arrpush(ir_expr, ast);
     } else if(ast->kind == AST_KIND_run_directive) {
@@ -13516,11 +13452,24 @@ void typecheck_vardecl(Job *jp) {
             jp->expr_pos = 0;
 
             ast->checked_type = true;
+
+            if(((AST_expr_base*)ast->type)->value_annotation->kind != VALUE_KIND_TYPE) {
+                job_error(jp, ast->type->loc,
+                        "expected type to bind to '%s'", name);
+                return;
+            }
+
+            bind_type = ((AST_expr*)ast->type)->value_annotation->val.type;
         }
 
         if(!initialize) ast->checked_init = true;
 
         if(ast->checked_init == false) {
+            if(bind_type && bind_type->kind == TYPE_KIND_ARRAY && ast->init->kind == AST_KIND_array_literal) {
+                AST_array_literal *array_lit = (AST_array_literal*)(ast->init);
+                array_lit->type_annotation = bind_type;
+            }
+
             if(arrlen(jp->expr) == 0) {
                 linearize_expr(jp, ast->init);
             }
@@ -13538,16 +13487,6 @@ void typecheck_vardecl(Job *jp) {
         }
 
         if(jp->state == JOB_STATE_ERROR) return;
-
-        if(!infer_type) {
-            if(((AST_expr_base*)ast->type)->value_annotation->kind != VALUE_KIND_TYPE) {
-                job_error(jp, ast->type->loc,
-                        "expected type to bind to '%s'", name);
-                return;
-            }
-
-            bind_type = ((AST_expr*)ast->type)->value_annotation->val.type;
-        }
 
         if(initialize) {
             //TODO multi-identifier declarations so we can initialize from a function that returns multiple values
@@ -13716,25 +13655,27 @@ void print_sym(Sym sym) {
     printf("size_in_bytes: %lu\n", sym.type->bytes);
 }
 
-//TODO too much implicit state
-//     A lot of the code generator depends on the current value of jp->reg_alloc,
-//     this is becoming flimsy and we need a better way of allocating registers
-
-//TODO dynamic array procedures
 //TODO implicit context
-//TODO directives (#load, #import, #assert, etc)
 //TODO macros, struct and proc polymorphism
+//TODO dynamic array procedures
 //TODO for loops and iterator macros
-//TODO real print()
+//TODO finish print()
 //TODO enums
+//TODO directives (#load, #import, #assert, etc)
 //TODO test full C interop
 //TODO output assembly
 //TODO proc types with argument names
 //TODO better anonymous structs and unions
+//TODO local procedures, macros and structs
 //TODO improve 'defer'
 //TODO compiler intercept and event loop
 //TODO static array initialization and assignment need to be improved (???)
-//TODO big refactor to bring Sym, Type and Value in to one struct
+//TODO big refactor to bring Sym, Type and Value in to one struct (?)
+//TODO make sure that ir_gen_memorycopy() respects memory alignment
+
+//TODO too much implicit state
+//     A lot of the code generator depends on the current value of jp->reg_alloc,
+//     this is becoming flimsy and we need a better way of allocating registers
 
 Dynamic_array gdb_stupid_1; // because gdb is stupid
 Any           gdb_stupid_2;
@@ -13765,6 +13706,15 @@ int main(int argc, char **argv) {
     type_Array_view     = shget(global_scope, "_Array_view")->value->val.type;
     type_Dynamic_array  = shget(global_scope, "_Dynamic_array")->value->val.type;
     type_Any            = shget(global_scope, "Any")->value->val.type;
+
+    assert(sizeof(Array_view) == type_Array_view->bytes);
+    assert(_Alignof(Array_view) == type_Array_view->align);
+    assert(sizeof(String_view) == type_String_view->bytes);
+    assert(_Alignof(String_view) == type_String_view->align);
+    assert(sizeof(Dynamic_array) == type_Dynamic_array->bytes);
+    assert(_Alignof(Dynamic_array) == type_Dynamic_array->align);
+    assert(sizeof(Any) == type_Any->bytes);
+    assert(_Alignof(Any) == type_Any->align);
 
     char *basic_src = LoadFileText(basic_path);
 

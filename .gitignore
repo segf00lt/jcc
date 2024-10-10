@@ -37,3 +37,5 @@ output2
 jcc.debug
 jcc_debug_info.txt
 dump
+dump1
+dump2

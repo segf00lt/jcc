@@ -10,12 +10,12 @@ proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
 proc read(fd: s32, buf: *void, bytes: size_t) size_t #system;
 proc memcpy(dest: *void, src: *void, n: size_t) *void #system;
 
-//ARRAY_INITIAL_CAP: u64 : 64;
+_ARRAY_INITIAL_CAP : u64 : 64;
 
 proc arr_push(arr: *_Dynamic_array, elem: Any) { //TODO compile-time polymorphism
     if arr.count >= arr.cap {
         new_cap := arr.cap << 2;
-        if new_cap == 0  new_cap = 64;
+        if new_cap == 0  new_cap = _ARRAY_INITIAL_CAP;
         arr.data = realloc(arr.data, new_cap * elem.type.bytes);
         arr.cap = new_cap;
     }

@@ -6,11 +6,24 @@ proc main() {
     arr[0] = 12;
     array_int_push(@arr, 13);
 
+    i := 0;
+    print("arr = [");
+    while i < arr.count - 1 {
+        defer i++;
+        print("%, ", arr[i]);
+    }
+    print("%]\n", arr[arr.count-1]);
+
     arr2: [..]int;
     arr3: [..]int;
     arr2 = arr3;
+
     arr4 := array_int_make(53);
+    print("arr4.cap = %\n", arr4.cap);
+
     arr4 = array_int_make(12);
+    print("arr4.cap = %\n", arr4.cap);
+
 }
 
 proc array_int_make(cap: u64) [..]int {
