@@ -15,5 +15,5 @@ proc fib(n: int = 7) int {
     return fib(n - 1) + fib(n - 2);
 }
 
-arr := int:[1, 2, 3];
+//arr := int:[1, 2, 3];
 //bob := Bob:{ .i = 1, .x = 2, .t = 3};

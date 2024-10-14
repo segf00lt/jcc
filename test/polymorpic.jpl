@@ -1,0 +1,5 @@
+//TODO
+proc poly_factorial<T>(n: T) T {
+    if n == cast(T)0 return cast(T)1;
+    return n * factorial(n - cast(T)1);
+}

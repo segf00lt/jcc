@@ -43,6 +43,7 @@
     X(uniondecl)                        \
     X(vardecl)                          \
     X(procdecl)                         \
+    X(polymorphic_paramdecl)            \
     X(paramdecl)                        \
     X(retdecl)                          \
     X(expr_list)                        \
@@ -126,6 +127,7 @@
     X(UNION)                            \
     X(ENUM)                             \
     X(PROC)                             \
+    X(WILDCARD)                         \
 
 #define MESSAGEKINDS                    \
     X(ERROR)                            \
@@ -255,7 +257,6 @@ typedef void (*IR_foreign_proc)(IRmachine *);
 typedef struct IRproc IRproc;
 typedef struct Job Job;
 typedef struct Job_memory Job_memory;
-typedef struct Job_typechecker_context Job_typechecker_context;
 typedef struct Message Message;
 typedef struct AST AST;
 typedef struct AST_expr_base AST_expr_base;
@@ -510,6 +511,8 @@ struct IRproc {
     int procid;
     char *name;
     bool is_foreign;
+    bool is_inline;
+    bool was_polymorphed;
     union {
         struct {
             IRinst *instructions;
@@ -554,36 +557,6 @@ struct Job_memory {
 #undef X
 };
 
-struct Job_typechecker_context {
-#define JOB_TYPECHECKER_CONTEXT                \
-    char                *waiting_on_name;      \
-    u64                  job_id_waiting;       \
-    Type                *cur_proc_type;        \
-    Arr(Sym*)            run_dependencies;     \
-                                               \
-    /* struct and union */                     \
-    Arr(Type*)           record_types;         \
-                                               \
-    /* blocks */                               \
-    bool                 sharing_scopes;       \
-    Arr(Scope)           scopes;               \
-                                               \
-    /* expressions */                          \
-    Arr(Value*)          value_stack;          \
-    Arr(Type*)           type_stack;           \
-    Arr(AST*)            expr;                 \
-    u64                  expr_pos;             \
-                                               \
-    AST_paramdecl       *cur_paramdecl;        \
-    AST_retdecl         *cur_retdecl;          \
-                                               \
-    /* return statement */                     \
-    Arr(AST_expr_list*)  expr_list;            \
-    u64                  expr_list_pos;        \
-
-    JOB_TYPECHECKER_CONTEXT
-};
-
 struct Job {
     Jobid                            id;
 
@@ -607,13 +580,33 @@ struct Job {
         Loc_info                     returning_path_loc;
     };
 
-    Arr(Job_typechecker_context)     save_typechecker_context;
-    union {
-        Job_typechecker_context cur_typechecker_context;
-        struct {
-            JOB_TYPECHECKER_CONTEXT
-        };
-    };
+
+    /* typechecking */
+    char                            *waiting_on_name;
+    u64                              job_id_waiting;
+    Type                            *cur_proc_type;
+    Arr(Sym*)                        run_dependencies;
+                                          
+    /* struct and union */                
+    Arr(Type*)                       record_types;
+                                                      
+    /* blocks */                                      
+    bool                             sharing_scopes;
+    Arr(Scope)                       scopes;
+                                                      
+    /* expressions */                                 
+    Arr(Value*)                      value_stack;
+    Arr(Type*)                       type_stack;
+    Arr(AST*)                        expr;
+    u64                              expr_pos;
+                                          
+    AST_paramdecl                   *cur_paramdecl;
+    AST_retdecl                     *cur_retdecl;
+                                          
+    /* return statement */                
+    Arr(AST_expr_list*)              expr_list;
+    u64                              expr_list_pos;
+
 
     /* code generation */
     u64                              max_local_offset;
@@ -651,6 +644,7 @@ struct Sym {
     bool is_argument : 1;
     bool is_record_argument : 1;
     bool constant : 1;
+    bool is_polymorphic : 1;
     IRsegment segment;
     u64 segment_offset;
     Type *type;
@@ -662,7 +656,7 @@ struct Sym {
 
 struct AST {
     ASTkind kind;
-    u64 weight;
+    u32 weight;
     Loc_info loc;
 };
 
@@ -686,7 +680,6 @@ struct AST_run_directive {
     Value **value_annotation_list;
     int n_types_returned;
     AST_call *call_to_run;
-    AST *next; // used for top level directives
 };
 
 struct AST_call {
@@ -829,6 +822,13 @@ struct AST_paramdecl {
     bool vararg;
 };
 
+struct AST_polymorphic_paramdecl {
+    AST base;
+    char *name;
+    int index;
+    AST_polymorphic_paramdecl *next;
+};
+
 struct AST_retdecl {
     AST base;
     AST_retdecl *next;
@@ -924,24 +924,27 @@ struct AST_procdecl {
     AST *next;
     Sym *symbol_annotation;
     char *name;
+    char *foreign_lib_str;
     Type *proc_type;
+    AST_polymorphic_paramdecl *polymorphic_params;
     AST_paramdecl *params;
     AST_retdecl *rets;
-    bool c_call;
-    bool must_inline;
-    bool is_foreign;
-    bool is_system;
-    char *foreign_lib_str;
-    bool type_checked_body;
-    bool varargs;
-    bool has_defaults;
     int first_default_param;
+    int n_polymorphic_params;
     int n_params;
     int n_rets;
     AST *body;
-    bool checked_params;
-    bool checked_rets;
-    bool visited;
+    bool c_call : 1;
+    bool must_inline : 1;
+    bool is_foreign : 1;
+    bool is_system : 1;
+    bool is_polymorphic : 1;
+    bool type_checked_body : 1;
+    bool varargs : 1;
+    bool has_defaults : 1;
+    bool checked_params : 1;
+    bool checked_rets : 1;
+    bool visited : 1;
 };
 
 struct Value {
@@ -1090,8 +1093,6 @@ char*       job_type_to_ctype_str(Job *jp, Type *t);
 IRlabel     job_label_lookup(Job *jp, char *name);
 bool        job_label_create(Job *jp, IRlabel label);
 char*       job_op_token_to_str(Job *jp, Token op);
-void        job_push_typechecker_context(Job *jp, Job_typechecker_context context);
-void        job_pop_typechecker_context(Job *jp);
 Type_info*  job_make_type_info(Job *jp, Type *t);
 void        linearize_expr(Job *jp, AST *astpp);
 
@@ -1101,6 +1102,8 @@ bool        has_nested_call(AST *ast);
 void        add_implicit_casts_to_expr(Job *jp, AST *ast);
 u64         align_up(u64 offset, u64 align);
 u64         next_pow_2(u64 v);
+AST*        ast_copy(Arena *a, AST *ast);
+AST*        arena_dup_ast(Arena *a, AST* ast);
 
 bool        records_have_member_name_conflicts(Job *jp, Loc_info using_loc, Type *a, Type *b);
 
@@ -1221,6 +1224,12 @@ char *builtin_type_to_str[] = {
     "Type",
 };
 
+size_t ast_kind_size_table[] = {
+#define X(x) sizeof(AST_##x),
+    ASTKINDS
+#undef X
+};
+
 Value builtin_value[] = {
     { .kind = VALUE_KIND_NIL, },
 };
@@ -1292,10 +1301,6 @@ void job_init_allocator_ast(Job *jp) {
 
 void job_die(Job *jp) {
     jp->id = -1;
-
-    while(arrlen(jp->save_typechecker_context) > 0) {
-        job_pop_typechecker_context(jp);
-    }
 
     for(int i = 0; i < arrlen(jp->scopes); ++i)
         shfree(jp->scopes[i]);
@@ -1585,43 +1590,6 @@ void job_report_mutual_dependency(Job *jp1, Job *jp2) {
             jp1->handling_name, jp2->handling_name,
             loc1.line, (int)(loc1.text.e - loc1.text.s), loc1.text.s,
             loc2.line, (int)(loc2.text.e - loc2.text.s), loc2.text.s);
-}
-
-INLINE void job_push_typechecker_context(Job *jp, Job_typechecker_context context) {
-    assert(jp->state == JOB_STATE_READY);
-    arrpush(jp->save_typechecker_context, jp->cur_typechecker_context);
-    if(context.sharing_scopes) {
-        Arr(Scope) scopes = jp->scopes;
-        jp->cur_typechecker_context = context;
-        jp->scopes = scopes;
-    } else {
-        jp->cur_typechecker_context = context;
-    }
-
-    jp->state = JOB_STATE_PUSHED_CONTEXT;
-}
-
-INLINE void job_pop_typechecker_context(Job *jp) {
-    assert(jp->state == JOB_STATE_READY);
-
-    arrfree(jp->run_dependencies);
-    arrfree(jp->record_types);
-    arrfree(jp->value_stack);
-    arrfree(jp->type_stack);
-    arrfree(jp->expr);
-    arrfree(jp->expr_list);
-
-    if(!jp->sharing_scopes) {
-        for(int i = 0; i < arrlen(jp->scopes); ++i) {
-            shfree(jp->scopes[i]);
-        }
-        arrfree(jp->scopes);
-        jp->cur_typechecker_context = arrpop(jp->save_typechecker_context);
-    } else {
-        Arr(Scope) scopes = jp->scopes;
-        jp->cur_typechecker_context = arrpop(jp->save_typechecker_context);
-        jp->scopes = scopes;
-    }
 }
 
 Type_info* job_make_type_info(Job *jp, Type *t) {
@@ -2992,6 +2960,46 @@ AST* parse_procdecl(Job *jp) {
     node->base.loc = procdecl_loc;
 
     t = lex(lexer);
+    if(t == '<') {
+        int n_polymorphic_params = 0;
+
+        node->is_polymorphic = true;
+
+        AST_polymorphic_paramdecl head = {0};
+        AST_polymorphic_paramdecl *poly_param_list = &head;
+
+        while(true) {
+            t = lex(lexer);
+
+            if(t != TOKEN_IDENT) {
+                job_error(jp, lexer->loc, "expected identifier in polymorphic parameter list");
+                return (AST*)node;
+            }
+
+            poly_param_list->next = (AST_polymorphic_paramdecl*)job_alloc_ast(jp, AST_KIND_polymorphic_paramdecl);
+            poly_param_list = poly_param_list->next;
+            poly_param_list->name = job_alloc_text(jp, lexer->text.s, lexer->text.e);
+            poly_param_list->index = n_polymorphic_params;
+            n_polymorphic_params++;
+
+            t = lex(lexer);
+
+            if(t != ',') {
+                if(t != '>') {
+                    job_error(jp, lexer->loc, "expected '>' to end polymorphic parameter list");
+                    return (AST*)node;
+                }
+
+                break;
+            }
+        }
+
+        node->polymorphic_params = head.next;
+        node->n_polymorphic_params = n_polymorphic_params;
+
+        t = lex(lexer);
+    }
+
     if(t != '(') job_error(jp, lexer->loc, "expected '(' to begin parameter list");
 
     int n_params = 0;
@@ -10000,6 +10008,361 @@ INLINE u64 next_pow_2(u64 v) {
     return v;
 }
 
+INLINE AST* arena_dup_ast(Arena *a, AST* ast) {
+    assert(ast);
+    ASTkind kind = ast->kind;
+    assert(kind >= 0 && kind < AST_KIND_MAX);
+    AST *ptr = NULL;
+    size_t bytes = ast_kind_size_table[kind];
+    ptr = (AST*)arena_alloc(a, bytes);
+    memcpy((void*)ptr, (void*)ast, bytes);
+    return ptr;
+}
+
+INLINE AST* ast_copy(Arena *arena, AST *root) {
+    AST_block head = {
+        .base = { .kind = AST_KIND_block },
+        .next = NULL,
+        .visited = false,
+        .down = root,
+    };
+
+    Arr(AST*) cur_list = NULL;
+    Arr(AST*) next_list = NULL;
+
+    arrpush(cur_list, (AST*)&head);
+
+    while(true) {
+        int n = arrlen(cur_list);
+
+        for(int i = 0; i < n; ++i) {
+            AST *ast = cur_list[i];
+
+            switch(ast->kind) {
+                case AST_KIND_ifstatement:
+                    {
+                        AST_ifstatement *ast_if = (AST_ifstatement*)ast;
+                        if(ast_if->next) {
+                            ast_if->next = arena_dup_ast(arena, ast_if->next);
+                            arrpush(next_list, ast_if->next);
+                        }
+                        ast_if->condition = arena_dup_ast(arena, ast_if->condition);
+                        arrpush(next_list, ast_if->condition);
+                        ast_if->body = arena_dup_ast(arena, ast_if->body);
+                        arrpush(next_list, ast_if->body);
+                        if(ast_if->branch) {
+                            ast_if->branch = arena_dup_ast(arena, ast_if->branch);
+                            arrpush(next_list, ast_if->branch);
+                        }
+                    }
+                    break;
+                case AST_KIND_switchstatement:
+                    UNIMPLEMENTED;
+                    break;
+                case AST_KIND_casestatement:
+                    UNIMPLEMENTED;
+                    break;
+                case AST_KIND_whilestatement:
+                    {
+                        AST_whilestatement *ast_while = (AST_whilestatement*)ast;
+                        if(ast_while->next) {
+                            ast_while->next = arena_dup_ast(arena, ast_while->next);
+                            arrpush(next_list, ast_while->next);
+                        }
+                        ast_while->condition = arena_dup_ast(arena, ast_while->condition);
+                        arrpush(next_list, ast_while->condition);
+                        ast_while->body = arena_dup_ast(arena, ast_while->body);
+                        arrpush(next_list, ast_while->body);
+                    }
+                    break;
+                case AST_KIND_forstatement:
+                    UNIMPLEMENTED;
+                    break;
+                case AST_KIND_breakstatement:
+                    {
+                        AST_breakstatement *ast_break = (AST_breakstatement*)ast;
+                        if(ast_break->next) {
+                            ast_break->next = arena_dup_ast(arena, ast_break->next);
+                            arrpush(next_list, ast_break->next);
+                        }
+                    }
+                    break;
+                case AST_KIND_continuestatement:
+                    {
+                        AST_continuestatement *ast_continue = (AST_continuestatement*)ast;
+                        if(ast_continue->next) {
+                            ast_continue->next = arena_dup_ast(arena, ast_continue->next);
+                            arrpush(next_list, ast_continue->next);
+                        }
+                    }
+                    break;
+                case AST_KIND_returnstatement:
+                    {
+                        AST_returnstatement *ast_return = (AST_returnstatement*)ast;
+                        if(ast_return->next) {
+                            ast_return->next = arena_dup_ast(arena, ast_return->next);
+                            arrpush(next_list, ast_return->next);
+                        }
+                        if(ast_return->expr_list) {
+                            ast_return->expr_list = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_return->expr_list));
+                            arrpush(next_list, (AST*)(ast_return->expr_list));
+                        }
+                    }
+                    break;
+                case AST_KIND_usingstatement:
+                    {
+                        AST_usingstatement *ast_using = (AST_usingstatement*)ast;
+                        if(ast_using->next) {
+                            ast_using->next = arena_dup_ast(arena, ast_using->next);
+                            arrpush(next_list, ast_using->next);
+                        }
+                    }
+                    break;
+                case AST_KIND_statement:
+                    {
+                        AST_statement *ast_statement = (AST_statement*)ast;
+                        if(ast_statement->next) {
+                            ast_statement->next = arena_dup_ast(arena, ast_statement->next);
+                            arrpush(next_list, ast_statement->next);
+                        }
+                        ast_statement->left = arena_dup_ast(arena, ast_statement->left);
+                        arrpush(next_list, ast_statement->left);
+                        if(ast_statement->right) {
+                            ast_statement->right = arena_dup_ast(arena, ast_statement->right);
+                            arrpush(next_list, ast_statement->right);
+                        }
+                    }
+                    break;
+                case AST_KIND_block:
+                    {
+                        AST_block *ast_block = (AST_block*)ast;
+                        if(ast_block->next) {
+                            ast_block->next = arena_dup_ast(arena, ast_block->next);
+                            arrpush(next_list, ast_block->next);
+                        }
+                        ast_block->down = arena_dup_ast(arena, ast_block->down);
+                        arrpush(next_list, ast_block->down);
+                    }
+                    break;
+                case AST_KIND_run_directive:
+                    {
+                        AST_run_directive *ast_run = (AST_run_directive*)ast;
+                        assert(ast_run->call_to_run);
+                        ast_run->call_to_run = (AST_call*)arena_dup_ast(arena, (AST*)(ast_run->call_to_run));
+                        arrpush(next_list, (AST*)(ast_run->call_to_run));
+                    }
+                    break;
+                case AST_KIND_structdecl:
+                case AST_KIND_uniondecl:
+                    {
+                        AST_structdecl *ast_struct = (AST_structdecl*)ast;
+                        if(ast_struct->next) {
+                            ast_struct->next = arena_dup_ast(arena, ast_struct->next);
+                            arrpush(next_list, ast_struct->next);
+                        }
+                        if(ast_struct->params) {
+                            ast_struct->params = (AST_paramdecl*)arena_dup_ast(arena, (AST*)(ast_struct->params));
+                            arrpush(next_list, (AST*)(ast_struct->params));
+                        }
+                        ast_struct->body = arena_dup_ast(arena, ast_struct->body);
+                        arrpush(next_list, ast_struct->body);
+                    }
+                    break;
+                case AST_KIND_vardecl:
+                    {
+                        AST_vardecl *ast_var = (AST_vardecl*)ast;
+                        if(ast_var->next) {
+                            ast_var->next = arena_dup_ast(arena, ast_var->next);
+                            arrpush(next_list, ast_var->next);
+                        }
+                        if(ast_var->type) {
+                            ast_var->type = arena_dup_ast(arena, ast_var->type);
+                            arrpush(next_list, ast_var->type);
+                        }
+                        if(ast_var->init) {
+                            ast_var->init = arena_dup_ast(arena, ast_var->init);
+                            arrpush(next_list, ast_var->init);
+                        }
+                    }
+                    break;
+                case AST_KIND_procdecl:
+                    {
+                        AST_procdecl *ast_proc = (AST_procdecl*)ast;
+                        if(ast_proc->next) {
+                            ast_proc->next = arena_dup_ast(arena, ast_proc->next);
+                            arrpush(next_list, ast_proc->next);
+                        }
+                        if(ast_proc->polymorphic_params) {
+                            ast_proc->polymorphic_params =
+                                (AST_polymorphic_paramdecl*)arena_dup_ast(arena, (AST*)(ast_proc->polymorphic_params));
+                            arrpush(next_list, (AST*)(ast_proc->polymorphic_params));
+                        }
+                        if(ast_proc->params) {
+                            ast_proc->params = (AST_paramdecl*)arena_dup_ast(arena, (AST*)(ast_proc->params));
+                            arrpush(next_list, (AST*)(ast_proc->params));
+                        }
+                        if(ast_proc->rets) {
+                            ast_proc->rets = (AST_retdecl*)arena_dup_ast(arena, (AST*)(ast_proc->rets));
+                            arrpush(next_list, (AST*)(ast_proc->rets));
+                        }
+                        if(ast_proc->body) {
+                            ast_proc->body = arena_dup_ast(arena, ast_proc->body);
+                            arrpush(next_list, ast_proc->body);
+                        }
+                    }
+                    break;
+                case AST_KIND_polymorphic_paramdecl:
+                    {
+                        AST_polymorphic_paramdecl *ast_polymorphic_param = (AST_polymorphic_paramdecl*)ast;
+                        if(ast_polymorphic_param->next) {
+                            ast_polymorphic_param->next =
+                                (AST_polymorphic_paramdecl*)arena_dup_ast(arena, (AST*)(ast_polymorphic_param->next));
+                            arrpush(next_list, (AST*)(ast_polymorphic_param->next));
+                        }
+                    }
+                    break;
+                case AST_KIND_paramdecl:
+                    {
+                        AST_paramdecl *ast_param = (AST_paramdecl*)ast;
+                        if(ast_param->next) {
+                            ast_param->next = (AST_paramdecl*)arena_dup_ast(arena, (AST*)(ast_param->next));
+                            arrpush(next_list, (AST*)(ast_param->next));
+                        }
+                        if(ast_param->type) {
+                            ast_param->type = arena_dup_ast(arena, ast_param->type);
+                            arrpush(next_list, ast_param->type);
+                        }
+                        if(ast_param->init) {
+                            ast_param->init = arena_dup_ast(arena, ast_param->init);
+                            arrpush(next_list, ast_param->init);
+                        }
+                    }
+                    break;
+                case AST_KIND_retdecl:
+                    {
+                        AST_retdecl *ast_ret = (AST_retdecl*)ast;
+                        if(ast_ret->next) {
+                            ast_ret->next = (AST_retdecl*)arena_dup_ast(arena, (AST*)(ast_ret->next));
+                            arrpush(next_list, (AST*)(ast_ret->next));
+                        }
+                        if(ast_ret->expr) {
+                            ast_ret->expr = arena_dup_ast(arena, ast_ret->expr);
+                            arrpush(next_list, ast_ret->expr);
+                        }
+                    }
+                    break;
+                case AST_KIND_expr_list:
+                    {
+                        AST_expr_list *ast_expr = (AST_expr_list*)ast;
+                        ast_expr->expr = arena_dup_ast(arena, ast_expr->expr);
+                        arrpush(next_list, ast_expr->expr);
+                        if(ast_expr->next) {
+                            ast_expr->next = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_expr->next));
+                            arrpush(next_list, (AST*)(ast_expr->next));
+                        }
+                    }
+                    break;
+                case AST_KIND_member_list:
+                    {
+                        AST_member_list *ast_member = (AST_member_list*)ast;
+                        ast_member->value = arena_dup_ast(arena, ast_member->value);
+                        arrpush(next_list, ast_member->value);
+                        if(ast_member->next) {
+                            ast_member->next = (AST_member_list*)arena_dup_ast(arena, (AST*)(ast_member->next));
+                            arrpush(next_list, (AST*)(ast_member->next));
+                        }
+                    }
+                    break;
+                case AST_KIND_expr:
+                    {
+                        AST_expr *ast_expr = (AST_expr*)ast;
+                        if(ast_expr->left) {
+                            ast_expr->left = arena_dup_ast(arena, ast_expr->left);
+                            arrpush(next_list, (AST*)(ast_expr->left));
+                        }
+                        if(ast_expr->right) {
+                            ast_expr->right = arena_dup_ast(arena, ast_expr->right);
+                            arrpush(next_list, (AST*)(ast_expr->right));
+                        }
+                    }
+                    break;
+                case AST_KIND_param:
+                    {
+                        AST_param *ast_param = (AST_param*)ast;
+                        ast_param->value = arena_dup_ast(arena, ast_param->value);
+                        arrpush(next_list, (AST*)(ast_param->value));
+                        if(ast_param->next) {
+                            ast_param->next = (AST_param*)arena_dup_ast(arena, (AST*)(ast_param->next));
+                            arrpush(next_list, (AST*)(ast_param->next));
+                        }
+                    }
+                    break;
+                case AST_KIND_atom:
+                    break;
+                case AST_KIND_array_literal:
+                    {
+                        AST_array_literal *ast_array = (AST_array_literal*)ast;
+                        if(ast_array->type) {
+                            ast_array->type = arena_dup_ast(arena, ast_array->type);
+                            arrpush(next_list, ast_array->type);
+                        }
+                        assert(ast_array->elements);
+                        ast_array->elements = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_array->elements));
+                        arrpush(next_list, (AST*)(ast_array->elements));
+                    }
+                    break;
+                case AST_KIND_struct_literal:
+                    {
+                        AST_struct_literal *ast_struct = (AST_struct_literal*)ast;
+                        assert(ast_struct->members);
+                        ast_struct->members = (AST_member_list*)arena_dup_ast(arena, (AST*)(ast_struct->members));
+                        arrpush(next_list, (AST*)(ast_struct->members));
+                    }
+                    break;
+                case AST_KIND_call:
+                    {
+                        AST_call *ast_call = (AST_call*)ast;
+                        ast_call->callee = arena_dup_ast(arena, ast_call->callee);
+                        arrpush(next_list, (AST*)(ast_call->callee));
+                        ast_call->params = (AST_param*)arena_dup_ast(arena, (AST*)(ast_call->params));
+                        arrpush(next_list, (AST*)(ast_call->params));
+                    }
+                    break;
+                case AST_KIND_proctype:
+                    {
+                        AST_proctype *ast_proc = (AST_proctype*)ast;
+                        if(ast_proc->params) {
+                            ast_proc->params = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_proc->params));
+                            arrpush(next_list, (AST*)(ast_proc->params));
+                        }
+                        if(ast_proc->rets) {
+                            ast_proc->rets = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_proc->rets));
+                            arrpush(next_list, (AST*)(ast_proc->rets));
+                        }
+                    }
+                    break;
+            }
+        }
+
+        if(arrlen(next_list) == 0) {
+            break;
+        }
+
+        arrsetlen(cur_list, 0);
+
+        Arr(AST*) tmp;
+
+        tmp = cur_list;
+        cur_list = next_list;
+        next_list = tmp;
+    }
+
+    arrfree(cur_list);
+    arrfree(next_list);
+
+    return head.down;
+}
+
 //TODO better name conflicts
 bool records_have_member_name_conflicts(Job *jp, Loc_info using_loc, Type *a, Type *b) {
     assert(TYPE_KIND_IS_RECORD(a->kind) && TYPE_KIND_IS_RECORD(b->kind));
@@ -10809,9 +11172,6 @@ void job_runner(char *src, char *src_path) {
                             arrlast(jp->tree_pos_stack) = ast_return->next;
 
                         } else if(ast->kind == AST_KIND_run_directive) {
-                            AST_run_directive *ast_run = (AST_run_directive*)ast;
-                            assert(ast_run->next == NULL);
-
                             if(arrlen(jp->expr) == 0)
                                 linearize_expr(jp, ast);
                             typecheck_expr(jp);
@@ -12360,6 +12720,7 @@ void typecheck_expr(Job *jp) {
 
             AST_run_directive *ast_run = NULL;
             AST_call *callp = NULL;
+
             if(run_at_compile_time) {
                 ast_run = (AST_run_directive*)expr[pos];
                 callp = ast_run->call_to_run;
@@ -12499,10 +12860,6 @@ void typecheck_expr(Job *jp) {
                             proc_type->proc.param.names[i], proc_type->proc.name);
                     break;
                 }
-            }
-
-            if(proc_type->proc.varargs) {
-                printf("got a varargs!!!!!!\n");
             }
 
             if(run_at_compile_time) {
@@ -13655,24 +14012,35 @@ void print_sym(Sym sym) {
     printf("size_in_bytes: %lu\n", sym.type->bytes);
 }
 
+//VERSION 1.0
+//
 //TODO implicit context
-//TODO macros, struct and proc polymorphism
+//TODO proc polymorphism
 //TODO dynamic array procedures
-//TODO for loops and iterator macros
+//TODO simple array for loops
+//TODO c-style for loops
 //TODO finish print()
 //TODO enums
+//TODO finish globals
 //TODO directives (#load, #import, #assert, etc)
+//TODO procedures for interfacing with the compiler (e.g. add_source_file())
+//TODO make sure that ir_gen_memorycopy() respects memory alignment
 //TODO test full C interop
 //TODO output assembly
+//TODO parametrized structs
+
+//VERSION 2.0
+//TODO redesign from scratch
 //TODO proc types with argument names
 //TODO better anonymous structs and unions
-//TODO local procedures, macros and structs
+//TODO for loops and iterator macros
 //TODO improve 'defer'
 //TODO compiler intercept and event loop
-//TODO static array initialization and assignment need to be improved (???)
-//TODO big refactor to bring Sym, Type and Value in to one struct (?)
-//TODO make sure that ir_gen_memorycopy() respects memory alignment
+//TODO local procedures, macros and structs
+//TODO macros
+//TODO output x64 machine code
 
+//MISC
 //TODO too much implicit state
 //     A lot of the code generator depends on the current value of jp->reg_alloc,
 //     this is becoming flimsy and we need a better way of allocating registers
