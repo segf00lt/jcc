@@ -102,7 +102,7 @@ proc print_int(n: int) {
         j++;
     }
 
-    write(STDOUT, cast(*void)reversed_buf.data, reversed_buf.count);
+    write(STDOUT, cast(*void)reversed_buf.data, j);
 }
 
 proc print_char(c: char) {

@@ -22,6 +22,7 @@
     X(SYSTEM_DIRECTIVE,            "#system")\
     X(C_CALL_DIRECTIVE,            "#c_call")\
     X(INLINE_DIRECTIVE,            "#inline")\
+    X(CONTEXT,                     "context")\
     X(PROC,                           "proc")\
     X(FUNC,                           "func")\
     X(MACRO,                         "macro")\

@@ -1,27 +1,31 @@
-size_t :: u64;
-STDIN  :: 0;
-STDOUT :: 1;
-STDERR :: 2;
-
-proc malloc(bytes: size_t) *void #system;
-proc realloc(ptr: *void, bytes: size_t) *void #system;
-proc free(ptr: *void) #system;
-proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
-proc read(fd: s32, buf: *void, bytes: size_t) size_t #system;
-proc memcpy(dest: *void, src: *void, n: size_t) *void #system;
-
 _ARRAY_INITIAL_CAP : u64 : 64;
 
 proc arr_push(arr: *_Dynamic_array, elem: Any) {
     if arr.count >= arr.cap {
         new_cap := arr.cap << 2;
         if new_cap == 0  new_cap = _ARRAY_INITIAL_CAP;
-        arr.data = realloc(arr.data, new_cap * elem.type.bytes);
+        allocator := context.allocator;
+        arr.data =
+        allocator(
+            ALLOC_MODE_RESIZE,
+            new_cap * elem.type.bytes,
+            arr.cap * elem.type.bytes,
+            arr.data,
+            context.allocator_data,
+            0
+        );
         arr.cap = new_cap;
     }
 
     memcpy(arr.data + arr.count * elem.type.bytes, elem.data, elem.type.bytes);
     arr.count++;
+}
+
+proc arr_free(arr: *_Dynamic_array) {
+    allocator := context.allocator;
+    allocator(ALLOC_MODE_FREE, 0, 0, arr.data, context.allocator_data, 0);
+    d: _Dynamic_array;
+    >arr = d;
 }
 
 proc print(fmt: string, args: ..) {

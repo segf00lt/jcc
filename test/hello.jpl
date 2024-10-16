@@ -26,5 +26,9 @@ proc main() {
         print("%, ", testarr[i]);
     }
     print("%]\n", testarr[testarr.count-1]);
+
+    print("arr.data = %\narr.cap = %\narr.count = %\n", cast(u64)cast(*void)testarr.data, testarr.cap, testarr.count);
+    arr_free(@testarr);
+    print("arr.data = %\narr.cap = %\narr.count = %\n", cast(u64)cast(*void)testarr.data, testarr.cap, testarr.count);
 }
 

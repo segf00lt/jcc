@@ -1,6 +1,13 @@
 Allocator :: proc (s32, s64, s64, *void, *void, s64) *void;
 //Logger :: *void;
 
+Allocator_mode :: s32;
+
+ALLOC_MODE_ALLOCATE : Allocator_mode : 0;
+ALLOC_MODE_RESIZE   : Allocator_mode : 1;
+ALLOC_MODE_FREE     : Allocator_mode : 2;
+ALLOC_MODE_FREE_ALL : Allocator_mode : 3;
+
 Type_info_tag :: u32;
 
 //TODO add enums so we can do this in a less stupid way
@@ -111,5 +118,33 @@ struct Temporary_storage {
     occupied: s32;
     size:     s32;
     max_size: s32;
+}
+
+size_t :: u64;
+STDIN  :: 0;
+STDOUT :: 1;
+STDERR :: 2;
+
+proc malloc(bytes: size_t) *void #system;
+proc realloc(ptr: *void, bytes: size_t) *void #system;
+proc free(ptr: *void) #system;
+proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
+proc read(fd: s32, buf: *void, bytes: size_t) size_t #system;
+proc memcpy(dest: *void, src: *void, n: size_t) *void #system;
+
+proc _default_allocator(mode: s32, size: s64, oldsize: s64, old_memory_ptr: *void, allocator_data: *void, options: s64) *void {
+    if mode == ALLOC_MODE_ALLOCATE {
+        return malloc(size);
+    } else if mode == ALLOC_MODE_RESIZE {
+        return realloc(old_memory_ptr, size);
+    } else if mode == ALLOC_MODE_FREE {
+        free(old_memory_ptr);
+        return cast(*void)0;
+    } else if mode == ALLOC_MODE_FREE_ALL {
+        _ := 0; // do nothing
+        return cast(*void)0;
+    }
+
+    return cast(*void)0;
 }
 

@@ -27,9 +27,5 @@ proc test(cp: *char) char {
 }
 
 proc putchar(c: s32 = 10) s32 #system;
-proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
-
-size_t :: u64;
-STDOUT :: 1;
 
 #run main();

@@ -34,8 +34,3 @@ proc factorial_iterate(n: int) int {
 
     return result;
 }
-
-proc poly_factorial(n: $T) T {
-    if n == cast(T)0 return cast(T)1;
-    return n * factorial(n - cast(T)1);
-}
