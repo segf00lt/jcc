@@ -627,6 +627,7 @@ struct Job {
 
 
     /* code generation */
+    Arr(AST_statement*)              defer_list_stack;
     u64                              max_local_offset;
     Arr(u64)                         local_offset;
     IRlabel*                         label_table;
@@ -1140,6 +1141,7 @@ void        ir_gen_foreign_proc_arm64(Job *jp); //TODO
 Arr(Type*)  ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call);
 Arr(Type*)  ir_gen_call_arm64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call); //TODO
 void        ir_gen_block(Job *jp, AST *ast);
+void        ir_gen_deferred(Job *jp, AST_statement *defer_list);
 void        ir_gen_statement(Job *jp, AST_statement *ast_statement);
 void        ir_gen_logical_expr(Job *jp, AST *ast);
 void        ir_gen_struct_init(Job *jp, Type *struct_type, IRsegment segment, u64 offset);
@@ -6720,6 +6722,7 @@ void ir_gen_block(Job *jp, AST *ast) {
     IRinst inst;
 
     AST_statement *defer_list = NULL;
+    jp->cur_loc = ast->loc;
 
     while(ast != NULL) {
         jp->cur_loc = ast->loc;
@@ -6733,6 +6736,8 @@ void ir_gen_block(Job *jp, AST *ast) {
                 break;
             case AST_KIND_ifstatement:
                 {
+                    arrpush(jp->defer_list_stack, defer_list);
+
                     AST_ifstatement *ast_if = (AST_ifstatement*)ast;
 
                     u64 last_label = jp->label_alloc;
@@ -6886,10 +6891,14 @@ void ir_gen_block(Job *jp, AST *ast) {
                     arrfree(branches);
 
                     ast = ast_if->next;
+
+                    arrsetlen(jp->defer_list_stack, arrlen(jp->defer_list_stack) - 1);
                 }
                 break;
             case AST_KIND_whilestatement:
                 {
+                    arrpush(jp->defer_list_stack, defer_list);
+
                     AST_whilestatement *ast_while = (AST_whilestatement*)ast;
 
                     u64 last_label = jp->label_alloc;
@@ -6909,7 +6918,6 @@ void ir_gen_block(Job *jp, AST *ast) {
                     inst.loc = jp->cur_loc;
                     arrpush(jp->instructions, inst);
 
-                    //TODO cast non bool values to bool
                     ir_gen_expr(jp, ast_while->condition);
 
                     assert(jp->reg_alloc == 1);
@@ -7000,6 +7008,8 @@ void ir_gen_block(Job *jp, AST *ast) {
                     arrpush(jp->instructions, inst);
 
                     ast = ast_while->next;
+
+                    arrsetlen(jp->defer_list_stack, arrlen(jp->defer_list_stack) - 1);
                 }
                 break;
             case AST_KIND_forstatement:
@@ -7011,7 +7021,11 @@ void ir_gen_block(Job *jp, AST *ast) {
 
                     arrpush(jp->local_offset, arrlast(jp->local_offset));
 
+                    arrpush(jp->defer_list_stack, defer_list);
+
                     ir_gen_block(jp, ast_block->down);
+
+                    arrsetlen(jp->defer_list_stack, arrlen(jp->defer_list_stack) - 1);
 
                     if(jp->max_local_offset < arrlast(jp->local_offset))
                         jp->max_local_offset = arrlast(jp->local_offset);
@@ -7030,6 +7044,13 @@ void ir_gen_block(Job *jp, AST *ast) {
             case AST_KIND_returnstatement:
                 {
                     AST_returnstatement *ast_return = (AST_returnstatement*)ast;
+
+                    ir_gen_deferred(jp, defer_list);
+                    for(int i = arrlen(jp->defer_list_stack) - 1; i >= 0; --i) {
+                        AST_statement *d = jp->defer_list_stack[i];
+                        ir_gen_deferred(jp, d);
+                    }
+
                     Type *proc_type = jp->cur_proc_type;
                     u64 i = 0;
                     int non_scalar_returns = 0;
@@ -7821,6 +7842,12 @@ void ir_gen_block(Job *jp, AST *ast) {
                         continue_label = label.continue_label;
                     }
 
+                    if(ast->kind == AST_KIND_continuestatement && (defer_list || arrlen(jp->defer_list_stack) > 0)) {
+                        ir_gen_deferred(jp, defer_list);
+                        AST_statement *d = arrlast(jp->defer_list_stack);
+                        ir_gen_deferred(jp, d);
+                    }
+
                     inst =
                         (IRinst) {
                             .opcode = IROP_JMP,
@@ -7840,6 +7867,10 @@ void ir_gen_block(Job *jp, AST *ast) {
         }
     }
 
+    if(defer_list) ir_gen_deferred(jp, defer_list);
+}
+
+INLINE void ir_gen_deferred(Job *jp, AST_statement *defer_list) {
     while(defer_list) {
         assert(defer_list->base.kind == AST_KIND_statement);
         ir_gen_statement(jp, defer_list);
@@ -14403,9 +14434,9 @@ void print_sym(Sym sym) {
 
 //VERSION 1.0
 //
-//TODO signed and unsigned comparisons
+//TODO directives (#load, #import, #assert, etc)
+//TODO make sure that ir_gen_memorycopy() respects memory alignment
 //TODO implicit context (test temporary allocator, add mechanism for pushing a context)
-//TODO improve 'defer' (defer when returning from functions continuing in loops etc)
 //TODO better anonymous structs and unions
 //TODO proc types with argument names
 //TODO proc polymorphism
@@ -14415,9 +14446,7 @@ void print_sym(Sym sym) {
 //TODO finish print()
 //TODO enums
 //TODO finish globals
-//TODO directives (#load, #import, #assert, etc)
 //TODO procedures for interfacing with the compiler (e.g. add_source_file())
-//TODO make sure that ir_gen_memorycopy() respects memory alignment
 //TODO test full C interop
 //TODO output assembly
 //TODO parametrized structs

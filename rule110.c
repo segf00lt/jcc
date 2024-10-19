@@ -52,7 +52,16 @@ int main(void) {
     */
 
     for(; N > 0; --N) {
+        int ones_in_a_row = 0;
         for(int i = 0; i < D; ++i) {
+            if(tape[i] == 1) ones_in_a_row++;
+
+            if(ones_in_a_row == 4) {
+                continue;
+            } else if(ones_in_a_row == 3) {
+                goto end_generation_loop;
+            }
+
             int acc =
                 (tape[((i == 0) ? (D - 1) : (i - 1))] << 2) |
                 (tape[i]<< 1)            |
@@ -64,6 +73,7 @@ int main(void) {
         tape = next_tape;
         next_tape = tmp;
     }
+end_generation_loop:
 
     printf("tape       ");
     for(int i = 0; i < D; ++i) {

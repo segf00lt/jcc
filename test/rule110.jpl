@@ -34,12 +34,17 @@ proc rule110(N: int) void {
 
         i := 0;
 
+        ones_in_a_row := 0;
         while tape_loop: i < D {
+            defer i++;
 
-            //if N == 7 {
-            //    N--;
-            //    continue generation_loop;
-            //}
+            if tape[i] == 1 ones_in_a_row++;
+
+            if ones_in_a_row == 4 {
+                continue tape_loop;
+            } else if ones_in_a_row == 3 {
+                break generation_loop;
+            }
 
             left := i - 1;
             if i == 0 left = D - 1;
@@ -47,11 +52,6 @@ proc rule110(N: int) void {
             if i == D-1 right = 0;
             pat := (tape[left] << 2) | (tape[i] << 1) | tape[right];
             next_tape[i] = rules[pat];
-            i++;
-
-            //if i == D && N == 5 {
-            //    break generation_loop;
-            //}
         }
 
         tmp := tape;
@@ -59,6 +59,8 @@ proc rule110(N: int) void {
         next_tape = tmp;
     }
 
+    //print("tape %\nnext_tape %\n", tape, next_tape);
+    print("tape ");
     i := 0;
     
     while i < D - 1 {
