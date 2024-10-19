@@ -5,24 +5,25 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 #include <assert.h>
 
 #define SQUARE(x) (x*x)
 #define TIMES2(x) (x+x)
 #define HALF(x) (x*0.5f)
 #define IS_POW_2(x) ((x & (x-1)) == 0)
+#define SIGN_EXTEND_S64(x, n) (s64)((n >= 64) ? (s64)x : (s64)((s64)x | (s64)(-((s64)x >> ((s64)n - 1lu)) << (s64)n)))
 #define MAX(a,b) (((a) > (b)) ? (a) : (b))
 #define MIN(a,b) (((a) < (b)) ? (a) : (b))
 #define STATICARRLEN(x) (sizeof(x)/sizeof(*x))
 #define STRLEN(x) ((sizeof(x)/sizeof(*x))-1)
-#define SIGN_EXTEND(x, l) (-(((x >> (l-1)) << l) - x))
 #define Arr(T) T *
 #define Map(K, V) struct { K key; V value; } *
 #define Dict(V) struct { char *key; V value; } *
 #define UNREACHABLE assert("UNREACHABLE"&&0)
 #define UNIMPLEMENTED assert("UNIMPLEMENTED"&&0)
-#define PASS assert(1)
-#define DUNNO fprintf(stderr, "======\nDUNNO WHAT HAPPENS ON LINE %i IN '%s'()\n======\n", __LINE__, __func__)
+#define PASS assert("PASS"&&1)
+#define DUNNO fprintf(stderr, "======\nDUNNO WHAT HAPPENS ON LINE %i IN %s()\n======\n", __LINE__, __func__)
 #define INLINE __attribute__((always_inline)) inline
 #if defined(stbsp_sprintf) && defined(stbsp_snprintf)
 #undef sprintf

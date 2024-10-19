@@ -128,7 +128,7 @@ struct Context {
 
 struct Temporary_storage {
     u8 *data;
-    s32 occupied;
-    s32 size;
-    s32 max_size;
+    u32 occupied;
+    u32 size;
+    u32 high_water_mark;
 };

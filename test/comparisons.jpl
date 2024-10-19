@@ -1,0 +1,11 @@
+#run main();
+
+proc main() {
+    y: s64 = 23;
+    x: s8 = -122;
+
+    if x < y 
+        print("% is less than %\n% - % = %\n", x, y, x, y, x - y);
+    else
+        print("% is greater than or equal to %\n", x, y);
+}

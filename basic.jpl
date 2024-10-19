@@ -3,21 +3,34 @@ _ARRAY_INITIAL_CAP : u64 : 64;
 proc arr_push(arr: *_Dynamic_array, elem: Any) {
     if arr.count >= arr.cap {
         new_cap := arr.cap << 2;
+
         if new_cap == 0  new_cap = _ARRAY_INITIAL_CAP;
-        allocator := context.allocator;
+
+        allocator: Allocator = ---;
+        allocator_data: *void = ---;
+
+        if cast(*void)arr.allocator == cast(*void)0 {
+            allocator = context.allocator;
+            allocator_data = context.allocator_data;
+        } else {
+            allocator = arr.allocator;
+            allocator_data = arr.allocator_data;
+        }
+
         arr.data =
-        allocator(
-            ALLOC_MODE_RESIZE,
-            new_cap * elem.type.bytes,
-            arr.cap * elem.type.bytes,
-            arr.data,
-            context.allocator_data,
-            0
-        );
+            allocator(
+                ALLOC_MODE_RESIZE,
+                new_cap * elem.type.bytes,
+                arr.cap * elem.type.bytes,
+                arr.data,
+                allocator_data,
+                0
+            );
+
         arr.cap = new_cap;
     }
 
-    memcpy(arr.data + arr.count * elem.type.bytes, elem.data, elem.type.bytes);
+    memmove(arr.data + arr.count * elem.type.bytes, elem.data, elem.type.bytes);
     arr.count++;
 }
 
@@ -56,7 +69,7 @@ proc print(fmt: string, args: ..) {
         begin_fmt_slice = end_fmt_slice;
 
 
-        t: *Type_info = args[argi].type;
+        t := args[argi].type;
         v := args[argi].data;
 
         if t.tag == TYPE_INFO_TAG_INT {
@@ -102,8 +115,8 @@ proc print(fmt: string, args: ..) {
                     n = -x;
                     negative = 1;
                 }
-            } else if t_int.bits == 8  && !t_int.sign {
-                n = >cast(*u8)v;
+           } else if t_int.bits == 8  && !t_int.sign {
+               n = >cast(*u8)v;
             }
 
             if n == 0 {
@@ -224,3 +237,4 @@ proc print(fmt: string, args: ..) {
     write(STDOUT, cast(*void)begin_fmt_slice, fmt.len - cast(size_t)(begin_fmt_slice - fmt.data));
 
 }
+

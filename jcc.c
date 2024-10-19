@@ -99,6 +99,7 @@
     X(PARAM)                            \
     X(TOKEN)                            \
     X(POINTER)                          \
+    X(PROC)                             \
 
 #define TYPEKINDS                       \
     X(VOID)                             \
@@ -224,6 +225,10 @@
 
 #define TOKEN_TO_TYPEKIND(t) (Typekind)((t-TOKEN_VOID)+TYPE_KIND_VOID)
 
+#define TYPE_KIND_IS_SIGNED_INT(kind) ((bool)(kind == TYPE_KIND_INT || kind == TYPE_KIND_S8 || kind == TYPE_KIND_S16 || kind == TYPE_KIND_S32 || kind == TYPE_KIND_S64))
+
+#define TYPE_KIND_IS_UNSIGNED_INT(kind) ((bool)(kind == TYPE_KIND_U8 || kind == TYPE_KIND_U16 || kind == TYPE_KIND_U32 || kind == TYPE_KIND_U64))
+
 #define TYPE_KIND_IS_NOT_SCALAR(kind) ((bool)(kind >= TYPE_KIND_TYPE && kind != TYPE_KIND_POINTER))
 
 #define TYPE_KIND_IS_SCALAR(kind) ((bool)(kind < TYPE_KIND_TYPE || kind == TYPE_KIND_POINTER))
@@ -243,6 +248,8 @@
 #define TYPE_KIND_IS_VIEW_LIKE(kind) ((bool)(kind == TYPE_KIND_ARRAY_VIEW || kind == TYPE_KIND_STRING))
 
 #define TYPE_IS_VOID_POINTER(t) ((bool)((assert(t), 1) && t->kind == TYPE_KIND_POINTER && (assert(t->pointer.to), 1) && t->pointer.to->kind == TYPE_KIND_VOID))
+
+#define TOKEN_IS_BITWISE_OP(token) ((bool)(token == '|' || token == TOKEN_LSHIFT || token == TOKEN_RSHIFT || token == '&' || token == '^' || token == '~'))
 
 
 typedef struct Scope_entry* Scope;
@@ -405,6 +412,7 @@ struct IRinst {
             u64 reg[3];
             IRvalue imm;
             bool immediate;
+            bool sign;
         } arith;
 
         struct {
@@ -971,6 +979,7 @@ struct Value {
         String_view str;
         Type *type;
         Type_info *typeinfo;
+        int procid;
         /*
         struct {
             IRsegment segment;
@@ -1091,7 +1100,7 @@ char*       job_sprint(Job *jp, char *fmt, ...);
 
 void        job_ast_allocator_to_save(Job *jp, Pool_save save[AST_KIND_MAX]);
 void        job_ast_allocator_from_save(Job *jp, Pool_save save[AST_KIND_MAX]);
-void        job_runner(char *src, char *src_path);
+bool        job_runner(char *src, char *src_path);
 Sym*        job_scope_lookup(Job *jp, char *name);
 Sym*        job_current_scope_lookup(Job *jp, char *name);
 void        job_scope_enter(Job *jp, Sym *sym);
@@ -1611,6 +1620,7 @@ Type_info* job_make_type_info(Job *jp, Type *t) {
     int i = 0;
     for(; i < arrlen(type_info_lookup_type); ++i) {
         if(types_are_same(t, type_info_lookup_type[i])) {
+            fprintf(stderr,"been made before\n");
             break;
         }
     }
@@ -1661,9 +1671,10 @@ Type_info* job_make_type_info(Job *jp, Type *t) {
         case TYPE_KIND_S64:
         case TYPE_KIND_INT:
             {
+                fprintf(stderr,"here making type info\n");
                 Type_info_int *tinfo_int = arena_alloc(&type_info_arena, sizeof(Type_info_int));
                 tinfo_int->base.tag = TYPE_INFO_TAG_INT;
-                tinfo_int->bits = builtin_type[t->kind].bytes << 3;
+                tinfo_int->bits = builtin_type[t->kind].bytes << 3lu;
                 tinfo_int->sign = true;
                 tinfo = (Type_info*)tinfo_int;
             }
@@ -2008,6 +2019,7 @@ bool has_nested_call(AST *ast) {
     return false;
 }
 
+//TODO all implicit casts should happen in typecheck_operation()
 void add_implicit_casts_to_expr(Job *jp, AST *ast) {
     if(!ast) return;
 
@@ -2056,6 +2068,20 @@ void add_implicit_casts_to_expr(Job *jp, AST *ast) {
             cast_expr->type_annotation = right;
             cast_expr->right = expr->left;
             expr->left = (AST*)cast_expr;
+        //} else if(TYPE_KIND_IS_INTEGER(left->kind) && TYPE_KIND_IS_INTEGER(right->kind) && left->bytes > right->bytes) {
+        //    AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+        //    cast_expr->token = TOKEN_CAST;
+        //    cast_expr->left = NULL;
+        //    cast_expr->type_annotation = left;
+        //    cast_expr->right = expr->right;
+        //    expr->left = (AST*)cast_expr;
+        //} else if(TYPE_KIND_IS_INTEGER(left->kind) && TYPE_KIND_IS_INTEGER(right->kind) && left->bytes < right->bytes) {
+        //    AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+        //    cast_expr->token = TOKEN_CAST;
+        //    cast_expr->left = NULL;
+        //    cast_expr->type_annotation = right;
+        //    cast_expr->right = expr->left;
+        //    expr->left = (AST*)cast_expr;
         }
 
     } else {
@@ -2109,7 +2135,11 @@ bool all_paths_return(Job *jp, AST *ast) {
                         AST *branch = ast_if->branch;
                         while(branch && branch->kind == AST_KIND_ifstatement) {
                             AST_ifstatement *ast_else_if = (AST_ifstatement*)branch;
-                            if(!all_paths_return(jp, ast_else_if->body)) return false;
+                            bool branch_returns = all_paths_return(jp, ast_else_if->body);
+                            if(branch_returns && ast_if->next == NULL) return true;
+                            if(!branch_returns && ast_if->next == NULL) {
+                                return false;
+                            }
                             branch = ast_else_if->branch;
                         }
 
@@ -5159,7 +5189,6 @@ void ir_run(Job *jp, int procid) {
         //print_ir_inst(inst, stderr);
         //sleep(1);
 
-        //TODO implement the context properly, you've broken something
         switch(inst.opcode) {
             default:
                 printf("jcc: error: bad instruction at '%lu'\n", pc);
@@ -5179,12 +5208,21 @@ void ir_run(Job *jp, int procid) {
                 imask = (inst.arith.operand_bytes[0] < 8) \
                 ? ((1l << (inst.arith.operand_bytes[0] << 3l)) - 1l) \
                 : (u64)(-1l); \
-                if(inst.arith.immediate) { \
+                if(inst.arith.sign) { \
+                    s64 a = SIGN_EXTEND_S64(((s64)interp.iregs[inst.arith.reg[1]]), (inst.arith.operand_bytes[1] << 3lu)); \
+                    s64 b = SIGN_EXTEND_S64(((s64)interp.iregs[inst.arith.reg[2]]), (inst.arith.operand_bytes[2] << 3lu)); \
+                    if(inst.arith.immediate) \
+                        b = SIGN_EXTEND_S64(((s64)inst.arith.imm.integer), (inst.arith.operand_bytes[2] << 3lu)); \
                     interp.iregs[inst.arith.reg[0]] = \
-                    imask & (interp.iregs[inst.arith.reg[1]] opsym inst.arith.imm.integer); \
+                    (s64)imask & (s64)(a opsym b); \
                 } else { \
-                    interp.iregs[inst.arith.reg[0]] = \
-                    imask & (interp.iregs[inst.arith.reg[1]] opsym interp.iregs[inst.arith.reg[2]]); \
+                    if(inst.arith.immediate) { \
+                        interp.iregs[inst.arith.reg[0]] = \
+                        imask & (interp.iregs[inst.arith.reg[1]] opsym inst.arith.imm.integer); \
+                    } else { \
+                        interp.iregs[inst.arith.reg[0]] = \
+                        imask & (interp.iregs[inst.arith.reg[1]] opsym interp.iregs[inst.arith.reg[2]]); \
+                    } \
                 } \
                 break;
                 IR_INT_BINOPS;
@@ -7925,6 +7963,7 @@ void ir_gen_logical_expr(Job *jp, AST *ast) {
     }
 }
 
+//TODO struct initialization needs to be improved
 void ir_gen_struct_init(Job *jp, Type *struct_type, IRsegment segment, u64 offset) {
     IRinst inst = {0};
 
@@ -7948,7 +7987,23 @@ void ir_gen_struct_init(Job *jp, Type *struct_type, IRsegment segment, u64 offse
                 ir_gen_struct_init(jp, member_types[i], segment, offset + member_offsets[i]);
             } else {
                 if(member_values[i]) {
-                    UNIMPLEMENTED;
+                    if(member_types[i]->kind == TYPE_KIND_PROC) {
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_SETVAR,
+                                .setvar = {
+                                    .segment = segment,
+                                    .offset = offset + member_offsets[i],
+                                    .imm.integer = member_values[i]->val.procid,
+                                    .bytes = 8,
+                                    .immediate = true,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+                    } else {
+                        UNIMPLEMENTED;
+                    }
                 } else {
                     u64 total_bytes = member_types[i]->bytes;
                     for(u64 b = 0, step = 8; b < total_bytes; b += step) {
@@ -8177,7 +8232,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 inst.loc = jp->cur_loc;
                 arrpush(jp->instructions, inst);
 
-                arrpush(type_stack, type_Context);
+                arrpush(type_stack, atom->type_annotation);
             } else if(atom->token == '@') {
                 atom->token = TOKEN_IDENT;
 
@@ -8574,42 +8629,49 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         UNREACHABLE;
                     case TOKEN_CAST:
                     //TODO implicit cast everything
-                        if(TYPE_KIND_IS_RECORD(result_type->kind) && TYPE_KIND_IS_RECORD(operand_type->kind)) {
-                            u64 use_offset = 0;
+                        {
+                            bool result_is_record_and_operand_is_record =
+                                (TYPE_KIND_IS_RECORD(result_type->kind) && TYPE_KIND_IS_RECORD(operand_type->kind));
 
-                            for(u64 i = 0; i < operand_type->record.use.n; ++i) {
-                                if(result_type == operand_type->record.use.types[i]) {
-                                    use_offset = operand_type->record.use.offsets[i];
-                                    break;
-                                }
-                            }
+                            bool result_is_pointer_and_operand_is_pointer =
+                                (result_type->kind == TYPE_KIND_POINTER && operand_type->kind == TYPE_KIND_POINTER);
 
-                            if(use_offset > 0) {
-                                inst =
-                                    (IRinst) {
-                                        .opcode = IROP_ADD,
-                                        .arith = {
-                                            .operand_bytes = { 8, 8, 8 },
-                                            .reg = { *reg_destp, *reg_srcp, 0 },
-                                            .imm.integer = use_offset,
-                                            .immediate = true,
-                                        },
-                                    };
-                                inst.loc = jp->cur_loc;
-                                arrpush(jp->instructions, inst);
-                            }
+                            bool result_is_view_and_operand_is_view =
+                                (result_type->kind == TYPE_KIND_ARRAY_VIEW && operand_type->kind == TYPE_KIND_ARRAY_VIEW);
 
-                        } else if(result_type->kind == TYPE_KIND_POINTER && operand_type->kind == TYPE_KIND_POINTER) {
+                            bool result_is_view_and_operand_is_array =
+                                (result_type->kind == TYPE_KIND_ARRAY_VIEW && operand_type->kind == TYPE_KIND_ARRAY);
 
-                            if(TYPE_KIND_IS_RECORD(result_type->pointer.to->kind) && TYPE_KIND_IS_RECORD(operand_type->pointer.to->kind)) {
-                                Type *p_to_operand_type = operand_type->pointer.to;
-                                Type *p_to_result_type = result_type->pointer.to;
+                            bool result_is_view_and_operand_is_dynamic_array =
+                                (result_type->kind == TYPE_KIND_ARRAY_VIEW && operand_type->kind == TYPE_KIND_DYNAMIC_ARRAY);
 
+                            bool result_is_view_and_operand_is_string =
+                                (result_type->kind == TYPE_KIND_ARRAY_VIEW && operand_type->kind == TYPE_KIND_STRING);
+
+                            bool result_is_array_and_operand_is_array =
+                                (result_type->kind == TYPE_KIND_ARRAY && operand_type->kind == TYPE_KIND_ARRAY);
+
+                            bool result_is_non_scalar_and_operand_is_non_scalar =
+                                (TYPE_KIND_IS_NOT_SCALAR(result_type->kind) && TYPE_KIND_IS_NOT_SCALAR(operand_type->kind));
+
+                            bool result_is_pointer_and_operand_is_array_like_or_string =
+                                (result_type->kind == TYPE_KIND_POINTER && (TYPE_KIND_IS_ARRAY_LIKE(operand_type->kind) || operand_type->kind == TYPE_KIND_STRING));
+
+                            bool result_is_any = (result_type == type_Any);
+
+                            bool result_is_scalar_or_proc_and_operand_is_scalar_or_proc =
+                                (
+                                 (TYPE_KIND_IS_SCALAR(result_type->kind) || result_type->kind == TYPE_KIND_PROC) &&
+                                 (TYPE_KIND_IS_SCALAR(operand_type->kind) || operand_type->kind == TYPE_KIND_PROC)
+                                 );
+
+
+                            if(result_is_record_and_operand_is_record) {
                                 u64 use_offset = 0;
 
-                                for(u64 i = 0; i < p_to_operand_type->record.use.n; ++i) {
-                                    if(p_to_result_type == p_to_operand_type->record.use.types[i]) {
-                                        use_offset = p_to_operand_type->record.use.offsets[i];
+                                for(u64 i = 0; i < operand_type->record.use.n; ++i) {
+                                    if(result_type == operand_type->record.use.types[i]) {
+                                        use_offset = operand_type->record.use.offsets[i];
                                         break;
                                     }
                                 }
@@ -8628,201 +8690,232 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                     inst.loc = jp->cur_loc;
                                     arrpush(jp->instructions, inst);
                                 }
-                            } else if(TYPE_KIND_IS_NOT_SCALAR(result_type->pointer.to->kind) && TYPE_KIND_IS_NOT_SCALAR(operand_type->pointer.to->kind)) {
-                                Type *p_to_operand_type = operand_type->pointer.to;
-                                Type *p_to_result_type = result_type->pointer.to;
 
-                                if(p_to_result_type == type_String_view                   && p_to_operand_type->kind == TYPE_KIND_STRING)        PASS;
-                                else if(p_to_result_type == type_Array_view               && p_to_operand_type->kind == TYPE_KIND_ARRAY_VIEW)    PASS;
-                                else if(p_to_result_type == type_Dynamic_array            && p_to_operand_type->kind == TYPE_KIND_DYNAMIC_ARRAY) PASS;
-                                else if(p_to_result_type->kind == TYPE_KIND_STRING        && p_to_operand_type       == type_String_view)        PASS;
-                                else if(p_to_result_type->kind == TYPE_KIND_ARRAY_VIEW    && p_to_operand_type       == type_Array_view)         PASS;
-                                else if(p_to_result_type->kind == TYPE_KIND_DYNAMIC_ARRAY && p_to_operand_type       == type_Dynamic_array)      PASS;
-                                else UNIMPLEMENTED;
-                            }
+                            } else if(result_is_pointer_and_operand_is_pointer) {
 
-                        } else if(result_type->kind == TYPE_KIND_ARRAY_VIEW && operand_type->kind == TYPE_KIND_ARRAY_VIEW) {
-                            PASS;
-                        } else if(result_type->kind == TYPE_KIND_ARRAY_VIEW && operand_type->kind == TYPE_KIND_ARRAY) {
-                            arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), operand_type->align);
-                            u64 operand_offset = arrlast(jp->local_offset);
+                                if(TYPE_KIND_IS_RECORD(result_type->pointer.to->kind) && TYPE_KIND_IS_RECORD(operand_type->pointer.to->kind)) {
+                                    Type *p_to_operand_type = operand_type->pointer.to;
+                                    Type *p_to_result_type = result_type->pointer.to;
 
-                            arrlast(jp->local_offset) += sizeof(Array_view);
+                                    u64 use_offset = 0;
 
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_SETVAR,
-                                    .setvar = {
-                                        .segment = IRSEG_LOCAL,
-                                        .offset = operand_offset + offsetof(Array_view, data),
-                                        .reg_src = *reg_srcp,
-                                        .bytes = member_size(Array_view, data),
-                                    },
-                                };
-                            inst.loc = jp->cur_loc;
-                            arrpush(jp->instructions, inst);
+                                    for(u64 i = 0; i < p_to_operand_type->record.use.n; ++i) {
+                                        if(p_to_result_type == p_to_operand_type->record.use.types[i]) {
+                                            use_offset = p_to_operand_type->record.use.offsets[i];
+                                            break;
+                                        }
+                                    }
 
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_SETVAR,
-                                    .setvar = {
-                                        .segment = IRSEG_LOCAL,
-                                        .offset = operand_offset + offsetof(Array_view, count),
-                                        .imm.integer = operand_type->array.n,
-                                        .bytes = member_size(Array_view, count),
-                                        .immediate = true,
-                                    },
-                                };
-                            inst.loc = jp->cur_loc;
-                            arrpush(jp->instructions, inst);
+                                    if(use_offset > 0) {
+                                        inst =
+                                            (IRinst) {
+                                                .opcode = IROP_ADD,
+                                                .arith = {
+                                                    .operand_bytes = { 8, 8, 8 },
+                                                    .reg = { *reg_destp, *reg_srcp, 0 },
+                                                    .imm.integer = use_offset,
+                                                    .immediate = true,
+                                                },
+                                            };
+                                        inst.loc = jp->cur_loc;
+                                        arrpush(jp->instructions, inst);
+                                    }
+                                } else if(TYPE_KIND_IS_NOT_SCALAR(result_type->pointer.to->kind) && TYPE_KIND_IS_NOT_SCALAR(operand_type->pointer.to->kind)) {
+                                    Type *p_to_operand_type = operand_type->pointer.to;
+                                    Type *p_to_result_type = result_type->pointer.to;
 
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_ADDRVAR,
-                                    .addrvar = {
-                                        .segment = IRSEG_LOCAL,
-                                        .offset = operand_offset,
-                                        .reg_dest = *reg_destp,
-                                    },
-                                };
-                            inst.loc = jp->cur_loc;
-                            arrpush(jp->instructions, inst);
+                                    if(p_to_result_type == type_String_view                   && p_to_operand_type->kind == TYPE_KIND_STRING)        PASS;
+                                    else if(p_to_result_type == type_Array_view               && p_to_operand_type->kind == TYPE_KIND_ARRAY_VIEW)    PASS;
+                                    else if(p_to_result_type == type_Dynamic_array            && p_to_operand_type->kind == TYPE_KIND_DYNAMIC_ARRAY) PASS;
+                                    else if(p_to_result_type->kind == TYPE_KIND_STRING        && p_to_operand_type       == type_String_view)        PASS;
+                                    else if(p_to_result_type->kind == TYPE_KIND_ARRAY_VIEW    && p_to_operand_type       == type_Array_view)         PASS;
+                                    else if(p_to_result_type->kind == TYPE_KIND_DYNAMIC_ARRAY && p_to_operand_type       == type_Dynamic_array)      PASS;
+                                    else UNIMPLEMENTED;
+                                }
 
-                        } else if(result_type->kind == TYPE_KIND_ARRAY_VIEW && operand_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
-                            UNIMPLEMENTED;
-                        } else if(result_type->kind == TYPE_KIND_ARRAY_VIEW && operand_type->kind == TYPE_KIND_STRING) {
-                            UNIMPLEMENTED;
-                        } else if(result_type->kind == TYPE_KIND_ARRAY && operand_type->kind == TYPE_KIND_ARRAY) {
-                            UNIMPLEMENTED;
-                        } else if(TYPE_KIND_IS_NOT_SCALAR(result_type->kind) && TYPE_KIND_IS_NOT_SCALAR(operand_type->kind)) {
-                            PASS;
-                        } else if(result_type->kind == TYPE_KIND_POINTER && (TYPE_KIND_IS_ARRAY_LIKE(operand_type->kind) || operand_type->kind == TYPE_KIND_STRING)) {
-                            if(operand_type->kind != TYPE_KIND_ARRAY) {
+                            } else if(result_is_view_and_operand_is_view) {
+                                PASS;
+                            } else if(result_is_view_and_operand_is_array) {
+                                arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), operand_type->align);
+                                u64 operand_offset = arrlast(jp->local_offset);
+
+                                arrlast(jp->local_offset) += sizeof(Array_view);
+
                                 inst =
                                     (IRinst) {
-                                        .opcode = IROP_LOAD,
-                                        .load = {
-                                            .reg_dest = *reg_destp,
-                                            .reg_src_ptr = *reg_srcp,
-                                            .bytes = 8,
-                                        },
-                                    };
-                                inst.loc = jp->cur_loc;
-                                arrpush(jp->instructions, inst);
-                            }
-                        } else if(result_type == type_Any) {
-                            arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), operand_type->align);
-                            u64 operand_offset = arrlast(jp->local_offset);
-
-                            if(TYPE_KIND_IS_NOT_SCALAR(operand_type->kind)) {
-                                UNIMPLEMENTED;
-                                arrlast(jp->local_offset) += 8;
-                            } else {
-                                inst =
-                                    (IRinst) {
-                                        .opcode = TYPE_KIND_IS_FLOAT(operand_type->kind) ? IROP_SETVARF : IROP_SETVAR,
+                                        .opcode = IROP_SETVAR,
                                         .setvar = {
                                             .segment = IRSEG_LOCAL,
-                                            .offset = operand_offset,
+                                            .offset = operand_offset + offsetof(Array_view, data),
                                             .reg_src = *reg_srcp,
-                                            .bytes = operand_type->bytes,
+                                            .bytes = member_size(Array_view, data),
                                         },
                                     };
                                 inst.loc = jp->cur_loc;
                                 arrpush(jp->instructions, inst);
-                                arrlast(jp->local_offset) += operand_type->bytes;
+
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_SETVAR,
+                                        .setvar = {
+                                            .segment = IRSEG_LOCAL,
+                                            .offset = operand_offset + offsetof(Array_view, count),
+                                            .imm.integer = operand_type->array.n,
+                                            .bytes = member_size(Array_view, count),
+                                            .immediate = true,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_ADDRVAR,
+                                        .addrvar = {
+                                            .segment = IRSEG_LOCAL,
+                                            .offset = operand_offset,
+                                            .reg_dest = *reg_destp,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+
+                            } else if(result_is_view_and_operand_is_dynamic_array) {
+                                UNIMPLEMENTED;
+                            } else if(result_is_view_and_operand_is_string) {
+                                UNIMPLEMENTED;
+                            } else if(result_is_array_and_operand_is_array) {
+                                UNIMPLEMENTED;
+                            } else if(result_is_non_scalar_and_operand_is_non_scalar) {
+                                PASS;
+                            } else if(result_is_pointer_and_operand_is_array_like_or_string) {
+                                if(operand_type->kind != TYPE_KIND_ARRAY) {
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = IROP_LOAD,
+                                            .load = {
+                                                .reg_dest = *reg_destp,
+                                                .reg_src_ptr = *reg_srcp,
+                                                .bytes = 8,
+                                            },
+                                        };
+                                    inst.loc = jp->cur_loc;
+                                    arrpush(jp->instructions, inst);
+                                }
+                            } else if(result_is_any) {
+                                arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), operand_type->align);
+                                u64 operand_offset = arrlast(jp->local_offset);
+
+                                if(TYPE_KIND_IS_NOT_SCALAR(operand_type->kind)) {
+                                    UNIMPLEMENTED;
+                                    arrlast(jp->local_offset) += 8;
+                                } else {
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = TYPE_KIND_IS_FLOAT(operand_type->kind) ? IROP_SETVARF : IROP_SETVAR,
+                                            .setvar = {
+                                                .segment = IRSEG_LOCAL,
+                                                .offset = operand_offset,
+                                                .reg_src = *reg_srcp,
+                                                .bytes = operand_type->bytes,
+                                            },
+                                        };
+                                    inst.loc = jp->cur_loc;
+                                    arrpush(jp->instructions, inst);
+                                    arrlast(jp->local_offset) += operand_type->bytes;
+                                }
+
+                                assert(result_type == type_Any);
+
+                                arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), _Alignof(Any));
+
+                                jp->reg_alloc++;
+
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_ADDRVAR,
+                                        .addrvar = {
+                                            .segment = IRSEG_LOCAL,
+                                            .offset = operand_offset,
+                                            .reg_dest = jp->reg_alloc,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_SETVAR,
+                                        .setvar = {
+                                            .segment = IRSEG_LOCAL,
+                                            .offset = arrlast(jp->local_offset) + offsetof(Any, data),
+                                            .reg_src = jp->reg_alloc,
+                                            .bytes = member_size(Any, data),
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_SETVAR,
+                                        .setvar = {
+                                            .segment = IRSEG_LOCAL,
+                                            .offset = arrlast(jp->local_offset) + offsetof(Any, type),
+                                            .imm.integer = (u64)(void*)job_make_type_info(jp, operand_type),
+                                            .bytes = member_size(Any, type),
+                                            .immediate = true,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+
+                                jp->reg_alloc--;
+
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_ADDRVAR,
+                                        .addrvar = {
+                                            .segment = IRSEG_LOCAL,
+                                            .offset = arrlast(jp->local_offset),
+                                            .reg_dest = *reg_destp,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+
+                                arrlast(jp->local_offset) += sizeof(Any);
+
+                            } else if(result_is_scalar_or_proc_and_operand_is_scalar_or_proc) {
+                                inst =
+                                    (IRinst) {
+                                        .typeconv = {
+                                            .to_reg = *reg_destp,
+                                            .from_reg = *reg_srcp,
+                                            .to_bytes = result_type->bytes,
+                                            .from_bytes = operand_type->bytes,
+                                        },
+                                    };
+                                if(TYPE_KIND_IS_FLOAT(result_type->kind) && TYPE_KIND_IS_INTEGER(operand_type->kind)) {
+                                    inst.opcode = IROP_ITOF;
+                                    inst.loc = jp->cur_loc;
+                                    arrpush(jp->instructions, inst);
+                                } else if(TYPE_KIND_IS_FLOAT(result_type->kind) && TYPE_KIND_IS_FLOAT(operand_type->kind)) {
+                                    inst.opcode = IROP_FTOF;
+                                    inst.loc = jp->cur_loc;
+                                    arrpush(jp->instructions, inst);
+                                } else if(TYPE_KIND_IS_FLOAT(operand_type->kind) && TYPE_KIND_IS_INTEGER(result_type->kind)) {
+                                    inst.opcode = IROP_FTOI;
+                                    inst.loc = jp->cur_loc;
+                                    arrpush(jp->instructions, inst);
+                                }
+                            } else {
+                                UNIMPLEMENTED;
                             }
 
-                            assert(result_type == type_Any);
-
-                            arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), _Alignof(Any));
-
-                            jp->reg_alloc++;
-
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_ADDRVAR,
-                                    .addrvar = {
-                                        .segment = IRSEG_LOCAL,
-                                        .offset = operand_offset,
-                                        .reg_dest = jp->reg_alloc,
-                                    },
-                                };
-                            inst.loc = jp->cur_loc;
-                            arrpush(jp->instructions, inst);
-
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_SETVAR,
-                                    .setvar = {
-                                        .segment = IRSEG_LOCAL,
-                                        .offset = arrlast(jp->local_offset) + offsetof(Any, data),
-                                        .reg_src = jp->reg_alloc,
-                                        .bytes = member_size(Any, data),
-                                    },
-                                };
-                            inst.loc = jp->cur_loc;
-                            arrpush(jp->instructions, inst);
-
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_SETVAR,
-                                    .setvar = {
-                                        .segment = IRSEG_LOCAL,
-                                        .offset = arrlast(jp->local_offset) + offsetof(Any, type),
-                                        .imm.integer = (u64)(void*)job_make_type_info(jp, operand_type),
-                                        .bytes = member_size(Any, type),
-                                        .immediate = true,
-                                    },
-                                };
-                            inst.loc = jp->cur_loc;
-                            arrpush(jp->instructions, inst);
-
-                            jp->reg_alloc--;
-
-                            inst =
-                                (IRinst) {
-                                    .opcode = IROP_ADDRVAR,
-                                    .addrvar = {
-                                        .segment = IRSEG_LOCAL,
-                                        .offset = arrlast(jp->local_offset),
-                                        .reg_dest = *reg_destp,
-                                    },
-                                };
-                            inst.loc = jp->cur_loc;
-                            arrpush(jp->instructions, inst);
-
-                            arrlast(jp->local_offset) += sizeof(Any);
-
-                        } else if(TYPE_KIND_IS_SCALAR(result_type->kind) && TYPE_KIND_IS_SCALAR(operand_type->kind)) {
-                            inst =
-                                (IRinst) {
-                                    .typeconv = {
-                                        .to_reg = *reg_destp,
-                                        .from_reg = *reg_srcp,
-                                        .to_bytes = result_type->bytes,
-                                        .from_bytes = operand_type->bytes,
-                                    },
-                                };
-                            if(TYPE_KIND_IS_FLOAT(result_type->kind) && TYPE_KIND_IS_INTEGER(operand_type->kind)) {
-                                inst.opcode = IROP_ITOF;
-                                inst.loc = jp->cur_loc;
-                                arrpush(jp->instructions, inst);
-                            } else if(TYPE_KIND_IS_FLOAT(result_type->kind) && TYPE_KIND_IS_FLOAT(operand_type->kind)) {
-                                inst.opcode = IROP_FTOF;
-                                inst.loc = jp->cur_loc;
-                                arrpush(jp->instructions, inst);
-                            } else if(TYPE_KIND_IS_FLOAT(operand_type->kind) && TYPE_KIND_IS_INTEGER(result_type->kind)) {
-                                inst.opcode = IROP_FTOI;
-                                inst.loc = jp->cur_loc;
-                                arrpush(jp->instructions, inst);
-                            }
-                        } else {
-                            UNIMPLEMENTED;
+                            (*reg_destp)++;
+                            break;
                         }
-
-                        (*reg_destp)++;
-                        break;
                     case '+':
                         printf("schmuck\n");
                         (*reg_destp)++;
@@ -8931,6 +9024,11 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 arrpush(type_stack, result_type);
 
                 bool is_arith = false;
+
+                if(!TOKEN_IS_BITWISE_OP(node->token) && TYPE_KIND_IS_SIGNED_INT(a_type->kind)) {
+                    assert(TYPE_KIND_IS_SIGNED_INT(b_type->kind));
+                    inst.arith.sign = true;
+                }
 
                 switch(node->token) {
                     default:
@@ -9258,6 +9356,10 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         a_reg = b_reg;
                         b_reg = tmp;
                     case TOKEN_LESSEQUAL:
+                        //if(TYPE_KIND_IS_SIGNED_INT(a_type->kind)) {
+                        //    assert(TYPE_KIND_IS_SIGNED_INT(b_type->kind));
+                        //    inst.arith.sign = true;
+                        //}
                         inst.opcode = operands_are_float ? IROP_FLE : IROP_LE;
                         is_arith = true;
                         break;
@@ -9278,6 +9380,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                             .arith = {
                                 .operand_bytes = { result_bytes, a_bytes, b_bytes },
                                 .reg = { *result_regp, a_reg, b_reg },
+                                .sign = inst.arith.sign,
                             },
                         };
                     inst.loc = jp->cur_loc;
@@ -10489,7 +10592,7 @@ bool records_have_member_name_conflicts(Job *jp, Loc_info using_loc, Type *a, Ty
     return false;
 }
 
-void job_runner(char *src, char *src_path) {
+bool job_runner(char *src, char *src_path) {
     Arr(Job) job_queue = NULL;
     Arr(Job) job_queue_next = NULL;
     Lexer lexer = {0};
@@ -10614,6 +10717,9 @@ void job_runner(char *src, char *src_path) {
                             if(ast_struct->visited) {
                                 Type *record_type = ast_struct->record_type;
 
+                                //NOTE only align the record when you're done declaring it
+                                record_type->bytes = align_up(record_type->bytes, record_type->align);
+
                                 assert(record_type == arrlast(jp->record_types));
 
                                 if(ast_struct->params) {
@@ -10637,6 +10743,7 @@ void job_runner(char *src, char *src_path) {
                                     //TODO this way of handling anonymous sub structs is a bit weird
                                     if(arrlen(jp->record_types) > 0 && !ast_struct->is_name_spaced) {
                                         Type *inner_record = record_type;
+
                                         Type *outer_record = arrlast(jp->record_types);
 
                                         u64 offset;
@@ -11488,6 +11595,8 @@ void job_runner(char *src, char *src_path) {
 
     arrfree(job_queue);
     arrfree(job_queue_next);
+
+    return had_error;
 }
 
 Value *atom_to_value(Job *jp, AST_atom *atom) {
@@ -12096,6 +12205,14 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                     if(types_are_same(a->pointer.to, b->array.of) || a->pointer.to->kind == TYPE_KIND_VOID)
                         return a;
 
+                if(a->kind == TYPE_KIND_POINTER && b->kind == TYPE_KIND_PROC)
+                    if(a->pointer.to->kind == TYPE_KIND_VOID)
+                        return a;
+
+                if(a->kind == TYPE_KIND_PROC && b->kind == TYPE_KIND_POINTER)
+                    if(b->pointer.to->kind == TYPE_KIND_VOID)
+                        return a;
+
                 if(a->kind == TYPE_KIND_ARRAY_VIEW && TYPE_KIND_IS_ARRAY_LIKE(b->kind))
                     if(types_are_same(a->pointer.to, b->array.of))
                         return a;
@@ -12274,12 +12391,10 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                 if(b->kind == TYPE_KIND_POINTER && TYPE_KIND_IS_INTEGER(a->kind)) return b;
 
                 break;
-            case '<': //TODO the comparison operators need their own rules
-            case '>': //TODO signed and unsigned comparisons need to be distinguished
+            case '<':
+            case '>':
             case TOKEN_LESSEQUAL:
             case TOKEN_GREATEQUAL:
-            case TOKEN_EXCLAMEQUAL:
-            case TOKEN_EQUALEQUAL:
                 if(a->kind > b->kind) { /* type commutative */
                     Type *tmp = a;
                     a = b;
@@ -12343,6 +12458,65 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                 if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_F64)        return NULL;
 
                 if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_U64)        return NULL;
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_FLOAT && b->kind == TYPE_KIND_F64)      return NULL;
+
+                if(a->kind == TYPE_KIND_F32 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                return builtin_type+TYPE_KIND_BOOL;
+
+                break;
+            case TOKEN_EXCLAMEQUAL:
+            case TOKEN_EQUALEQUAL:
+                if(a->kind > b->kind) { /* type commutative */
+                    Type *tmp = a;
+                    a = b;
+                    b = tmp;
+                }
+
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_FLOAT)     return NULL;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_F32)       return NULL;
+                if(a->kind == TYPE_KIND_BOOL && b->kind == TYPE_KIND_F64)       return NULL;
+
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_FLOAT)     return NULL;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_F32)       return NULL;
+                if(a->kind == TYPE_KIND_CHAR && b->kind == TYPE_KIND_F64)       return NULL;
+
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_FLOAT)       return NULL;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_F32)         return NULL;
+                if(a->kind == TYPE_KIND_S8 && b->kind == TYPE_KIND_F64)         return NULL;
+
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_FLOAT)       return NULL;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_F32)         return NULL;
+                if(a->kind == TYPE_KIND_U8 && b->kind == TYPE_KIND_F64)         return NULL;
+
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_S16 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_U16 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_S32 && b->kind == TYPE_KIND_F64)        return NULL;
+
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_F32)        return NULL;
+                if(a->kind == TYPE_KIND_U32 && b->kind == TYPE_KIND_F64)        return NULL;
+
                 if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_FLOAT)      return NULL;
                 if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_F32)        return NULL;
                 if(a->kind == TYPE_KIND_S64 && b->kind == TYPE_KIND_F64)        return NULL;
@@ -12684,8 +12858,20 @@ void typecheck_expr(Job *jp) {
                     arrpush(value_stack, builtin_value+VALUE_KIND_NIL);
                 }
             } else if(atom->token == TOKEN_CONTEXT) {
-                atom->type_annotation = &type_Context_pointer;
-                arrpush(type_stack, &type_Context_pointer);
+                if(type_Context_pointer.kind != TYPE_KIND_POINTER) {
+                    Sym *sym = global_scope_lookup(jp, "Context");
+                    if(!sym) {
+                        jp->state = JOB_STATE_WAIT;
+                        jp->waiting_on_name = "Context";
+                        break;
+                    }
+                    atom->type_annotation = global_alloc_scratch(sizeof(Type));
+                    atom->type_annotation->kind = TYPE_KIND_POINTER;
+                    atom->type_annotation->pointer.to = sym->value->val.type;
+                } else {
+                    atom->type_annotation = &type_Context_pointer;
+                }
+                arrpush(type_stack, atom->type_annotation);
                 arrpush(value_stack, builtin_value+VALUE_KIND_NIL);
             } else {
                 Type *t = atom_to_type(jp, atom);
@@ -13161,6 +13347,10 @@ void typecheck_expr(Job *jp) {
                         };
                     arrpush(jp->instructions, inst);
 
+                    ir_gen_struct_init(jp, type_Context, IRSEG_LOCAL, 8);
+
+                    /*
+
                     inst =
                         (IRinst) {
                             .opcode = IROP_SETVAR,
@@ -13173,6 +13363,7 @@ void typecheck_expr(Job *jp) {
                             },
                         };
                     arrpush(jp->instructions, inst);
+                    */
 
                     arrlast(jp->local_offset) += 8 + type_Context->bytes;
                 }
@@ -13913,17 +14104,24 @@ void typecheck_procdecl(Job *jp) {
     proc_type->proc.is_foreign = ast->is_foreign;
     proc_type->proc.is_system = ast->is_system;
 
+    Value *procid_value = global_alloc_scratch(sizeof(Value));
+    procid_value->kind = VALUE_KIND_PROC;
+    procid_value->val.procid = procid_alloc;
+
     Sym proc_sym = {
         .name = ast->name,
         .loc = ast->base.loc,
         .declared_by = jp->id,
-        .procid = procid_alloc++,
+        .procid = procid_alloc,
+        .value = procid_value,
         .constant = true,
         .segment = IRSEG_CODE,
         .is_foreign = ast->is_foreign,
         .is_system = ast->is_system,
         .type = proc_type,
     };
+
+    procid_alloc++;
 
     Sym *ptr = is_top_level ? global_scope_lookup(jp, ast->name) : job_current_scope_lookup(jp, ast->name);
 
@@ -14144,7 +14342,7 @@ void typecheck_vardecl(Job *jp) {
         } else {
             u64 offset = align_up(record_type->bytes, bind_type->align);
             record_type->record.member.offsets[i] = offset;
-            record_type->bytes = align_up(offset + bind_type->bytes, record_type->align);
+            record_type->bytes = offset + bind_type->bytes; //NOTE only align the record when you're done declaring it
         }
 
     } else {
@@ -14205,7 +14403,11 @@ void print_sym(Sym sym) {
 
 //VERSION 1.0
 //
-//TODO implicit context
+//TODO signed and unsigned comparisons
+//TODO implicit context (test temporary allocator, add mechanism for pushing a context)
+//TODO improve 'defer' (defer when returning from functions continuing in loops etc)
+//TODO better anonymous structs and unions
+//TODO proc types with argument names
 //TODO proc polymorphism
 //TODO dynamic array procedures
 //TODO simple array for loops
@@ -14222,19 +14424,11 @@ void print_sym(Sym sym) {
 
 //VERSION 2.0
 //TODO redesign from scratch
-//TODO proc types with argument names
-//TODO better anonymous structs and unions
+//TODO macros
 //TODO for loops and iterator macros
-//TODO improve 'defer'
 //TODO compiler intercept and event loop
 //TODO local procedures, macros and structs
-//TODO macros
 //TODO output x64 machine code
-
-//MISC
-//TODO too much implicit state
-//     A lot of the code generator depends on the current value of jp->reg_alloc,
-//     this is becoming flimsy and we need a better way of allocating registers
 
 Dynamic_array gdb_stupid_1; // because gdb is stupid
 Any           gdb_stupid_2;
@@ -14259,7 +14453,8 @@ int main(int argc, char **argv) {
 
     char *preload_src = LoadFileText(preload_path);
 
-    job_runner(preload_src, preload_path);
+    if(job_runner(preload_src, preload_path))
+        return 0;
 
     type_String_view    = shget(global_scope, "_String_view")->value->val.type;
     type_Array_view     = shget(global_scope, "_Array_view")->value->val.type;
@@ -14281,7 +14476,8 @@ int main(int argc, char **argv) {
 
     char *basic_src = LoadFileText(basic_path);
 
-    job_runner(basic_src, basic_path);
+    if(job_runner(basic_src, basic_path))
+        return 0;
 
     char *test_src_file = LoadFileText(path);
 
@@ -14293,5 +14489,6 @@ int main(int argc, char **argv) {
             dlclose(p.wrapper_dll);
         }
     }
+
     return 0;
 }
