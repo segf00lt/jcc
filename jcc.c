@@ -1148,7 +1148,7 @@ void        ir_gen_struct_init(Job *jp, Type *struct_type, IRsegment segment, u6
 void        ir_gen_expr(Job *jp, AST *ast);
 u64         ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array);
 u64         ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array, u64 offset, u64 ptr_reg);
-void        ir_gen_memorycopy(Job *jp, u64 bytes, u64 to_ptr_reg, u64 from_ptr_reg);
+void        ir_gen_memorycopy(Job *jp, u64 bytes, u64 align, u64 to_ptr_reg, u64 from_ptr_reg);
 u64         ir_gen_array_from_value(Job *jp, Type *array_type, Value *v);
 void        ir_gen_entry_point_preamble(Job *jp);
 void        ir_run(Job *jp, int procid);
@@ -2070,19 +2070,19 @@ void add_implicit_casts_to_expr(Job *jp, AST *ast) {
             cast_expr->type_annotation = right;
             cast_expr->right = expr->left;
             expr->left = (AST*)cast_expr;
-        //} else if(TYPE_KIND_IS_INTEGER(left->kind) && TYPE_KIND_IS_INTEGER(right->kind) && left->bytes > right->bytes) {
-        //    AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
-        //    cast_expr->token = TOKEN_CAST;
-        //    cast_expr->left = NULL;
-        //    cast_expr->type_annotation = left;
-        //    cast_expr->right = expr->right;
-        //    expr->left = (AST*)cast_expr;
-        //} else if(TYPE_KIND_IS_INTEGER(left->kind) && TYPE_KIND_IS_INTEGER(right->kind) && left->bytes < right->bytes) {
+        //} else if(left->kind == TYPE_KIND_INT && TYPE_KIND_IS_INTEGER(right->kind) && right->kind != TYPE_KIND_INT) {
         //    AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
         //    cast_expr->token = TOKEN_CAST;
         //    cast_expr->left = NULL;
         //    cast_expr->type_annotation = right;
         //    cast_expr->right = expr->left;
+        //    expr->left = (AST*)cast_expr;
+        //} else if(TYPE_KIND_IS_INTEGER(left->kind) && left->kind != TYPE_KIND_INT && right->kind == TYPE_KIND_INT) {
+        //    AST_expr *cast_expr = (AST_expr*)job_alloc_ast(jp, AST_KIND_expr);
+        //    cast_expr->token = TOKEN_CAST;
+        //    cast_expr->left = NULL;
+        //    cast_expr->type_annotation = left;
+        //    cast_expr->right = expr->right;
         //    expr->left = (AST*)cast_expr;
         }
 
@@ -5912,12 +5912,13 @@ u64 ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_
     return offset;
 }
 
-void ir_gen_memorycopy(Job *jp, u64 bytes, u64 to_ptr_reg, u64 from_ptr_reg) {
+void ir_gen_memorycopy(Job *jp, u64 bytes, u64 align, u64 to_ptr_reg, u64 from_ptr_reg) {
     IRinst inst;
 
     jp->reg_alloc++;
-    for(u64 step = 8, offset = 0; offset < bytes; offset += step) {
-        while(offset + step > bytes) step >>= 1;
+    //for(u64 step = 8, offset = 0; offset < bytes; offset += step) {
+    for(u64 offset = 0; offset < bytes; offset += align) {
+        //while(offset + align > bytes) step >>= 1;
         inst =
             (IRinst) {
                 .opcode = IROP_LOAD,
@@ -5925,7 +5926,7 @@ void ir_gen_memorycopy(Job *jp, u64 bytes, u64 to_ptr_reg, u64 from_ptr_reg) {
                     .reg_dest = jp->reg_alloc,
                     .reg_src_ptr = from_ptr_reg,
                     .byte_offset_imm = offset,
-                    .bytes = step,
+                    .bytes = align,
                     .has_immediate_offset = true,
                 },
             };
@@ -5939,7 +5940,7 @@ void ir_gen_memorycopy(Job *jp, u64 bytes, u64 to_ptr_reg, u64 from_ptr_reg) {
                     .reg_dest_ptr = to_ptr_reg,
                     .reg_src = jp->reg_alloc,
                     .byte_offset_imm = offset,
-                    .bytes = step,
+                    .bytes = align,
                     .has_immediate_offset = true,
                 },
             };
@@ -5984,7 +5985,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 ir_gen_expr(jp, ast_statement->right);
                 ir_gen_expr(jp, ast_statement->left);
                 assert(jp->reg_alloc == 2);
-                ir_gen_memorycopy(jp, left_type->bytes, jp->reg_alloc - 1, jp->reg_alloc - 2);
+                ir_gen_memorycopy(jp, left_type->bytes, left_type->align, jp->reg_alloc - 1, jp->reg_alloc - 2);
                 jp->reg_alloc -= 2;
                 assert(jp->reg_alloc == 0);
                 return;
@@ -6130,7 +6131,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 ir_gen_expr(jp, ast_statement->right);
                 ir_gen_expr(jp, ast_statement->left);
                 assert(jp->reg_alloc == 2);
-                ir_gen_memorycopy(jp, left_type->bytes, jp->reg_alloc - 1, jp->reg_alloc - 2);
+                ir_gen_memorycopy(jp, left_type->bytes, left_type->align, jp->reg_alloc - 1, jp->reg_alloc - 2);
                 jp->reg_alloc -= 2;
                 assert(jp->reg_alloc == 0);
             }
@@ -6146,7 +6147,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 ir_gen_expr(jp, ast_statement->right);
                 ir_gen_expr(jp, ast_statement->left);
                 assert(jp->reg_alloc == 2);
-                ir_gen_memorycopy(jp, left_type->bytes, jp->reg_alloc - 1, jp->reg_alloc - 2);
+                ir_gen_memorycopy(jp, left_type->bytes, left_type->align, jp->reg_alloc - 1, jp->reg_alloc - 2);
                 jp->reg_alloc -= 2;
                 assert(jp->reg_alloc == 0);
             }
@@ -6184,7 +6185,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
             ir_gen_expr(jp, ast_statement->right);
             ir_gen_expr(jp, ast_statement->left);
             assert(jp->reg_alloc == 2);
-            ir_gen_memorycopy(jp, left_type->bytes, jp->reg_alloc - 1, jp->reg_alloc - 2);
+            ir_gen_memorycopy(jp, left_type->bytes, left_type->align, jp->reg_alloc - 1, jp->reg_alloc - 2);
             jp->reg_alloc -= 2;
             assert(jp->reg_alloc == 0);
         } else {
@@ -7105,7 +7106,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                                         };
                                     inst.loc = jp->cur_loc;
                                     arrpush(jp->instructions, inst);
-                                    ir_gen_memorycopy(jp, ret_type->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+                                    ir_gen_memorycopy(jp, ret_type->bytes, ret_type->align, jp->reg_alloc, jp->reg_alloc - 1);
                                     assert(jp->reg_alloc == 1);
                                     inst =
                                         (IRinst) {
@@ -7210,7 +7211,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                                             };
                                         inst.loc = jp->cur_loc;
                                         arrpush(jp->instructions, inst);
-                                        ir_gen_memorycopy(jp, ret_type->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+                                        ir_gen_memorycopy(jp, ret_type->bytes, ret_type->align, jp->reg_alloc, jp->reg_alloc - 1);
                                         inst =
                                             (IRinst) {
                                                 .opcode = IROP_SETRET,
@@ -7249,7 +7250,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     };
                                 inst.loc = jp->cur_loc;
                                 arrpush(jp->instructions, inst);
-                                ir_gen_memorycopy(jp, ret_type->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+                                ir_gen_memorycopy(jp, ret_type->bytes, ret_type->align, jp->reg_alloc, jp->reg_alloc - 1);
                                 inst =
                                     (IRinst) {
                                         .opcode = IROP_SETRET,
@@ -7365,7 +7366,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     inst.loc = jp->cur_loc;
                                     arrpush(jp->instructions, inst);
                                     assert(jp->reg_alloc == 1);
-                                    ir_gen_memorycopy(jp, var_type->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+                                    ir_gen_memorycopy(jp, var_type->bytes, var_type->align, jp->reg_alloc, jp->reg_alloc - 1);
                                     jp->reg_alloc--;
                                     assert(jp->reg_alloc == 0);
                                 }
@@ -7571,7 +7572,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     inst.loc = jp->cur_loc;
                                     arrpush(jp->instructions, inst);
 
-                                    ir_gen_memorycopy(jp, var_type->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+                                    ir_gen_memorycopy(jp, var_type->bytes, var_type->align, jp->reg_alloc, jp->reg_alloc - 1);
 
                                     jp->reg_alloc--;
 
@@ -7601,7 +7602,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                                 inst.loc = jp->cur_loc;
                                 arrpush(jp->instructions, inst);
 
-                                ir_gen_memorycopy(jp, var_type->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+                                ir_gen_memorycopy(jp, var_type->bytes, var_type->align, jp->reg_alloc, jp->reg_alloc - 1);
 
                                 jp->reg_alloc--;
 
@@ -7692,7 +7693,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                                     inst.loc = jp->cur_loc;
                                     arrpush(jp->instructions, inst);
 
-                                    ir_gen_memorycopy(jp, var_type->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+                                    ir_gen_memorycopy(jp, var_type->bytes, var_type->align, jp->reg_alloc, jp->reg_alloc - 1);
 
                                     jp->reg_alloc--;
                                 }
@@ -9057,8 +9058,11 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 bool is_arith = false;
 
                 if(!TOKEN_IS_BITWISE_OP(node->token) && TYPE_KIND_IS_SIGNED_INT(a_type->kind)) {
-                    assert(TYPE_KIND_IS_SIGNED_INT(b_type->kind));
-                    inst.arith.sign = true;
+                    if(TYPE_KIND_IS_SIGNED_INT(b_type->kind))
+                        inst.arith.sign = true;
+                } else if(!TOKEN_IS_BITWISE_OP(node->token) && TYPE_KIND_IS_SIGNED_INT(b_type->kind)) {
+                    if(TYPE_KIND_IS_SIGNED_INT(a_type->kind))
+                        inst.arith.sign = true;
                 }
 
                 switch(node->token) {
@@ -9731,7 +9735,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
             arrpush(jp->instructions, inst);
 
             arrlast(jp->local_offset) += p->type_annotation->bytes;
-            ir_gen_memorycopy(jp, p->type_annotation->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+            ir_gen_memorycopy(jp, p->type_annotation->bytes, p->type_annotation->align, jp->reg_alloc, jp->reg_alloc - 1);
 
             jp->reg_alloc--;
         } else {
@@ -9988,7 +9992,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 arrpush(jp->instructions, inst);
 
                 arrlast(jp->local_offset) += p->type_annotation->bytes;
-                ir_gen_memorycopy(jp, p->type_annotation->bytes, jp->reg_alloc, jp->reg_alloc - 1);
+                ir_gen_memorycopy(jp, p->type_annotation->bytes, p->type_annotation->align, jp->reg_alloc, jp->reg_alloc - 1);
 
                 inst =
                     (IRinst) {
@@ -12221,9 +12225,16 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                         Type *b_rec = b->pointer.to;
 
                         if(a_rec->record.name && b_rec->record.name) {
+                            for(u64 i = 0; i < b_rec->record.use.n; ++i) {
+                                if(a_rec == b_rec->record.use.types[i]) {
+                                    return a;
+                                }
+                            }
+
                             for(u64 i = 0; i < a_rec->record.use.n; ++i) {
                                 if(b_rec == a_rec->record.use.types[i]) {
-                                    return a;
+                                    if(i == 0)
+                                        return a;
                                 }
                             }
                         }
@@ -12266,6 +12277,13 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                         for(u64 i = 0; i < b->record.use.n; ++i) {
                             if(a == b->record.use.types[i]) {
                                 return a;
+                            }
+                        }
+
+                        for(u64 i = 0; i < a->record.use.n; ++i) {
+                            if(b == a->record.use.types[i]) {
+                                if(i == 0)
+                                    return a;
                             }
                         }
                     }
@@ -14435,7 +14453,6 @@ void print_sym(Sym sym) {
 //VERSION 1.0
 //
 //TODO directives (#load, #import, #assert, etc)
-//TODO make sure that ir_gen_memorycopy() respects memory alignment
 //TODO implicit context (test temporary allocator, add mechanism for pushing a context)
 //TODO better anonymous structs and unions
 //TODO proc types with argument names
@@ -14446,9 +14463,9 @@ void print_sym(Sym sym) {
 //TODO finish print()
 //TODO enums
 //TODO finish globals
-//TODO procedures for interfacing with the compiler (e.g. add_source_file())
 //TODO test full C interop
 //TODO output assembly
+//TODO procedures for interfacing with the compiler (e.g. add_source_file())
 //TODO parametrized structs
 
 //VERSION 2.0

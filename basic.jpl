@@ -44,6 +44,8 @@ proc arr_free(arr: *_Dynamic_array) {
 proc print(fmt: string, args: ..) {
 
     if args.count == 0 {
+        //s := "here\n";
+        //write(STDOUT, s.data, s.len);
         write(STDOUT, cast(*void)fmt.data, fmt.len);
         return;
     }
