@@ -1,0 +1,8 @@
+#run main();
+
+proc main() {
+    x := 4.534;
+    print("result of foo(%) is %\n", x, foo(x));
+}
+
+#load "test/foolib.jpl";

@@ -37,6 +37,7 @@
     X(usingstatement)                   \
     X(statement)                        \
     X(block)                            \
+    X(import_directive)                 \
     X(run_directive)                    \
     X(structdecl)                       \
     X(uniondecl)                        \
@@ -691,6 +692,12 @@ struct AST_param {
     AST_param *next;
 };
 
+struct AST_import_directive {
+    AST base;
+    char *path;
+    bool just_load_the_source;
+};
+
 struct AST_run_directive {
     AST base;
     Type *type_annotation; /* for use in expressions */
@@ -1175,6 +1182,7 @@ int         getprec(Token t);
 //TODO better parser errors
 AST*        parse_top_level_statement(Job *jp);
 AST*        parse_directive_statement(Job *jp);
+AST*        parse_load_or_import_directive(Job *jp);
 AST*        parse_run_directive(Job *jp);
 AST*        parse_procdecl(Job *jp);
 AST*        parse_structdecl(Job *jp);
@@ -2720,6 +2728,7 @@ INLINE AST* parse_directive_statement(Job *jp) {
     AST *ast = NULL;
 
     if(ast == NULL) ast = parse_run_directive(jp);
+    if(ast == NULL) ast = parse_load_or_import_directive(jp);
     if(ast == NULL) return NULL;
 
     Token t = lex(lexer);
@@ -2727,6 +2736,31 @@ INLINE AST* parse_directive_statement(Job *jp) {
     if(t != ';') job_error(jp, lexer->loc, "expected ';' after top level directive");
 
     return ast;
+}
+
+AST* parse_load_or_import_directive(Job *jp) {
+    Lexer *lexer = jp->lexer;
+    Lexer unlex = *lexer;
+
+    Token t = lex(lexer);
+
+    if(t != TOKEN_LOAD_DIRECTIVE && t != TOKEN_IMPORT_DIRECTIVE) {
+        *lexer = unlex;
+        return NULL;
+    }
+
+    Token str_token = lex(lexer);
+
+    if(str_token != TOKEN_STRINGLIT) {
+        job_error(jp, lexer->loc, "expected string literal");
+        return NULL;
+    }
+
+    AST_import_directive *ast = (AST_import_directive*)job_alloc_ast(jp, AST_KIND_import_directive);
+    ast->path = job_alloc_text(jp, lexer->text.s, lexer->text.e);
+    ast->just_load_the_source = (t == TOKEN_LOAD_DIRECTIVE);
+
+    return (AST*)ast;
 }
 
 AST* parse_run_directive(Job *jp) {
@@ -5259,16 +5293,18 @@ void ir_run(Job *jp, int procid) {
 #define X(opcode, opsym) \
             case IROP_##opcode:\
                                \
-                if(inst.arith.operand_bytes[0] == 8) { \
+                if(inst.arith.operand_bytes[1] == 8 && inst.arith.operand_bytes[2] == 8) { \
                     interp.iregs[inst.arith.reg[0]] = \
                     (bool)(interp.f64regs[inst.arith.reg[1]] opsym \
                             (inst.arith.immediate ? inst.arith.imm.floating64 \
                              : interp.f64regs[inst.arith.reg[2]])); \
-                } else { \
+                } else if(inst.arith.operand_bytes[1] == 4 && inst.arith.operand_bytes[2] == 4) { \
                     interp.iregs[inst.arith.reg[0]] = \
                     (bool)(interp.f32regs[inst.arith.reg[1]] opsym \
                             (inst.arith.immediate ? inst.arith.imm.floating32 \
                              : interp.f32regs[inst.arith.reg[2]])); \
+                } else { \
+                    UNREACHABLE; \
                 } \
                 break;
                 IR_FLOAT_CMPOPS;
@@ -9908,7 +9944,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         AST_param *p = arrpop(params);
 
         if(p->has_nested_call) {
-            if(TYPE_KIND_IS_RECORD(p->type_annotation->kind)) {
+            if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
 
                 assert(jp->reg_alloc == 0);
 
@@ -9973,7 +10009,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 arrpush(jp->instructions, inst);
             }
         } else {
-            if(TYPE_KIND_IS_RECORD(p->type_annotation->kind)) {
+            if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
                 ir_gen_expr(jp, p->value);
                 assert(jp->reg_alloc == 1);
 
@@ -11443,6 +11479,35 @@ bool job_runner(char *src, char *src_path) {
                             //                jp->interp.ports[i].floating64);
                             //    }
                             //}
+
+                            job_die(jp);
+                            ++i;
+
+                        } else if(ast->kind == AST_KIND_import_directive) {
+                            AST_import_directive *ast_import = (AST_import_directive*)ast;
+
+                            char *import_path;
+
+                            if(ast_import->just_load_the_source) {
+                                if(!FileExists(ast_import->path)) {
+                                    job_error(jp, ast->loc, "failed import, no such file '%s'", ast_import->path);
+                                    job_report_all_messages(jp);
+                                    job_die(jp);
+                                    ++i;
+                                    continue;
+                                }
+
+                                import_path = ast_import->path;
+                            } else {
+                                UNIMPLEMENTED;
+                            }
+
+                            arrpush(job_queue, job_spawn(&id_alloc, PIPE_STAGE_PARSE));
+                            char *src = LoadFileText(import_path);
+                            lexer_init(&lexer, src, ast_import->path);
+                            arrlast(job_queue).lexer = &lexer;
+                            arrlast(job_queue).global_sym_allocator = &global_sym_allocator;
+                            arrlast(job_queue).global_scope = &global_scope;
 
                             job_die(jp);
                             ++i;
@@ -14452,9 +14517,9 @@ void print_sym(Sym sym) {
 
 //VERSION 1.0
 //
-//TODO directives (#load, #import, #assert, etc)
 //TODO implicit context (test temporary allocator, add mechanism for pushing a context)
 //TODO better anonymous structs and unions
+//TODO directives (#import, #assert, etc)
 //TODO proc types with argument names
 //TODO proc polymorphism
 //TODO dynamic array procedures

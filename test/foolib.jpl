@@ -1,0 +1,6 @@
+proc foo(x: float) float {
+    while x < 112.22
+        x *= 2.0;
+
+    return x;
+}
