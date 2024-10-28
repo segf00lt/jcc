@@ -1,0 +1,61 @@
+proc main() {
+
+    ptr1 := temp_alloc(12);
+    ptr2 := temp_alloc(145);
+
+    temp_storage_reset();
+
+    ptr3 := temp_alloc(2);
+    ptr4 := temp_alloc(334);
+
+    temp_storage_size := context.temporary_storage.size;
+
+    print("ptr1 = %\nptr2 = %\n%\ntemp_storage_size = %\n", cast(u64)ptr1, cast(u64)ptr2, ptr2 - ptr1, temp_storage_size);
+    print("ptr3 = %\nptr4 = %\n%\ntemp_storage_offset = %\n", cast(u64)ptr3, cast(u64)ptr4, ptr4 - ptr3, context.temporary_storage.offset);
+
+    temp_storage_reset();
+
+    first_name := "John";
+    last_name := "Blow";
+
+    full_name := string_concat(first_name, " ");
+    full_name = string_concat(full_name, last_name);
+
+    print("full name: %\n", full_name);
+    print("temp_storage_offset = %\n", context.temporary_storage.offset);
+
+    temp_storage_reset();
+
+    print("temp_storage_offset = %\n", context.temporary_storage.offset);
+
+    new_string := string_concat(last_name, "ingham");
+
+    print("full name: %\n", full_name);
+    print("new_string: %\n", new_string);
+}
+
+proc string_concat(a: string, b: string) string {
+    temp := context.temporary_storage;
+
+    c: string;
+    c.len = a.len + b.len;
+    c.data = temp_alloc(c.len);
+
+    i := 0;
+    j := 0;
+
+    while i < a.len {
+        c[i] = a[i];
+        i++;
+    }
+
+    while j < b.len {
+        c[i] = b[j];
+        i++;
+        j++;
+    }
+
+    return c;
+}
+
+#run main();

@@ -1290,15 +1290,14 @@ Type *type_Dynamic_array;
 Type *type_Any;
 Type *type_Context;
 Type type_Context_pointer;
+Type *type_Temporary_storage;
+Type type_Temporary_storage_pointer;
 
 Sym *sym_default_allocator;
+Sym *sym_temporary_allocator;
 
 
 /* function declarations */
-
-INLINE void do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type) {
-    UNIMPLEMENTED;
-}
 
 Job job_spawn(Jobid *id_alloc, Pipe_stage pipe_stage) {
     *id_alloc += 1;
@@ -1987,7 +1986,12 @@ INLINE bool is_lvalue(AST *ast) {
     if(ast == NULL) return false;
     if(ast->kind == AST_KIND_atom) {
         AST_atom *atom = (AST_atom*)ast;
-        return atom->token == TOKEN_IDENT;
+        if(atom->token == TOKEN_IDENT)
+            return true;
+        if(atom->token == TOKEN_CONTEXT)
+            return true;
+
+        return false;
     } else if(ast->kind == AST_KIND_expr) {
         AST_expr *expr = (AST_expr*)ast;
         if(expr->token == '[') return true;
@@ -6224,6 +6228,13 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
             ir_gen_memorycopy(jp, left_type->bytes, left_type->align, jp->reg_alloc - 1, jp->reg_alloc - 2);
             jp->reg_alloc -= 2;
             assert(jp->reg_alloc == 0);
+        } else if(left_type->kind == TYPE_KIND_STRING) {
+            ir_gen_expr(jp, ast_statement->right);
+            ir_gen_expr(jp, ast_statement->left);
+            assert(jp->reg_alloc == 2);
+            ir_gen_memorycopy(jp, left_type->bytes, left_type->align, jp->reg_alloc - 1, jp->reg_alloc - 2);
+            jp->reg_alloc -= 2;
+            assert(jp->reg_alloc == 0);
         } else {
             UNIMPLEMENTED;
         }
@@ -10147,7 +10158,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 .opcode = IROP_CALL,
                 .call = {
                     .id_reg = jp->reg_alloc,
-                    .immediate = false, //TODO indirect calls
+                    .immediate = false,
                     .c_call = c_call,
                 },
             };
@@ -10160,7 +10171,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 .call = {
                     .name = callee_symbol->name,
                     .id_imm = callee_symbol->procid,
-                    .immediate = true, //TODO indirect calls
+                    .immediate = true,
                     .c_call = c_call,
                 },
             };
@@ -10694,7 +10705,11 @@ bool job_runner(char *src, char *src_path) {
 
                         if(ast == NULL) {
                             Token t = lex(jp->lexer);
-                            assert(t == 0 || jp->state == JOB_STATE_ERROR);
+                            //assert(t == 0 || jp->state == JOB_STATE_ERROR);
+
+                            if(t != 0) {
+                                job_error(jp, jp->lexer->loc, "invalid statement at top level");
+                            }
 
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
@@ -13433,9 +13448,9 @@ void typecheck_expr(Job *jp) {
                 for(int i = 0; i < 16; ++i) jp->interp.ports[i] = (IRvalue){0};
 
                 arrpush(jp->local_offset, arrlast(jp->local_offset));
+                assert(arrlast(jp->local_offset) == 0);
 
-                /* set context in #run entry point */ {
-                    //TODO initialize default implicit context
+                /* ir_gen_entry_point_preamble */ {
                     IRinst inst;
 
                     inst =
@@ -13463,23 +13478,83 @@ void typecheck_expr(Job *jp) {
 
                     ir_gen_struct_init(jp, type_Context, IRSEG_LOCAL, 8);
 
-                    /*
+                    u64 context_offset = 8;
+
+                    arrlast(jp->local_offset) = 8 + type_Context->bytes;
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_ADDRVAR,
+                            .addrvar = {
+                                .segment = IRSEG_LOCAL,
+                                .offset = arrlast(jp->local_offset),
+                                .reg_dest = 0,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    u64 temporary_storage_pointer_offset = context_offset + offsetof(Context, temporary_storage);
 
                     inst =
                         (IRinst) {
                             .opcode = IROP_SETVAR,
                             .setvar = {
                                 .segment = IRSEG_LOCAL,
-                                .offset = 8 + offsetof(Context, allocator),
-                                .imm.integer = sym_default_allocator->procid,
+                                .offset = temporary_storage_pointer_offset,
+                                .reg_src = 0,
+                                .bytes = 8,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), _Alignof(Temporary_storage));
+                    u64 temporary_storage_offset = arrlast(jp->local_offset);
+
+                    ir_gen_struct_init(jp, type_Temporary_storage, IRSEG_LOCAL, temporary_storage_offset);
+
+                    arrlast(jp->local_offset) += type_Temporary_storage->bytes;
+                    arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), 8);
+
+                    //TODO __DEFAULT_TEMPORARY_STORAGE_SIZE : u32 : 4096;
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_SETVAR,
+                            .setvar = {
+                                .segment = IRSEG_LOCAL,
+                                .offset = temporary_storage_offset + offsetof(Temporary_storage, size),
+                                .imm.integer = 4096,
                                 .bytes = 8,
                                 .immediate = true,
                             },
                         };
                     arrpush(jp->instructions, inst);
-                    */
 
-                    arrlast(jp->local_offset) += 8 + type_Context->bytes;
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_ADDRVAR,
+                            .addrvar = {
+                                .segment = IRSEG_LOCAL,
+                                .offset = arrlast(jp->local_offset),
+                                .reg_dest = 0,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_SETVAR,
+                            .setvar = {
+                                .segment = IRSEG_LOCAL,
+                                .offset = temporary_storage_offset + offsetof(Temporary_storage, data),
+                                .reg_src = 0,
+                                .bytes = 8,
+                            },
+                        };
+                    arrpush(jp->instructions, inst);
+
+                    arrlast(jp->local_offset) += 4096;
+
                 }
 
                 ir_gen_expr(jp, (AST*)call_to_run);
@@ -13741,7 +13816,7 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
 
             if(expr->right->kind == AST_KIND_atom) {
                 AST_atom *atom = (AST_atom*)(expr->right);
-                assert(atom->token == TOKEN_IDENT);
+                assert(atom->token == TOKEN_IDENT || atom->token == TOKEN_CONTEXT);
                 atom->token = '@';
                 arrpush(ir_expr, expr->right);
                 return ir_expr;
@@ -13754,6 +13829,7 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
                 return ir_linearize_expr(ir_expr, addr_operand->right);
             }
 
+            //TODO take address of struct member
             assert(addr_operand->token == '[');
 
             if(addr_operand->left && addr_operand->right && addr_operand->left->weight >= addr_operand->right->weight) {
@@ -14519,19 +14595,21 @@ void print_sym(Sym sym) {
 //
 //TODO implicit context (test temporary allocator, add mechanism for pushing a context)
 //TODO better anonymous structs and unions
-//TODO directives (#import, #assert, etc)
 //TODO proc types with argument names
 //TODO proc polymorphism
 //TODO dynamic array procedures
 //TODO simple array for loops
 //TODO c-style for loops
 //TODO finish print()
-//TODO enums
 //TODO finish globals
-//TODO test full C interop
+//TODO directives (#import, #assert, etc)
+//TODO test full C interop (raylib)
+//
 //TODO output assembly
 //TODO procedures for interfacing with the compiler (e.g. add_source_file())
 //TODO parametrized structs
+//TODO enums
+//TODO struct literals
 
 //VERSION 2.0
 //TODO redesign from scratch
@@ -14574,7 +14652,12 @@ int main(int argc, char **argv) {
     type_Context        = shget(global_scope, "Context")->value->val.type;
     type_Context_pointer =
         (Type) { .kind = TYPE_KIND_POINTER, .pointer = { .to = type_Context } };
-    sym_default_allocator = shget(global_scope, "_default_allocator");
+    sym_default_allocator = shget(global_scope, "__default_allocator");
+
+    type_Temporary_storage        = shget(global_scope, "Temporary_storage")->value->val.type;
+    type_Temporary_storage_pointer =
+        (Type) { .kind = TYPE_KIND_POINTER, .pointer = { .to = type_Context } };
+    sym_temporary_allocator = shget(global_scope, "__temporary_allocator");
 
     assert(sizeof(Array_view) == type_Array_view->bytes);
     assert(_Alignof(Array_view) == type_Array_view->align);

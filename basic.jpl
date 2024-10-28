@@ -240,3 +240,21 @@ proc print(fmt: string, args: ..) {
 
 }
 
+proc alloc(size: s64) *void {
+    context_allocator := context.allocator;
+    return context_allocator(ALLOC_MODE_ALLOCATE, size, 0, cast(*void)0, context.allocator_data, 0);
+}
+
+//proc free(ptr: *void) {
+//    context_allocator := context.allocator;
+//    return context_allocator(ALLOC_MODE_FREE, 0, 0, ptr, context.allocator_data, 0);
+//}
+
+proc temp_alloc(size: s64) *void {
+    return __temporary_allocator(ALLOC_MODE_ALLOCATE, size, 0, cast(*void)0, cast(*void)0, 0);
+}
+
+proc temp_storage_reset() {
+    temp := context.temporary_storage;
+    temp.offset = 0;
+}

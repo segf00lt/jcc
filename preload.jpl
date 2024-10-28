@@ -115,7 +115,7 @@ struct Context {
 
 struct Temporary_storage {
     data:           *u8;
-    occupied:        u32;
+    offset:        u32;
     size:            u32;
     high_water_mark: u32;
 }
@@ -127,7 +127,7 @@ STDERR :: 2;
 
 proc malloc(bytes: size_t) *void #system;
 proc realloc(ptr: *void, bytes: size_t) *void #system;
-proc free(ptr: *void) #system;
+proc free(ptr: *void) #system; //TODO pass a string to #system directive so we can give an internal name to system functions if we want
 proc write(fd: s32, buf: *void, bytes: size_t) size_t #system;
 proc read(fd: s32, buf: *void, bytes: size_t) size_t #system;
 proc memcpy(dest: *void, src: *void, n: size_t) *void #system;
@@ -141,7 +141,15 @@ proc __align_up(offset: u64, align: u64 = 8) u64 {
 
 proc __default_allocator(mode: s32, size: s64, oldsize: s64, old_memory_ptr: *void, allocator_data: *void, options: s64) *void {
     if mode == ALLOC_MODE_ALLOCATE {
-        return malloc(size);
+        result: *u8 = cast(*u8)malloc(size);
+
+        i := 0;
+        while i < size {
+            result[i] = 0;
+            i++;
+        }
+
+        return result;
     } else if mode == ALLOC_MODE_RESIZE {
         return realloc(old_memory_ptr, size);
     } else if mode == ALLOC_MODE_FREE {
@@ -157,21 +165,30 @@ proc __temporary_allocator(mode: s32, size: s64, oldsize: s64, old_memory_ptr: *
     temp := context.temporary_storage;
 
     if mode == ALLOC_MODE_ALLOCATE || mode == ALLOC_MODE_RESIZE {
-        offset: u32 = __align_up(cast(u64)cast(*void)temp.data + temp.occupied) - cast(u64)cast(*void)temp.data;
+        offset: u32 = __align_up(cast(u64)cast(*void)temp.data + temp.offset) - cast(u64)cast(*void)temp.data;
         ptr := temp.data + offset;
-        temp.occupied = offset + cast(u32)size;
+        temp.offset = offset + cast(u32)size;
 
-        if temp.occupied > temp.high_water_mark
-            temp.high_water_mark = temp.occupied;
+        if temp.offset > temp.high_water_mark
+            temp.high_water_mark = temp.offset;
 
-        if mode == ALLOC_MODE_RESIZE
+        i := 0;
+
+        if mode == ALLOC_MODE_RESIZE {
             memmove(ptr, old_memory_ptr, oldsize);
+            i = oldsize;
+        }
+
+        while i < size {
+            ptr[i] = 0;
+            i++;
+        }
 
         return ptr;
     } else if mode == ALLOC_MODE_FREE {
         _ := 0; // do nothing
     } else if mode == ALLOC_MODE_FREE_ALL {
-        temp.occupied = 0;
+        temp.offset = 0;
     }
 
     return cast(*void)0;
