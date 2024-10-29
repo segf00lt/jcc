@@ -1,0 +1,24 @@
+#run main();
+
+struct Foo {
+    a: int;
+    b: Bar;
+    c: char;
+}
+
+struct Bar {
+    x: float;
+    y: float;
+}
+
+proc main() {
+    foo: Foo;
+
+    cur_context := >context;
+
+    print("context.allocator = %\ncur_context.allocator = %\n",
+    cast(u64)cast(*void)context.allocator,
+    cast(u64)cast(*void)cur_context.allocator);
+
+    print("%\n", cast(u64)cast(*void)@foo.b.y - cast(u64)cast(*void)@foo);
+}

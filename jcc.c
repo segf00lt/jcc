@@ -364,6 +364,12 @@ char *IRsegment_debug[] = {
 #undef X
 };
 
+char *ASTkind_debug[] = {
+#define X(x) #x,
+    ASTKINDS
+#undef X
+};
+
 union IRvalue {
     u64 integer;
     f32 floating32;
@@ -8676,9 +8682,95 @@ void ir_gen_expr(Job *jp, AST *ast) {
                 ir_gen_logical_expr(jp, cur_ast);
                 assert(node->type_annotation->kind == TYPE_KIND_BOOL);
                 arrpush(type_stack, node->type_annotation);
+            } else if(node->token == '@' && !(node->left && node->right)) {
+                //TODO maybe merge '@' for dot exprs with '@' for subscript
+
+                arrpush(type_stack, node->type_annotation);
+
+                AST_expr *operand_expr = (AST_expr*)(node->right);
+                
+                assert(operand_expr->token == '.');
+
+                ir_gen_expr(jp, operand_expr->left);
+
+                jp->reg_alloc--;
+
+                AST_expr_base *left = (AST_expr_base*)(operand_expr->left);
+
+                Type *left_type = left->type_annotation;
+
+                if(left_type->kind == TYPE_KIND_POINTER) {
+                    assert(left_type->pointer.to->kind != TYPE_KIND_ARRAY);
+                    assert(TYPE_KIND_IS_RECORD(left_type->pointer.to->kind) ||
+                            TYPE_KIND_IS_VIEW_LIKE(left_type->pointer.to->kind) ||
+                            TYPE_KIND_IS_ARRAY_LIKE(left_type->pointer.to->kind));
+                    left_type = left_type->pointer.to;
+                }
+
+                assert(left_type->kind != TYPE_KIND_ARRAY);
+                assert(operand_expr->right->kind == AST_KIND_atom);
+
+                char *field = ((AST_atom*)(operand_expr->right))->text;
+                
+                u64 offset;
+
+                if(left_type->kind == TYPE_KIND_ARRAY_VIEW) {
+                    if(!strcmp(field, "data")) {
+                        offset = offsetof(Array_view, data);
+                    } else if(!strcmp(field, "count")) {
+                        offset = offsetof(Array_view, count);
+                    } else {
+                        UNREACHABLE;
+                    }
+                } else if(left_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+                    if(!strcmp(field, "data")) {
+                        offset = offsetof(Dynamic_array, data);
+                    } else if(!strcmp(field, "count")) {
+                        offset = offsetof(Dynamic_array, count);
+                    } else if(!strcmp(field, "cap")) {
+                        offset = offsetof(Dynamic_array, cap);
+                    } else if(!strcmp(field, "allocator")) {
+                        offset = offsetof(Dynamic_array, allocator);
+                    } else if(!strcmp(field, "allocator_data")) {
+                        offset = offsetof(Dynamic_array, allocator_data);
+                    } else {
+                        UNREACHABLE;
+                    }
+                } else if(TYPE_KIND_IS_RECORD(left_type->kind)) {
+                    offset = operand_expr->dot_offset_annotation;
+
+                } else if(left_type->kind == TYPE_KIND_STRING) {
+                    if(!strcmp(field, "data")) {
+                        offset = offsetof(String_view, data);
+                    } else if(!strcmp(field, "len")) {
+                        offset = offsetof(String_view, len);
+                    } else {
+                        UNREACHABLE;
+                    }
+
+                } else {
+                    UNIMPLEMENTED;
+                }
+
+                inst =
+                    (IRinst) {
+                        .opcode = IROP_ADD,
+                        .arith = {
+                            .operand_bytes = { 8, 8, 8 },
+                            .reg = { jp->reg_alloc, jp->reg_alloc, },
+                            .imm.integer = offset,
+                            .immediate = true,
+                        },
+                    };
+                inst.loc = jp->cur_loc;
+                arrpush(jp->instructions, inst);
+
+                jp->reg_alloc++;
+
             } else if(node->token == '.') {
                 Type *result_type = node->type_annotation;
-                AST_atom *left = (AST_atom*)(node->left);
+
+                AST_expr_base *left = (AST_expr_base*)(node->left);
 
                 Type *operand_type;
                 if(left->type_annotation->kind == TYPE_KIND_ARRAY) {
@@ -14010,6 +14102,11 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
             }
 
             //TODO take address of struct member
+            if(addr_operand->token == '.') {
+                arrpush(ir_expr, ast);
+                return ir_expr;
+            }
+
             assert(addr_operand->token == '[');
 
             if(addr_operand->left && addr_operand->right && addr_operand->left->weight >= addr_operand->right->weight) {
@@ -14773,7 +14870,6 @@ void print_sym(Sym sym) {
 
 //VERSION 1.0
 //
-//TODO take addresses of struct members and dereference context
 //TODO better anonymous structs and unions
 //TODO proc types with argument names
 //TODO proc polymorphism
@@ -14799,10 +14895,10 @@ void print_sym(Sym sym) {
 //TODO local procedures, macros and structs
 //TODO output x64 machine code
 
-Dynamic_array      gdb_stupid_1; // because gdb is stupid
-Any                gdb_stupid_2;
-Context            gdb_stupid_3;
-Temporary_storage  gdb_stupid_4;
+Dynamic_array      _gdb_stupid_1; // because gdb is stupid
+Any                _gdb_stupid_2;
+Context            _gdb_stupid_3;
+Temporary_storage  _gdb_stupid_4;
 
 int main(int argc, char **argv) {
     assert(argc == 2);
