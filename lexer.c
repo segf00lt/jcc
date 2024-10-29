@@ -30,6 +30,7 @@
     X(ENUM,                           "enum")\
     X(UNION,                         "union")\
     X(USING,                         "using")\
+    X(PUSH_CONTEXT,           "push_context")\
     X(DEFER,                         "defer")\
     X(IF,                               "if")\
     X(ELSE,                           "else")\

@@ -36,6 +36,7 @@
     X(returnstatement)                  \
     X(usingstatement)                   \
     X(statement)                        \
+    X(push_context)                     \
     X(block)                            \
     X(import_directive)                 \
     X(run_directive)                    \
@@ -927,6 +928,15 @@ struct AST_returnstatement {
     AST_expr_list *expr_list;
 };
 
+struct AST_push_context {
+    AST base;
+    AST *next;
+    char *context_ident;
+    Sym *symbol_annotation;
+    bool visited;
+    AST *down;
+};
+
 struct AST_block {
     AST base;
     AST *next;
@@ -1189,6 +1199,7 @@ AST*        parse_structdecl(Job *jp);
 AST*        parse_anonstruct(Job *jp);
 AST*        parse_structblock(Job *jp, int *n_members, int *n_using);
 AST*        parse_procblock(Job *jp);
+AST*        parse_pushcontext(Job *jp);
 AST*        parse_usingstatement(Job *jp);
 AST*        parse_statement(Job *jp);
 AST*        parse_controlflow(Job *jp);
@@ -3261,17 +3272,18 @@ AST* parse_procblock(Job *jp) {
 
     while(true) {
         statement_list->next = parse_controlflow(jp);
+        if(!statement_list->next) statement_list->next = parse_pushcontext(jp);
         if(!statement_list->next) statement_list->next = parse_procdecl(jp);
         if(!statement_list->next) statement_list->next = parse_procblock(jp);
         if(!statement_list->next) statement_list->next = parse_vardecl(jp);
         if(!statement_list->next) statement_list->next = parse_statement(jp);
 
-        if(!statement_list->next) {
+        if(jp->state == JOB_STATE_ERROR) {
+            job_ast_allocator_from_save(jp, save);
             return NULL;
         }
 
-        if(jp->state == JOB_STATE_ERROR) {
-            job_ast_allocator_from_save(jp, save);
+        if(!statement_list->next) {
             return NULL;
         }
 
@@ -3453,6 +3465,37 @@ AST* parse_controlflow(Job *jp) {
     }
 
     return NULL;
+}
+
+AST* parse_pushcontext(Job *jp) {
+    Lexer *lexer = jp->lexer;
+    Lexer unlex = *lexer;
+
+    Token t = lex(lexer);
+
+    if(t != TOKEN_PUSH_CONTEXT) {
+        *lexer = unlex;
+        return NULL;
+    }
+
+    AST_push_context *ast_push = (AST_push_context*)job_alloc_ast(jp, AST_KIND_push_context);
+
+    t = lex(lexer);
+
+    if(t != TOKEN_IDENT) {
+        job_error(jp, lexer->loc, "expected identifier after 'push_context'");
+        return NULL;
+    }
+
+    ast_push->context_ident = job_alloc_text(jp, lexer->text.s, lexer->text.e);
+    ast_push->down = parse_procblock(jp);
+
+    if(!ast_push->down) {
+        job_error(jp, lexer->loc, "expected '{' to begin 'push_context' block");
+        return NULL;
+    }
+
+    return (AST*)ast_push;
 }
 
 AST* parse_statement(Job *jp) {
@@ -6007,7 +6050,10 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
         return;
     }
 
-    if(((AST_expr_base*)(ast_statement->left))->type_annotation && TYPE_KIND_IS_NOT_SCALAR((((AST_expr_base*)ast_statement->left))->type_annotation->kind)) {
+    assert(((AST_expr_base*)(ast_statement->left))->type_annotation);
+
+    //TODO this is kind horrible
+    if(TYPE_KIND_IS_NOT_SCALAR((((AST_expr_base*)ast_statement->left))->type_annotation->kind) && TYPE_KIND_PROC != ((((AST_expr_base*)ast_statement->left))->type_annotation->kind)) {
         assert(ast_statement->assign_op == '=' && ast_statement->right);
 
         Type *left_type = ((AST_expr_base*)(ast_statement->left))->type_annotation;
@@ -7062,6 +7108,117 @@ void ir_gen_block(Job *jp, AST *ast) {
                 break;
             case AST_KIND_forstatement:
                 UNIMPLEMENTED;
+                break;
+            case AST_KIND_push_context:
+                {
+                    AST_push_context *ast_push = (AST_push_context*)ast;
+                    AST_block *ast_block = (AST_block*)(ast_push->down);
+
+                    arrpush(jp->local_offset, arrlast(jp->local_offset));
+
+                    arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), 8);
+
+                    u64 context_save_offset = arrlast(jp->local_offset);
+                    arrlast(jp->local_offset) += 8;
+
+                    assert(jp->reg_alloc == 0);
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_GETVAR,
+                            .getvar = {
+                                .segment = IRSEG_LOCAL,
+                                .offset = 0,
+                                .reg_dest = 0,
+                                .bytes = 8,
+                            },
+                        };
+                    inst.loc = jp->cur_loc;
+                    arrpush(jp->instructions, inst);
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_SETVAR,
+                            .setvar = {
+                                .segment = IRSEG_LOCAL,
+                                .offset = context_save_offset,
+                                .reg_src = 0,
+                                .bytes = 8,
+                            },
+                        };
+                    inst.loc = jp->cur_loc;
+                    arrpush(jp->instructions, inst);
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_ADDRVAR,
+                            .addrvar = {
+                                .segment = IRSEG_LOCAL,
+                                .offset = ast_push->symbol_annotation->segment_offset,
+                                .reg_dest = 0,
+                            },
+                        };
+                    inst.loc = jp->cur_loc;
+                    arrpush(jp->instructions, inst);
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_SETVAR,
+                            .setvar = {
+                                .segment = IRSEG_LOCAL,
+                                .offset = 0,
+                                .reg_src = 0,
+                                .bytes = 8,
+                            },
+                        };
+                    inst.loc = jp->cur_loc;
+                    arrpush(jp->instructions, inst);
+
+                    arrpush(jp->defer_list_stack, defer_list);
+
+                    ir_gen_block(jp, ast_block->down);
+
+                    arrsetlen(jp->defer_list_stack, arrlen(jp->defer_list_stack) - 1);
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_GETVAR,
+                            .getvar = {
+                                .segment = IRSEG_LOCAL,
+                                .offset = context_save_offset,
+                                .reg_dest = 0,
+                                .bytes = 8,
+                            },
+                        };
+                    inst.loc = jp->cur_loc;
+                    arrpush(jp->instructions, inst);
+
+                    inst =
+                        (IRinst) {
+                            .opcode = IROP_SETVAR,
+                            .setvar = {
+                                .segment = IRSEG_LOCAL,
+                                .offset = 0,
+                                .reg_src = 0,
+                                .bytes = 8,
+                            },
+                        };
+                    inst.loc = jp->cur_loc;
+                    arrpush(jp->instructions, inst);
+
+                    if(jp->max_local_offset < arrlast(jp->local_offset))
+                        jp->max_local_offset = arrlast(jp->local_offset);
+
+                    if(jp->state == JOB_STATE_ERROR) return;
+
+                    arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
+
+                    printf("jp->reg_alloc %lu\n", jp->reg_alloc);
+                    assert(jp->reg_alloc == 0);
+                    assert(jp->float_reg_alloc == 0);
+
+                    ast = ast_push->next;
+                }
                 break;
             case AST_KIND_block:
                 {
@@ -11066,6 +11223,29 @@ bool job_runner(char *src, char *src_path) {
                                 arrpush(jp->tree_pos_stack, ast_block->down);
                             }
 
+                        } else if(ast->kind == AST_KIND_push_context) {
+                            AST_push_context *ast_push = (AST_push_context*)ast;
+
+                            Sym *new_context_sym = job_scope_lookup(jp, ast_push->context_ident);
+
+                            if(!new_context_sym) new_context_sym = global_scope_lookup(jp, ast_push->context_ident);
+
+                            if(!new_context_sym) {
+                                job_error(jp, ast_push->base.loc, "undeclared identifier '%s' in push_context block",
+                                        ast_push->context_ident);
+
+                                job_report_all_messages(jp);
+                                job_die(jp);
+                                ++i;
+                                continue;
+                            }
+
+                            ast_push->symbol_annotation = new_context_sym;
+
+                            arrlast(jp->tree_pos_stack) = ast_push->next;
+
+                            arrpush(jp->tree_pos_stack, ast_push->down);
+
                         } else if(ast->kind == AST_KIND_block) {
                             AST_block *ast_block = (AST_block*)ast;
 
@@ -14593,7 +14773,7 @@ void print_sym(Sym sym) {
 
 //VERSION 1.0
 //
-//TODO implicit context (test temporary allocator, add mechanism for pushing a context)
+//TODO take addresses of struct members and dereference context
 //TODO better anonymous structs and unions
 //TODO proc types with argument names
 //TODO proc polymorphism
@@ -14619,8 +14799,10 @@ void print_sym(Sym sym) {
 //TODO local procedures, macros and structs
 //TODO output x64 machine code
 
-Dynamic_array gdb_stupid_1; // because gdb is stupid
-Any           gdb_stupid_2;
+Dynamic_array      gdb_stupid_1; // because gdb is stupid
+Any                gdb_stupid_2;
+Context            gdb_stupid_3;
+Temporary_storage  gdb_stupid_4;
 
 int main(int argc, char **argv) {
     assert(argc == 2);

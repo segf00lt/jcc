@@ -32,6 +32,31 @@ proc main() {
 
     print("full name: %\n", full_name);
     print("new_string: %\n", new_string);
+
+    buf: [256]u8;
+    new_temp: Temporary_storage;
+    new_temp.data = buf.data;
+    new_temp.size = buf.count;
+    new_context: Context;
+    new_context.thread_index = context.thread_index;
+    new_context.allocator = context.allocator;
+    new_context.allocator_data = context.allocator_data;
+    new_context.temporary_storage = @new_temp;
+
+    print("\nPUSHING CONTEXT\n\n");
+    push_context new_context {
+        print("temp_storage_offset = %\n", context.temporary_storage.offset);
+
+        new_new_string := string_concat("Bell", "ingham");
+
+        print("new_string: %\n", new_new_string);
+        print("temp_storage_offset = %\n", context.temporary_storage.offset);
+    }
+    print("\nPOPPING CONTEXT\n\n");
+
+    print("temp_storage_offset = %\n", context.temporary_storage.offset);
+    print("full name: %\n", full_name);
+    print("new_string: %\n", new_string);
 }
 
 proc string_concat(a: string, b: string) string {
