@@ -34,30 +34,30 @@ void pool_from_save(Pool *p, Pool_save save);
 
 struct Pool {
 	size_t item_size;
-    uint32_t vacant;
-	uint32_t cur_chunk;
-	uint32_t chunks_available;
+    uint64_t occupied;
+	uint64_t cur_chunk;
+	uint64_t chunks_available;
 	uint8_t **chunks;
 };
 
 struct Pool_save {
-    uint32_t vacant;
+    uint32_t occupied;
 	uint32_t cur_chunk;
 };
 
 void pool_init(Pool *p, size_t item_size) {
 	p->item_size = item_size;
-    p->vacant = 0;
+    p->occupied = 0;
 	p->cur_chunk = 0;
 	p->chunks_available = POOL_INITIAL_CHUNK_COUNT;
-	p->chunks = malloc(sizeof(uint8_t*) * POOL_INITIAL_CHUNK_COUNT);
+	p->chunks = malloc(sizeof(void*) * POOL_INITIAL_CHUNK_COUNT);
 	for(size_t i = 0; i < POOL_INITIAL_CHUNK_COUNT; ++i)
 		p->chunks[i] = malloc(item_size << 6);
 }
 
 void* pool_alloc(Pool *p) {
-    if(p->vacant >= 64) {
-        p->vacant = 0;
+    if(p->occupied >= 64) {
+        p->occupied = 0;
         ++p->cur_chunk;
         if(p->cur_chunk >= p->chunks_available) {
             p->chunks_available <<= 1;
@@ -67,16 +67,16 @@ void* pool_alloc(Pool *p) {
         }
     }
 
-    void *ptr = (void*)(p->chunks[p->cur_chunk] + p->vacant*p->item_size);
+    void *ptr = (void*)(p->chunks[p->cur_chunk] + p->occupied*p->item_size);
     memset(ptr, 0, p->item_size);
 
-    ++p->vacant;
+    ++p->occupied;
 
     return ptr;
 }
 
 void pool_free(Pool *p) {
-    p->cur_chunk = p->vacant = 0;
+    p->cur_chunk = p->occupied = 0;
 }
 
 void pool_destroy(Pool *p) {
@@ -89,11 +89,11 @@ void pool_destroy(Pool *p) {
 }
 
 Pool_save pool_to_save(Pool *p) {
-    return (Pool_save){ .vacant = p->vacant, .cur_chunk = p->cur_chunk };
+    return (Pool_save){ .occupied = p->occupied, .cur_chunk = p->cur_chunk };
 }
 
 void pool_from_save(Pool *p, Pool_save save) {
-    p->vacant = save.vacant;
+    p->occupied = save.occupied;
     p->cur_chunk = save.cur_chunk;
 }
 

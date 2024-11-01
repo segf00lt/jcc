@@ -71,6 +71,25 @@ INLINE void arena_init_full(Arena *a, bool cannot_grow, size_t initial_block_byt
     a->block_sizes[0] = initial_block_bytes;
 }
 
+INLINE uint64_t __arena_align_up(uint64_t offset, uint64_t align) {
+    if(align == 0) return offset;
+    
+    return (offset + align - 1) & ~(align - 1);
+}
+
+INLINE uint64_t __arena_next_pow2(uint64_t n) {
+    n--;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    n |= n >> 32;
+    n++;
+    return n;
+}
+
+//TODO make alignment an optional parameter
 INLINE void* arena_alloc(Arena *a, size_t bytes) {
     if(bytes == 0) return NULL;
 
@@ -90,6 +109,7 @@ INLINE void* arena_alloc(Arena *a, size_t bytes) {
         a->pos = 0;
     }
 
+    a->pos = __arena_align_up(a->pos, sizeof(void*));
     void *ptr = a->blocks[a->cur_block] + a->pos;
     a->pos += bytes;
     memset(ptr, 0, bytes);

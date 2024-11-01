@@ -21,4 +21,9 @@ proc main() {
     cast(u64)cast(*void)cur_context.allocator);
 
     print("%\n", cast(u64)cast(*void)@foo.b.y - cast(u64)cast(*void)@foo);
+
+    mymalloc := malloc;
+    print("mymalloc: %\n", cast(u64)cast(*void)mymalloc);
+    ptr := mymalloc(234);
+    free(ptr);
 }

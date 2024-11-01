@@ -23,6 +23,7 @@
     X(READY)                            \
     X(WAIT)                             \
     X(CONTINUE)                         \
+    X(FORK)                             \
     X(ERROR)                            \
 
 #define ASTKINDS                        \
@@ -573,10 +574,10 @@ struct Job_memory {
         bool ast : 1;
     } active;
 
-    Arena                scratch;
-    Pool                 value;
-    Pool                 sym;
-    Pool                 type;
+    Arena                *scratch;
+    Pool                 *value;
+    Pool                 *sym;
+    Pool                 *type;
 
 #define X(x) Pool ast_##x;
     ASTKINDS
@@ -601,6 +602,10 @@ struct Job {
     AST                             *root;
     Arr(AST*)                        tree_pos_stack;
 
+    bool                             parser_at_top_level;
+    bool                             dont_free_allocators;
+    bool                             free_ast_allocators;
+
     union {
         Loc_info                     non_returning_path_loc;
         Loc_info                     returning_path_loc;
@@ -617,7 +622,7 @@ struct Job {
     Arr(Type*)                       record_types;
                                                       
     /* blocks */                                      
-    bool                             sharing_scopes;
+    //bool                             sharing_scopes;
     Arr(Scope)                       scopes;
                                                       
     /* expressions */                                 
@@ -1111,7 +1116,7 @@ struct Type {
 };
 
 /* function headers */
-Job         job_spawn(Jobid *id_alloc, Pipe_stage stage);
+Job         job_spawn(Jobid *jobid_alloc, Pipe_stage stage);
 void        job_die(Job *jp);
 AST*        job_alloc_ast(Job *jp, ASTkind kind);
 Value*      job_alloc_value(Job *jp, Valuekind kind);
@@ -1283,6 +1288,8 @@ Value builtin_value[] = {
 
 Arena                      global_scratch_allocator;
 Pool                       global_sym_allocator;
+Pool                       global_type_allocator;
+Pool                       global_value_allocator;
 Scope                      global_scope;
 
 Arena                      string_arena;
@@ -1313,32 +1320,41 @@ Type type_Temporary_storage_pointer;
 Sym *sym_default_allocator;
 Sym *sym_temporary_allocator;
 
+Jobid jobid_alloc = -1;
+Arr(Job) job_queue = NULL;
+Arr(Job) job_queue_next = NULL;
+
 
 /* function declarations */
 
-Job job_spawn(Jobid *id_alloc, Pipe_stage pipe_stage) {
-    *id_alloc += 1;
-    Job job = { .id = *id_alloc, .pipe_stage = pipe_stage, .state = JOB_STATE_READY, };
+Job job_spawn(Jobid *jobid_alloc, Pipe_stage pipe_stage) {
+    *jobid_alloc += 1;
+    Job job = {
+        .id = *jobid_alloc,
+        .pipe_stage = pipe_stage,
+        .state = JOB_STATE_READY,
+    };
+
     return job;
 }
 
 void job_init_allocator_scratch(Job *jp) {
-    arena_init_full(&jp->allocator.scratch, false, JLIB_ARENA_INITIAL_BLOCK_BYTES);
+    arena_init_full(jp->allocator.scratch, false, JLIB_ARENA_INITIAL_BLOCK_BYTES);
     jp->allocator.active.scratch = true;
 }
 
 void job_init_allocator_value(Job *jp) {
-    pool_init(&jp->allocator.value, sizeof(Value));
+    pool_init(jp->allocator.value, sizeof(Value));
     jp->allocator.active.value = true;
 }
 
 void job_init_allocator_sym(Job *jp) {
-    pool_init(&jp->allocator.sym, sizeof(Sym));
+    pool_init(jp->allocator.sym, sizeof(Sym));
     jp->allocator.active.sym = true;
 }
 
 void job_init_allocator_type(Job *jp) {
-    pool_init(&(jp->allocator.type), sizeof(Type));
+    pool_init((jp->allocator.type), sizeof(Type));
     jp->allocator.active.type = true;
 }
 
@@ -1355,30 +1371,46 @@ void job_die(Job *jp) {
     for(int i = 0; i < arrlen(jp->scopes); ++i)
         shfree(jp->scopes[i]);
 
+    arrfree(jp->messages);
+    arrfree(jp->record_types);
+    arrfree(jp->run_dependencies);
     arrfree(jp->scopes);
     arrfree(jp->tree_pos_stack);
     arrfree(jp->value_stack);
     arrfree(jp->type_stack);
     arrfree(jp->expr);
+    arrfree(jp->expr_list);
+    arrfree(jp->defer_list_stack);
+    arrfree(jp->local_offset);
+    arrfree(jp->continue_label);
+    arrfree(jp->break_label);
+    arrfree(jp->instructions);
 
     if(jp->state == JOB_STATE_ERROR) {
         if(jp->symbol) {
             jp->symbol->job_encountered_error = true;
         }
     } else {
-        arena_destroy(&jp->allocator.scratch);
-        pool_destroy(&jp->allocator.value);
-        pool_destroy(&jp->allocator.sym);
-        pool_destroy(&(jp->allocator.type));
+        if(!jp->dont_free_allocators) {
+            if(jp->allocator.scratch && jp->allocator.scratch != &global_scratch_allocator)
+                arena_destroy(jp->allocator.scratch);
 
+            if(jp->allocator.value) pool_destroy(jp->allocator.value);
+            if(jp->allocator.sym) pool_destroy(jp->allocator.sym);
+            if(jp->allocator.type) pool_destroy(jp->allocator.type);
+        }
+
+        if(!jp->dont_free_allocators || jp->free_ast_allocators) {
 #define X(x) pool_destroy(&(jp->allocator.ast_##x));
-        ASTKINDS
+            ASTKINDS
 #undef X
+        }
     }
+
 }
 
 Value* job_alloc_value(Job *jp, Valuekind kind) {
-    Value *ptr = pool_alloc(&jp->allocator.value);
+    Value *ptr = pool_alloc(jp->allocator.value);
     ptr->kind = kind;
     return ptr;
 }
@@ -1387,7 +1419,7 @@ Value* job_alloc_value(Job *jp, Valuekind kind) {
 Type* job_alloc_type(Job *jp, Typekind kind) {
     if(kind >= TYPE_KIND_VOID && kind < TYPE_KIND_TYPE)
         return builtin_type + kind;
-    Type *ptr = pool_alloc(&jp->allocator.type);
+    Type *ptr = pool_alloc(jp->allocator.type);
     ptr->kind = kind;
 
     switch(kind) {
@@ -1437,7 +1469,7 @@ AST* job_alloc_ast(Job *jp, ASTkind kind) {
 }
 
 void* job_alloc_scratch(Job *jp, size_t bytes) {
-    return arena_alloc(&jp->allocator.scratch, bytes);
+    return arena_alloc(jp->allocator.scratch, bytes);
 }
 
 void job_ast_allocator_to_save(Job *jp, Pool_save save[AST_KIND_MAX]) {
@@ -1453,7 +1485,7 @@ void job_ast_allocator_from_save(Job *jp, Pool_save save[AST_KIND_MAX]) {
 }
 
 char* job_alloc_text(Job *jp, char *s, char *e) {
-    char *ptr = arena_alloc(&jp->allocator.scratch, (e - s) + 1);
+    char *ptr = arena_alloc(jp->allocator.scratch, (e - s) + 1);
     char *p = ptr;
     u64 len = (e - s);
 
@@ -1496,13 +1528,13 @@ char* job_alloc_text(Job *jp, char *s, char *e) {
         r++;
     }
 
-    arena_step_back(&jp->allocator.scratch, r - w);
+    arena_step_back(jp->allocator.scratch, r - w);
 
     return ptr;
 }
 
 INLINE Sym* job_alloc_sym(Job *jp) {
-    return pool_alloc(&jp->allocator.sym);
+    return pool_alloc(jp->allocator.sym);
 }
 
 INLINE Sym* job_alloc_global_sym(Job *jp) {
@@ -1582,16 +1614,16 @@ char* job_sprint(Job *jp, char *fmt, ...) {
     va_start(args, fmt);
 
     size_t n = 64;
-    char *buf = arena_alloc(&jp->allocator.scratch, n);
+    char *buf = arena_alloc(jp->allocator.scratch, n);
 
     size_t n_written = stbsp_vsnprintf(buf, n, fmt, args);
 
     va_end(args);
 
     while(n_written >= n) {
-        arena_step_back(&jp->allocator.scratch, n);
+        arena_step_back(jp->allocator.scratch, n);
         n <<= 1;
-        buf = arena_alloc(&jp->allocator.scratch, n);
+        buf = arena_alloc(jp->allocator.scratch, n);
         va_start(args, fmt);
         n_written = stbsp_vsnprintf(buf, n, fmt, args);
         va_end(args);
@@ -1606,22 +1638,22 @@ void job_error(Job *jp, Loc_info loc, char *fmt, ...) {
     va_start(args, fmt);
 
     size_t n = 64;
-    char *buf = arena_alloc(&jp->allocator.scratch, n);
+    char *buf = arena_alloc(jp->allocator.scratch, n);
 
     size_t n_written = stbsp_vsnprintf(buf, n, fmt, args);
 
     va_end(args);
 
     while(n_written >= n) {
-        arena_step_back(&jp->allocator.scratch, n);
+        arena_step_back(jp->allocator.scratch, n);
         n <<= 1;
-        buf = arena_alloc(&jp->allocator.scratch, n);
+        buf = arena_alloc(jp->allocator.scratch, n);
         va_start(args, fmt);
         n_written = stbsp_vsnprintf(buf, n, fmt, args);
         va_end(args);
     }
 
-    arena_step_back(&jp->allocator.scratch, n - n_written - 1);
+    arena_step_back(jp->allocator.scratch, n - n_written - 1);
 
     Message msg = {
         .kind = MESSAGE_KIND_ERROR,
@@ -1894,7 +1926,9 @@ Arr(char) _type_to_str(Type *t, Arr(char) tmp_buf) {
         }
     } else if(TYPE_KIND_IS_RECORD(t->kind)) {
         if(!t->record.name) {
-            UNIMPLEMENTED;
+            char *s = "anonymous struct";
+            char *p = arraddnptr(tmp_buf, strlen(s));
+            strcpy(p, s);
         } else {
             char *p = arraddnptr(tmp_buf, strlen(t->record.name));
             strcpy(p, t->record.name);
@@ -2939,9 +2973,11 @@ AST* parse_anonstruct(Job *jp) {
     unlex = *lexer;
     t = lex(lexer);
 
-    if(t != '{')
+    if(t != '{') {
         job_error(jp, lexer->loc, "expected '{' to begin %s body",
                 (decl_token == TOKEN_UNION) ? "union" : "struct");
+        return NULL;
+    }
 
     *lexer = unlex;
     node->body = parse_structblock(jp, &(node->n_members), &(node->n_using));
@@ -2955,6 +2991,12 @@ AST* parse_anonstruct(Job *jp) {
 AST* parse_structdecl(Job *jp) {
     Lexer *lexer = jp->lexer;
     Lexer unlex = *lexer;
+
+    bool top_level = jp->parser_at_top_level;
+
+    if(top_level) {
+        jp->allocator.scratch = &global_scratch_allocator;
+    }
 
     Token t = lex(lexer);
 
@@ -3043,6 +3085,14 @@ AST* parse_structdecl(Job *jp) {
 AST* parse_procdecl(Job *jp) {
     Lexer *lexer = jp->lexer;
     Lexer unlex = *lexer;
+
+    bool top_level = jp->parser_at_top_level;
+
+    Arena *save_allocator = jp->allocator.scratch;
+
+    if(top_level) {
+        jp->allocator.scratch = &global_scratch_allocator;
+    }
 
     Token t = lex(lexer);
 
@@ -3253,7 +3303,13 @@ AST* parse_procdecl(Job *jp) {
 
     *lexer = unlex;
 
+    jp->parser_at_top_level = false;
+
+    jp->allocator.scratch = save_allocator;
+
     node->body = parse_procblock(jp);
+
+    jp->parser_at_top_level = top_level;
 
     return (AST*)node;
 }
@@ -3616,6 +3672,12 @@ AST* parse_vardecl(Job *jp) {
     Lexer *lexer = jp->lexer;
     Lexer lexer_reset = *lexer;
 
+    bool top_level = jp->parser_at_top_level;
+
+    if(top_level) {
+        jp->allocator.scratch = &global_scratch_allocator;
+    }
+
     Token t = lex(lexer);
 
     if(t != TOKEN_IDENT) {
@@ -3655,38 +3717,31 @@ AST* parse_vardecl(Job *jp) {
         }
         t = lex(lexer);
     } else {
-        if(t == TOKEN_STRUCT || t == TOKEN_UNION) {
-            *lexer = unlex;
-            node->type = parse_anonstruct(jp);
+        *lexer = unlex;
+        Loc_info type_loc = lexer->loc; //TODO is this right?
 
-            return (AST*)node;
-        } else {
-            *lexer = unlex;
-            Loc_info type_loc = lexer->loc; //TODO is this right?
+        node->type = parse_expr(jp);
 
-            node->type = parse_expr(jp);
+        if(node->type == NULL) job_error(jp, type_loc, "expected type declarator");
 
-            if(node->type == NULL) job_error(jp, type_loc, "expected type declarator");
-
+        t = lex(lexer);
+        if(t == '=' || t == ':') {
+            node->constant = (t == ':');
+            //node->init = parse_expr(jp);
+            //t = lex(lexer);
+            unlex = *lexer;
             t = lex(lexer);
-            if(t == '=' || t == ':') {
-                node->constant = (t == ':');
-                //node->init = parse_expr(jp);
-                //t = lex(lexer);
-                unlex = *lexer;
-                t = lex(lexer);
-                if(t == TOKEN_LONGDASH) {
-                    if(node->constant) job_error(jp, node->base.loc, "cannot make constant uninitialized");
-                    node->uninitialized = true;
-                } else {
-                    *lexer = unlex;
-                    node->init = parse_rvalue(jp);
-                    if(node->init == NULL) job_error(jp, lexer->loc, "expected initializer expression");
-                }
-                t = lex(lexer);
-            } else if(t != ';' && t != ')' && t != ',' && t != '{') {
-                job_error(jp, lexer->loc, "expected '=', ':' or separator in declaration");
+            if(t == TOKEN_LONGDASH) {
+                if(node->constant) job_error(jp, node->base.loc, "cannot make constant uninitialized");
+                node->uninitialized = true;
+            } else {
+                *lexer = unlex;
+                node->init = parse_rvalue(jp);
+                if(node->init == NULL) job_error(jp, lexer->loc, "expected initializer expression");
             }
+            t = lex(lexer);
+        } else if(t != ';' && t != ')' && t != ',' && t != '{') {
+            job_error(jp, lexer->loc, "expected '=', ':' or separator in declaration");
         }
     }
 
@@ -3988,6 +4043,16 @@ AST* parse_term(Job *jp) {
         default:
             *lexer = unlex;
             return NULL;
+        case TOKEN_STRUCT: case TOKEN_UNION:
+            {
+                *lexer = unlex;
+                node = parse_anonstruct(jp);
+                if(jp->state == JOB_STATE_ERROR) {
+                    return NULL;
+                }
+                return node;
+            }
+            break;
         case TOKEN_PROC:
             // Allocator :: proc (s32, s64, s64, *void, *void, s64) *void;
             // multi_return: proc (s32, int) (*int, bool);
@@ -4874,7 +4939,7 @@ void ir_gen(Job *jp) {
 // cc -dynamiclib -o jcc_wrap_foo.dylib jcc_wrap_foo.c -L'.' -lfoo -install_name @rpath/jcc_wrap_foo.dylib -Wl,-rpath,@loader_path
 
 void ir_gen_foreign_proc_x64(Job *jp) {
-    Arena_save scratch_save = arena_to_save(&(jp->allocator.scratch));
+    Arena_save scratch_save = arena_to_save(jp->allocator.scratch);
 
     AST_procdecl *ast_proc = (AST_procdecl*)(jp->root);
     bool is_system = ast_proc->is_system;
@@ -5211,7 +5276,7 @@ void ir_gen_foreign_proc_x64(Job *jp) {
 
     proc_sym->ready_to_run = true;
 
-    arena_from_save(&(jp->allocator.scratch), scratch_save);
+    arena_from_save(jp->allocator.scratch, scratch_save);
 }
 
 void ir_run(Job *jp, int procid) {
@@ -8341,11 +8406,8 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
                 if(sym->constant) {
                     if(TYPE_KIND_IS_NOT_SCALAR(sym->type->kind)) {
-                        //TODO refactor proc tables to allow for variable procedures
-                        //     to be native or foreign
                         if(sym->type->kind == TYPE_KIND_PROC) {
                             assert(sym->ready_to_run);
-                            assert(!sym->is_foreign); //TODO
                             inst =
                                 (IRinst) {
                                     .opcode = IROP_LOAD,
@@ -10924,8 +10986,6 @@ bool records_have_member_name_conflicts(Job *jp, Loc_info using_loc, Type *a, Ty
 }
 
 bool job_runner(char *src, char *src_path) {
-    Arr(Job) job_queue = NULL;
-    Arr(Job) job_queue_next = NULL;
     Lexer lexer = {0};
     lexer_init(&lexer, src, src_path);
 
@@ -10933,9 +10993,7 @@ bool job_runner(char *src, char *src_path) {
 
     bool all_waiting = false;
 
-    Jobid id_alloc = -1;
-
-    arrpush(job_queue, job_spawn(&id_alloc, PIPE_STAGE_PARSE));
+    arrpush(job_queue, job_spawn(&jobid_alloc, PIPE_STAGE_PARSE));
     job_queue[0].lexer = &lexer;
     job_queue[0].global_sym_allocator = &global_sym_allocator;
     job_queue[0].global_scope = &global_scope;
@@ -10947,6 +11005,10 @@ bool job_runner(char *src, char *src_path) {
             switch(jp->pipe_stage) {
                 case PIPE_STAGE_PARSE:
                     while(true) {
+                        jp->allocator = (Job_memory){0};
+                        jp->allocator.scratch = arena_alloc(&global_scratch_allocator, sizeof(Arena));
+                        jp->parser_at_top_level = true;
+
                         job_init_allocator_ast(jp);
                         job_init_allocator_scratch(jp);
 
@@ -10965,19 +11027,36 @@ bool job_runner(char *src, char *src_path) {
                                 arrsetlen(job_queue_next, 0);
                             }
 
-                            job_die(jp);
+                            if(jp->allocator.scratch && jp->allocator.scratch != &global_scratch_allocator)
+                                arena_destroy(jp->allocator.scratch);
+
+                            jp->id = -1;
+
                             break;
                         }
 
-                        //TODO clean job forking
-                        Job new_job = job_spawn(&id_alloc, PIPE_STAGE_TYPECHECK);
+                        //TODO clean job forking and spawning
+                        Job new_job = job_spawn(&jobid_alloc, PIPE_STAGE_TYPECHECK);
 
                         new_job.allocator = jp->allocator;
                         new_job.global_sym_allocator = jp->global_sym_allocator;
                         new_job.global_scope = jp->global_scope;
-                        job_init_allocator_value(&new_job);
-                        job_init_allocator_sym(&new_job);
-                        job_init_allocator_type(&new_job);
+
+                        if(ast->kind == AST_KIND_procdecl) {
+                            new_job.allocator.value = arena_alloc(&global_scratch_allocator, sizeof(Pool));
+                            new_job.allocator.sym = arena_alloc(&global_scratch_allocator, sizeof(Pool));
+                            new_job.allocator.type = arena_alloc(&global_scratch_allocator, sizeof(Pool));
+
+                            job_init_allocator_value(&new_job);
+                            job_init_allocator_sym(&new_job);
+                            job_init_allocator_type(&new_job);
+                        } else {
+                            new_job.allocator.value = &global_value_allocator;
+                            new_job.allocator.sym = &global_sym_allocator;
+                            new_job.allocator.type = &global_type_allocator;
+                            new_job.dont_free_allocators = true;
+                            new_job.free_ast_allocators = true;
+                        }
 
                         new_job.root = ast;
                         arrpush(new_job.tree_pos_stack, ast);
@@ -11789,7 +11868,7 @@ bool job_runner(char *src, char *src_path) {
                                 UNIMPLEMENTED;
                             }
 
-                            arrpush(job_queue, job_spawn(&id_alloc, PIPE_STAGE_PARSE));
+                            arrpush(job_queue, job_spawn(&jobid_alloc, PIPE_STAGE_PARSE));
                             char *src = LoadFileText(import_path);
                             lexer_init(&lexer, src, ast_import->path);
                             arrlast(job_queue).lexer = &lexer;
@@ -11806,6 +11885,13 @@ bool job_runner(char *src, char *src_path) {
                     break;
                 case PIPE_STAGE_IR:
                     {
+                        if(!jp->handling_name) {
+                            assert(AST_KIND_IS_RECORD(jp->root->kind));
+                            job_die(jp);
+                            ++i;
+                            continue;
+                        }
+
                         Sym *handling_sym = global_scope_lookup(jp, jp->handling_name);
                         printf("procid %d, %s IR generation in progress\n", handling_sym->procid, jp->handling_name);
 
@@ -11824,6 +11910,8 @@ bool job_runner(char *src, char *src_path) {
                             ++i;
                             continue;
                         }
+
+                        job_die(jp);
 
                         //IRproc procedure = hmget(proc_table, handling_sym->procid);
                         //if(!procedure.is_foreign) {
@@ -11844,7 +11932,8 @@ bool job_runner(char *src, char *src_path) {
         if(arrlen(job_queue_next) == arrlen(job_queue)) {
             int waiting_count = 0;
             for(int i = 0; i < arrlen(job_queue_next); ++i) {
-                if(job_queue[i].state == JOB_STATE_WAIT) {
+                //NOTE things might be waiting because the job had to fork
+                if(job_queue[i].state == JOB_STATE_WAIT && job_queue[i].waiting_on_name) {
                     Job *jp = job_queue + i;
                     Sym *s = global_scope_lookup(jp, jp->waiting_on_name);
                     if(s) {
@@ -13992,6 +14081,30 @@ void typecheck_expr(Job *jp) {
 
             arrpush(type_stack, tpush);
             arrpush(value_stack, vpush);
+        } else if(AST_KIND_IS_RECORD(kind)) {
+            AST_structdecl *ast_struct = (AST_structdecl*)(expr[pos]);
+
+            if(ast_struct->record_type) {
+                Value *v = job_alloc_value(jp, VALUE_KIND_TYPE);
+                v->val.type = ast_struct->record_type;
+                arrpush(type_stack, ast_struct->record_type);
+                arrpush(value_stack, v);
+            } else {
+                Job new_job = job_spawn(&jobid_alloc, PIPE_STAGE_TYPECHECK);
+
+                new_job.allocator = jp->allocator;
+                new_job.global_sym_allocator = jp->global_sym_allocator;
+                new_job.global_scope = jp->global_scope;
+                new_job.dont_free_allocators = true;
+
+                new_job.root = expr[pos];
+                arrpush(new_job.tree_pos_stack, expr[pos]);
+                arrpush(job_queue, new_job);
+
+                jp->state = JOB_STATE_WAIT;
+                jp->waiting_on_name = NULL;
+                break;
+            }
         } else {
             UNIMPLEMENTED;
         }
@@ -14062,6 +14175,8 @@ void linearize_expr(Job *jp, AST *ast) {
         }
 
         arrpush(jp->expr, ast);
+    } else if(AST_KIND_IS_RECORD(ast->kind)) {
+        arrpush(jp->expr, ast);
     } else {
         UNIMPLEMENTED;
     }
@@ -14101,7 +14216,6 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
                 return ir_linearize_expr(ir_expr, addr_operand->right);
             }
 
-            //TODO take address of struct member
             if(addr_operand->token == '.') {
                 arrpush(ir_expr, ast);
                 return ir_expr;
@@ -14323,7 +14437,7 @@ void typecheck_structdecl(Job *jp) {
     record_type->record.first_default_param = ast->first_default_param;
     record_type->record.has_defaults = ast->has_defaults;
 
-    assert(ast->name);
+    //assert(ast->name);
 
     if(ast->name) {
         Value *sym_value = job_alloc_value(jp, VALUE_KIND_TYPE);
@@ -14360,6 +14474,15 @@ void typecheck_procdecl(Job *jp) {
     assert(ast->base.kind == AST_KIND_procdecl);
 
     bool is_top_level = (arrlen(jp->tree_pos_stack) == 1);
+
+    Job_memory save_job_allocator = jp->allocator;
+
+    if(is_top_level) {
+        jp->allocator.scratch = &global_scratch_allocator;
+        //jp->allocator.sym = &global_sym_allocator;
+        jp->allocator.type = &global_type_allocator;
+        jp->allocator.value = &global_value_allocator;
+    }
 
     if(is_top_level && jp->handling_name == NULL)
         jp->handling_name = ast->name;
@@ -14428,6 +14551,7 @@ void typecheck_procdecl(Job *jp) {
 
                 if(jp->state == JOB_STATE_WAIT) {
                     jp->cur_paramdecl = p;
+                    jp->allocator = save_job_allocator;
                     return;
                 }
 
@@ -14450,6 +14574,7 @@ void typecheck_procdecl(Job *jp) {
 
                 if(jp->state == JOB_STATE_WAIT) {
                     jp->cur_paramdecl = p;
+                    jp->allocator = save_job_allocator;
                     return;
                 }
 
@@ -14538,6 +14663,7 @@ void typecheck_procdecl(Job *jp) {
 
             if(jp->state == JOB_STATE_WAIT) {
                 jp->cur_retdecl = r;
+                jp->allocator = save_job_allocator;
                 return;
             }
 
@@ -14600,6 +14726,7 @@ void typecheck_procdecl(Job *jp) {
     }
 
     jp->cur_proc_type = proc_type;
+    //TODO if(is_top_level) { // local procedures
     Sym *symp = job_alloc_global_sym(jp);
 
     ast->symbol_annotation = symp;
@@ -14610,6 +14737,10 @@ void typecheck_procdecl(Job *jp) {
     } else {
         *symp = proc_sym;
         job_scope_enter(jp, symp);
+    }
+
+    if(is_top_level) {
+        jp->allocator = save_job_allocator;
     }
 }
 
@@ -14631,23 +14762,23 @@ void typecheck_vardecl(Job *jp) {
     Value *init_value = NULL;
     Type *init_type = NULL;
 
-    if(ast->type && AST_KIND_IS_RECORD(ast->type->kind)) {
+    //if(ast->type && AST_KIND_IS_RECORD(ast->type->kind)) {
 
-        //TODO this is badly done
-        AST_structdecl *ast_struct = (AST_structdecl*)(ast->type);
+    //    //TODO this is badly done
+    //    AST_structdecl *ast_struct = (AST_structdecl*)(ast->type);
 
-        if(ast->checked_type == false) {
-            ast_struct->is_name_spaced = true;
-            arrpush(jp->tree_pos_stack, ast->type);
-            ast->checked_type = true;
-            ast->checked_init = true;
-            jp->state = JOB_STATE_CONTINUE;
-            return;
-        }
+    //    if(ast->checked_type == false) {
+    //        ast_struct->is_name_spaced = true;
+    //        arrpush(jp->tree_pos_stack, ast->type);
+    //        ast->checked_type = true;
+    //        ast->checked_init = true;
+    //        jp->state = JOB_STATE_CONTINUE;
+    //        return;
+    //    }
 
-        bind_type = ast_struct->record_type;
+    //    bind_type = ast_struct->record_type;
 
-    } else {
+    //} else {
         if(ast->checked_type == false) {
             if(arrlen(jp->expr) == 0) {
                 linearize_expr(jp, ast->type);
@@ -14664,16 +14795,24 @@ void typecheck_vardecl(Job *jp) {
 
             ast->checked_type = true;
 
-            if(((AST_expr_base*)ast->type)->value_annotation->kind != VALUE_KIND_TYPE) {
-                job_error(jp, ast->type->loc,
-                        "expected type to bind to '%s'", name);
-                return;
+            if(!AST_KIND_IS_RECORD(ast->type->kind)) {
+                if(((AST_expr_base*)ast->type)->value_annotation->kind != VALUE_KIND_TYPE) {
+                    job_error(jp, ast->type->loc,
+                            "expected type to bind to '%s'", name);
+                    return;
+                }
             }
 
         }
 
-        if(ast->type)
-            bind_type = ((AST_expr*)ast->type)->value_annotation->val.type;
+        if(ast->type) {
+            if(AST_KIND_IS_RECORD(ast->type->kind)) {
+                //NOTE maybe anonstructs could be given their own ast node
+                bind_type = ((AST_structdecl*)(ast->type))->record_type;
+            } else {
+                bind_type = ((AST_expr*)ast->type)->value_annotation->val.type;
+            }
+        }
 
         if(!initialize) ast->checked_init = true;
 
@@ -14736,7 +14875,7 @@ void typecheck_vardecl(Job *jp) {
             }
         }
 
-    }
+    //}
 
     if(arrlen(jp->record_types) > 0) {
 
@@ -14870,7 +15009,6 @@ void print_sym(Sym sym) {
 
 //VERSION 1.0
 //
-//TODO better anonymous structs and unions
 //TODO proc types with argument names
 //TODO proc polymorphism
 //TODO dynamic array procedures
@@ -14914,6 +15052,8 @@ int main(int argc, char **argv) {
 
     arena_init(&global_scratch_allocator);
     pool_init(&global_sym_allocator, sizeof(Sym));
+    pool_init(&global_type_allocator, sizeof(Type));
+    pool_init(&global_value_allocator, sizeof(Value));
 
     arena_init(&string_arena);
     arena_init(&type_info_arena);
@@ -14961,6 +15101,11 @@ int main(int argc, char **argv) {
             dlclose(p.wrapper_dll);
         }
     }
+
+    arena_destroy(&global_scratch_allocator);
+    pool_destroy(&global_sym_allocator);
+    pool_destroy(&global_type_allocator);
+    pool_destroy(&global_value_allocator);
 
     return 0;
 }

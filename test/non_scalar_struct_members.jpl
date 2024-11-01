@@ -13,7 +13,7 @@ struct Test_union {
 }
 
 struct Another_Alice {
-            using Test_union;
+    using Test_union;
     union {
     id: u16;
     }
@@ -26,47 +26,18 @@ struct Jane {
     q: struct {
         r: f64;
         i: f64;
-    }
+    };
     f: float;
-}
-
-struct Type_info_int {
-    using Type_info;
-    bits: u8;
-    sign: bool;
-}
-
-struct Type_info {
-    tag: u64;
-}
-
-struct Type_info_float {
-    using Type_info;
-    bits: u8;
-}
-
-struct Type_info_pointer {
-    using Type_info;
-    pointer_to: *Type_info;
-}
-
-struct Type_info_struct {
-    using Type_info;
-
-    members:   []*Type_info_member;
-    name:      []char;
-}
-
-struct Type_info_member {
-    using Type_info;
-
-    name:    []char;
-    type:     *Type_info;
-    offset:    u64;
 }
 
 proc main() {
     test: Type_info_struct;
     alice: Another_Alice;
     x := alice.b;
+    jane: Jane;
+    r2d2 := jane.q.r;
+
+    anon_struct: struct { x: int; y: int; };
+    anon_struct.x = 45;
+    anon_struct.y = 12;
 }

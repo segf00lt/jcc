@@ -32,6 +32,7 @@ struct Bob {
     i: int = 54;
     unique_id: u16 = ---;
     f: float = 3.14;
+
     u: union {
         union {
             x: float;
@@ -41,7 +42,8 @@ struct Bob {
             x1: float;
             y1: float;
         }
-    }
+    };
+
     tau: f64 = ---;
     c: s8;
 }
