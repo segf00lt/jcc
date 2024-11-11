@@ -45,7 +45,6 @@
     X(uniondecl)                        \
     X(vardecl)                          \
     X(procdecl)                         \
-    X(polymorphic_paramdecl)            \
     X(paramdecl)                        \
     X(retdecl)                          \
     X(expr_list)                        \
@@ -226,6 +225,8 @@
 
 #define AST_KIND_IS_RECORD(kind) ((bool)(kind == AST_KIND_structdecl || kind == AST_KIND_uniondecl))
 
+#define AST_KIND_IS_AGGREGATE_LITERAL(kind) ((bool)(kind == AST_KIND_array_literal || kind == AST_KIND_struct_literal))
+
 #define TOKEN_TO_TYPEKIND(t) (Typekind)((t-TOKEN_VOID)+TYPE_KIND_VOID)
 
 #define TYPE_KIND_IS_SIGNED_INT(kind) ((bool)(kind == TYPE_KIND_INT || kind == TYPE_KIND_S8 || kind == TYPE_KIND_S16 || kind == TYPE_KIND_S32 || kind == TYPE_KIND_S64))
@@ -237,6 +238,8 @@
 #define TYPE_KIND_IS_SCALAR(kind) ((bool)(kind < TYPE_KIND_TYPE || kind == TYPE_KIND_POINTER))
 
 #define TYPE_KIND_IS_RECORD(kind) ((bool)(kind == TYPE_KIND_STRUCT || kind == TYPE_KIND_UNION))
+
+#define TYPE_KIND_IS_RECORD_OR_ARRAY(kind) ((bool)(TYPE_KIND_IS_RECORD(kind) || kind == TYPE_KIND_ARRAY))
 
 #define TYPE_KIND_IS_FLOAT(kind) ((bool)(kind >= TYPE_KIND_FLOAT && kind <= TYPE_KIND_F64))
 
@@ -566,14 +569,6 @@ struct Message {
 };
 
 struct Job_memory {
-    struct {
-        bool scratch : 1;
-        bool value : 1;
-        bool sym : 1;
-        bool type : 1;
-        bool ast : 1;
-    } active;
-
     Arena                *scratch;
     Pool                 *value;
     Pool                 *sym;
@@ -582,6 +577,14 @@ struct Job_memory {
 #define X(x) Pool ast_##x;
     ASTKINDS
 #undef X
+        struct {
+            bool scratch : 1;
+            bool value : 1;
+            bool sym : 1;
+            bool type : 1;
+            bool ast : 1;
+        } active;
+
 };
 
 struct Job {
@@ -602,10 +605,6 @@ struct Job {
     AST                             *root;
     Arr(AST*)                        tree_pos_stack;
 
-    bool                             parser_at_top_level;
-    bool                             dont_free_allocators;
-    bool                             free_ast_allocators;
-
     union {
         Loc_info                     non_returning_path_loc;
         Loc_info                     returning_path_loc;
@@ -617,6 +616,10 @@ struct Job {
     u64                              job_id_waiting;
     Type                            *cur_proc_type;
     Arr(Sym*)                        run_dependencies;
+
+    /* procedure polymorphism */
+    Arr(char*)                       polymorphic_vars_matched;
+    Arr(Type*)                       types_matched; 
                                           
     /* struct and union */                
     Arr(Type*)                       record_types;
@@ -660,6 +663,13 @@ struct Job {
     Arr(Message)                     messages;
 
     Job_memory allocator;
+
+    bool                             parser_at_top_level : 1;
+    bool                             parser_encountered_polymorphic_var : 1;
+    bool                             dont_free_allocators : 1;
+    bool                             free_ast_allocators : 1;
+    bool                             doing_polymorph : 1;
+
 };
 
 struct Sym {
@@ -667,6 +677,14 @@ struct Sym {
     Loc_info loc;
     Jobid declared_by;
     int procid;
+    IRsegment segment;
+    u64 segment_offset;
+    Type *type;
+    //union {
+    //};
+    Value *value;
+    AST *initializer;
+    AST *polymorphic_proc_ast;
     bool job_encountered_error : 1;
     bool ir_generated : 1;
     bool ready_to_run : 1;
@@ -676,32 +694,14 @@ struct Sym {
     bool is_argument : 1;
     bool is_record_argument : 1;
     bool constant : 1;
-    bool is_polymorphic : 1;
-    IRsegment segment;
-    u64 segment_offset;
-    Type *type;
-    union {
-        Value *value;
-    };
-    AST *initializer;
+    bool is_polymorphic_procedure : 1;
+    bool is_polymorphic_var : 1;
 };
 
 struct AST {
     ASTkind kind;
     u32 weight;
     Loc_info loc;
-};
-
-struct AST_param {
-    AST base;
-    Type *type_annotation;
-    Value *value_annotation;
-    char *name;
-    AST *value;
-    int index;
-    bool has_nested_call;
-    bool is_vararg;
-    AST_param *next;
 };
 
 struct AST_import_directive {
@@ -716,22 +716,8 @@ struct AST_run_directive {
     Value *value_annotation;
     Type **type_annotation_list; /* because callables can return multiple values */
     Value **value_annotation_list;
-    int n_types_returned;
     AST_call *call_to_run;
-};
-
-struct AST_call {
-    AST base;
-    Type *type_annotation; /* for use in expressions */
-    Value *value_annotation;
-    Type **type_annotation_list; /* because callables can return multiple values */
-    Value **value_annotation_list;
     int n_types_returned;
-    AST *callee;
-    bool has_named_params;
-    int n_params;
-    int first_named_param;
-    AST_param *params;
 };
 
 struct AST_expr_base {
@@ -750,6 +736,34 @@ struct AST_expr {
     Token token;
     AST *left;
     AST *right;
+};
+
+struct AST_param {
+    AST base;
+    Type *type_annotation;
+    Value *value_annotation;
+    char *name;
+    AST *value;
+    AST_param *next;
+    int index;
+    bool has_nested_call : 1;
+    bool is_vararg : 1;
+};
+
+struct AST_call {
+    AST base;
+    Type *type_annotation; /* for use in expressions */
+    Value *value_annotation;
+    Type **type_annotation_list; /* because callables can return multiple values */
+    Value **value_annotation_list;
+    AST *callee;
+    AST_param *params;
+    int n_types_returned;
+    int n_params;
+    int first_named_param;
+    int procid_annotation;
+    bool has_named_params : 1;
+    bool checked_call : 1;
 };
 
 struct AST_array_literal {
@@ -815,16 +829,16 @@ struct AST_proctype {
     Sym *symbol_annotation;     \
     char *name;                 \
     AST_paramdecl *params;      \
-    bool has_defaults;          \
     int first_default_param;    \
     int n_params;               \
     int n_members;              \
     int n_using;                \
     AST *body;                  \
-    bool checked_params;        \
-    bool visited;               \
-    bool is_name_spaced;        \
     Type *record_type;          \
+    bool has_defaults : 1;      \
+    bool checked_params : 1;    \
+    bool visited : 1;           \
+    bool is_name_spaced : 1;    \
 
 struct AST_structdecl {
     AST_RECORD_BODY
@@ -839,12 +853,12 @@ struct AST_vardecl {
     AST *next;
     Sym *symbol_annotation;
     char *name;
-    bool constant;
-    bool uninitialized;
     AST *type;
     AST *init;
-    bool checked_type;
-    bool checked_init;
+    bool constant : 1;
+    bool uninitialized : 1;
+    bool checked_type : 1;
+    bool checked_init : 1;
 };
 
 struct AST_paramdecl {
@@ -855,16 +869,10 @@ struct AST_paramdecl {
     AST *type;
     AST *init;
     int index;
-    bool checked_type;
-    bool checked_init;
-    bool vararg;
-};
-
-struct AST_polymorphic_paramdecl {
-    AST base;
-    char *name;
-    int index;
-    AST_polymorphic_paramdecl *next;
+    bool checked_type : 1;
+    bool checked_init : 1;
+    bool vararg : 1;
+    bool is_polymorphic : 1;
 };
 
 struct AST_retdecl {
@@ -872,7 +880,7 @@ struct AST_retdecl {
     AST_retdecl *next;
     AST *expr;
     int index;
-    bool checked_expr;
+    bool checked_expr : 1;
 };
 
 struct AST_ifstatement {
@@ -944,26 +952,26 @@ struct AST_push_context {
     AST *next;
     char *context_ident;
     Sym *symbol_annotation;
-    bool visited;
     AST *down;
+    bool visited : 1;
 };
 
 struct AST_block {
     AST base;
     AST *next;
-    bool visited;
     AST *down;
+    bool visited : 1;
 };
 
 struct AST_statement {
     AST base;
     AST *next;
-    bool deferred;
     Token assign_op;
     AST *left;
     AST *right;
-    bool checked_left;
-    bool checked_right;
+    bool deferred : 1;
+    bool checked_left : 1;
+    bool checked_right : 1;
 };
 
 struct AST_procdecl {
@@ -973,7 +981,6 @@ struct AST_procdecl {
     char *name;
     char *foreign_lib_str;
     Type *proc_type;
-    AST_polymorphic_paramdecl *polymorphic_params;
     AST_paramdecl *params;
     AST_retdecl *rets;
     int first_default_param;
@@ -986,6 +993,8 @@ struct AST_procdecl {
     bool is_foreign : 1;
     bool is_system : 1;
     bool is_polymorphic : 1;
+    bool polymorphic_params_ready : 1;
+    bool ready_to_polymorph : 1;
     bool type_checked_body : 1;
     bool varargs : 1;
     bool has_defaults : 1;
@@ -1036,6 +1045,11 @@ struct Type {
             Type *what;
         } type;
 
+        struct {
+            char *name;
+            Type *matched;
+        } wildcard;
+
         struct { /* struct and union */
             char *name;
             bool has_defaults;
@@ -1048,13 +1062,6 @@ struct Type {
                 u64       n;
             } param;
             struct {
-                /*
-                Arr(Type*)    types;
-                Arr(char*)    names;
-                Arr(Value*)   values;
-                Arr(u64)      offsets;
-                Arr(Loc_info) locs;
-                */
                 Type    **types;
                 char    **names;
                 Value   **values;
@@ -1063,18 +1070,7 @@ struct Type {
                 u64       i;
                 u64       n;
             } member;
-            /*
             struct {
-                Type  **types;
-                u64    *offsets;
-                u64     n;
-            } as;
-            */
-            struct {
-                /*
-                Arr(Type*)  types;
-                Arr(u64)    offsets;
-                */
                 Type  **types;
                 u64    *offsets;
                 u64     i;
@@ -1084,12 +1080,10 @@ struct Type {
 
         struct { /* proc, macro, func */
             char *name;
-            bool varargs;
-            bool has_defaults;
-            bool is_foreign;
-            bool is_system;
-            bool c_call;
             u64 first_default_param;
+            u64 *polymorphic_param_indexes;
+            u64 ith_polymorphic_param;
+            u64 n_polymorphic_params;
             struct {
                 char   *vararg_name;
                 Type  **types;
@@ -1101,6 +1095,12 @@ struct Type {
                 Type  **types;
                 int     n;
             } ret;
+            bool is_polymorphic : 1;
+            bool varargs : 1;
+            bool has_defaults : 1;
+            bool is_foreign : 1;
+            bool is_system : 1;
+            bool c_call : 1;
         } proc;
 
         struct { /* static array, dynamic or view */
@@ -1142,7 +1142,7 @@ IRlabel     job_label_lookup(Job *jp, char *name);
 bool        job_label_create(Job *jp, IRlabel label);
 char*       job_op_token_to_str(Job *jp, Token op);
 Type_info*  job_make_type_info(Job *jp, Type *t);
-void        linearize_expr(Job *jp, AST *astpp);
+void        linearize_expr(Job *jp, AST *ast);
 
 bool        is_lvalue(AST *ast);
 bool        all_paths_return(Job *jp, AST *ast);
@@ -1150,19 +1150,16 @@ bool        has_nested_call(AST *ast);
 void        add_implicit_casts_to_expr(Job *jp, AST *ast);
 u64         align_up(u64 offset, u64 align);
 u64         next_pow_2(u64 v);
-AST*        ast_copy(Arena *a, AST *ast);
+void        strip_ast_annotations(AST *ast);
 AST*        arena_dup_ast(Arena *a, AST* ast);
-
+void        serialize_value(Job *jp, u8 *dest, Value *v, Type *t);
 bool        records_have_member_name_conflicts(Job *jp, Loc_info using_loc, Type *a, Type *b);
-
 void        do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type);
-
 void        copy_array_data_to_value(Job *jp, Value *v, Type *t, u8 *data);
-
 Value*      make_empty_array_value(Job *jp, Type *t);
+void        annotate_aggregate_literal(Job *jp, Type *t, AST *ast_lit);
 
 Arr(AST*)   ir_linearize_expr(Arr(AST*) ir_expr, AST *ast);
-
 void        ir_gen(Job *jp);
 void        ir_gen_foreign_proc_x64(Job *jp);
 void        ir_gen_foreign_proc_arm64(Job *jp); //TODO
@@ -1196,6 +1193,7 @@ Type*       typecheck_dot(Job *jp, Type *a, char *field, u64 *offsetp);
 void        typecheck_expr(Job *jp);
 void        typecheck_vardecl(Job *jp);
 void        typecheck_procdecl(Job *jp);
+void        typecheck_polymorphic_procdecl(Job *jp);
 void        typecheck_structdecl(Job *jp);
 
 int         getprec(Token t);
@@ -1256,6 +1254,7 @@ Type builtin_type[] = {
     { .kind = TYPE_KIND_F64,   .bytes = 8, .align = 8 },
     { .kind = TYPE_KIND_TYPE,  .bytes = 8, .align = 8 },
 };
+Type builtin_wildcard_type = { .kind = TYPE_KIND_WILDCARD };
 
 char *builtin_type_to_str[] = {
     "void",
@@ -1323,6 +1322,7 @@ Sym *sym_temporary_allocator;
 Jobid jobid_alloc = -1;
 Arr(Job) job_queue = NULL;
 Arr(Job) job_queue_next = NULL;
+int job_queue_pos = 0;
 
 
 /* function declarations */
@@ -1376,8 +1376,8 @@ void job_die(Job *jp) {
     arrfree(jp->run_dependencies);
     arrfree(jp->scopes);
     arrfree(jp->tree_pos_stack);
-    arrfree(jp->value_stack);
-    arrfree(jp->type_stack);
+    //arrfree(jp->value_stack);
+    //arrfree(jp->type_stack);
     arrfree(jp->expr);
     arrfree(jp->expr_list);
     arrfree(jp->defer_list_stack);
@@ -2165,6 +2165,43 @@ void add_implicit_casts_to_expr(Job *jp, AST *ast) {
     //}
 }
 
+void serialize_value(Job *jp, u8 *dest, Value *v, Type *t) {
+    assert(v && t && dest);
+
+    if(TYPE_KIND_IS_NOT_SCALAR(t->kind)) {
+        if(TYPE_KIND_IS_RECORD(t->kind)) {
+            UNIMPLEMENTED;
+        } else if(TYPE_KIND_IS_ARRAY_LIKE(t->kind)) {
+            if(t->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+                UNIMPLEMENTED;
+            } else if(t->kind == TYPE_KIND_ARRAY) {
+                assert(v->kind == VALUE_KIND_ARRAY);
+
+                u64 stride = t->array.of->bytes;
+
+                if(v->val.array.n < t->array.n) {
+                    memset(dest + v->val.array.n * stride, 0, (t->array.n - v->val.array.n) * stride);
+                }
+
+                for(u64 i = 0; i < v->val.array.n; ++i) {
+                    serialize_value(jp, dest + i * stride, v->val.array.elements[i], t->array.of);
+                }
+            } else {
+                assert(t->kind == TYPE_KIND_ARRAY_VIEW);
+                UNIMPLEMENTED;
+            }
+        } else {
+            UNIMPLEMENTED;
+        }
+    } else {
+        if(t->kind == TYPE_KIND_POINTER) { 
+            UNIMPLEMENTED;
+        } else {
+            memcpy(dest, (void*)&(v->val), t->bytes);
+        }
+    }
+}
+
 bool all_paths_return(Job *jp, AST *ast) {
     if(ast->kind == AST_KIND_block) {
         AST_block *block = (AST_block*)ast;
@@ -2262,6 +2299,47 @@ bool all_paths_return(Job *jp, AST *ast) {
 
     return true;
 }
+
+//TODO is annotate_aggregate_literal() really necessary?
+//void annotate_aggregate_literal(Job *jp, Type *t, AST *ast_lit) {
+//    if(ast_list->kind == AST_KIND_struct_literal) {
+//        UNIMPLEMENTED;
+//
+//        assert(TYPE_KIND_IS_RECORD(t->kind));
+//
+//        AST_struct_literal *struct_lit = (AST_struct_literal*)ast_lit;
+//
+//        struct_lit->type_annotation = t;
+//
+//        for(AST_member_list *members = struct_lit->members; members; members = members->next) {
+//            if(AST_KIND_IS_AGGREGATE_LITERAL(members->value->kind)) {
+//                annotate_aggregate_literal(jp, t->record.member.types, elements->expr);
+//            }
+//        }
+//
+//    } else if(ast_lit->kind == AST_KIND_array_literal) {
+//        assert(t->kind == TYPE_KIND_ARRAY);
+//
+//        AST_array_literal *array_lit = (AST_array_literal*)ast_lit;
+//
+//        array_lit->type_annotation = t;
+//
+//        if(TYPE_KIND_IS_RECORD_OR_ARRAY(t->array.of)) {
+//
+//            for(AST_expr_list *elements = array_lit->elements; elements; elements = elements->next) {
+//                if(!AST_KIND_IS_AGGREGATE_LITERAL(elements->expr->kind)) {
+//                    return;
+//                }
+//
+//                annotate_aggregate_literal(jp, t->array.of, elements->expr);
+//            }
+//
+//        }
+//
+//    } else {
+//        UNREACHABLE;
+//    }
+//}
 
 Value* make_empty_array_value(Job *jp, Type *t) {
     Value *v = job_alloc_value(jp, VALUE_KIND_ARRAY);
@@ -3114,49 +3192,11 @@ AST* parse_procdecl(Job *jp) {
     node->base.loc = procdecl_loc;
 
     t = lex(lexer);
-    if(t == '<') {
-        int n_polymorphic_params = 0;
-
-        node->is_polymorphic = true;
-
-        AST_polymorphic_paramdecl head = {0};
-        AST_polymorphic_paramdecl *poly_param_list = &head;
-
-        while(true) {
-            t = lex(lexer);
-
-            if(t != TOKEN_IDENT) {
-                job_error(jp, lexer->loc, "expected identifier in polymorphic parameter list");
-                return (AST*)node;
-            }
-
-            poly_param_list->next = (AST_polymorphic_paramdecl*)job_alloc_ast(jp, AST_KIND_polymorphic_paramdecl);
-            poly_param_list = poly_param_list->next;
-            poly_param_list->name = job_alloc_text(jp, lexer->text.s, lexer->text.e);
-            poly_param_list->index = n_polymorphic_params;
-            n_polymorphic_params++;
-
-            t = lex(lexer);
-
-            if(t != ',') {
-                if(t != '>') {
-                    job_error(jp, lexer->loc, "expected '>' to end polymorphic parameter list");
-                    return (AST*)node;
-                }
-
-                break;
-            }
-        }
-
-        node->polymorphic_params = head.next;
-        node->n_polymorphic_params = n_polymorphic_params;
-
-        t = lex(lexer);
-    }
 
     if(t != '(') job_error(jp, lexer->loc, "expected '(' to begin parameter list");
 
     int n_params = 0;
+    int n_polymorphic_params = 0;
     AST_paramdecl head = {0};
     AST_paramdecl *param_list = &head;
 
@@ -3184,6 +3224,9 @@ AST* parse_procdecl(Job *jp) {
                 } else {
                     *lexer = unlex;
                     param_list->next = (AST_paramdecl*)parse_paramdecl(jp);
+                    if(param_list->next->is_polymorphic) {
+                        n_polymorphic_params++;
+                    }
 
                     if(param_list->next == NULL) {
                         t = lex(lexer);
@@ -3225,6 +3268,8 @@ AST* parse_procdecl(Job *jp) {
     node->has_defaults = must_be_default;
     node->params = head.next;
     node->n_params = n_params;
+    node->is_polymorphic = (n_polymorphic_params > 0);
+    node->n_polymorphic_params = n_polymorphic_params;
 
     unlex = *lexer;
     t = lex(lexer);
@@ -3786,6 +3831,9 @@ AST* parse_paramdecl(Job *jp) {
     Loc_info type_loc = lexer->loc;
     node->type = parse_expr(jp);
 
+    node->is_polymorphic = jp->parser_encountered_polymorphic_var;
+    jp->parser_encountered_polymorphic_var = false;
+
     if(node->type == NULL) job_error(jp, type_loc, "expected type declarator");
 
     unlex = *lexer;
@@ -4043,6 +4091,17 @@ AST* parse_term(Job *jp) {
         default:
             *lexer = unlex;
             return NULL;
+        case '$':
+            {
+                t = lex(lexer);
+                atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
+                atom->token = TOKEN_POLYMORPHIC_IDENT;
+                atom->text = job_alloc_text(jp, lexer->text.s, lexer->text.e);
+                node = (AST*)atom;
+                node->weight = 1;
+                jp->parser_encountered_polymorphic_var = true;
+            }
+            break;
         case TOKEN_STRUCT: case TOKEN_UNION:
             {
                 *lexer = unlex;
@@ -4159,7 +4218,6 @@ AST* parse_term(Job *jp) {
             // NOTE
             // putting the expr inside the [ ] on the right is a little weird
             // but it is done to be consistent with the other use of '[' for subscript
-            // look at typecheck_binary where we check '[' if you don't remember
 
             unlex = *lexer;
             t = lex(lexer);
@@ -6910,7 +6968,7 @@ void ir_gen_block(Job *jp, AST *ast) {
                     u64 first_label = jp->label_alloc;
                     jp->label_alloc++;
 
-                    //TODO cast non bool values to bool
+                    //TODO add implicit casts to if and while conditions
                     ir_gen_expr(jp, ast_if->condition);
 
                     assert(jp->reg_alloc == 1);
@@ -9920,7 +9978,8 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
     printf("\n");
     */
     assert(callee_symbol);
-    Type *callee_type = callee_symbol->type;
+    //Type *callee_type = callee_symbol->type;
+    Type *callee_type = callee->type_annotation;
     assert(callee_type->kind == TYPE_KIND_PROC);
 
     bool varargs = callee_type->proc.varargs;
@@ -10475,6 +10534,23 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
             };
         inst.loc = jp->cur_loc;
         arrpush(jp->instructions, inst);
+    } else if(callee_symbol->is_polymorphic_procedure) {
+        //NOTE each time we generate a polymorph of a procedure (or retrieve one that was cached)
+        //     the procid field on the callee_symbol gets set to the appropriate value, be it a newly allocated
+        //     procid or one that was cached
+        UNIMPLEMENTED;
+        inst =
+            (IRinst) {
+                .opcode = IROP_CALL,
+                .call = {
+                    .name = callee_symbol->name,
+                    .id_imm = ast_call->procid_annotation,
+                    .immediate = true,
+                    .c_call = c_call,
+                },
+            };
+        inst.loc = jp->cur_loc;
+        arrpush(jp->instructions, inst);
     } else {
         inst =
             (IRinst) {
@@ -10607,18 +10683,11 @@ INLINE AST* arena_dup_ast(Arena *a, AST* ast) {
     return ptr;
 }
 
-INLINE AST* ast_copy(Arena *arena, AST *root) {
-    AST_block head = {
-        .base = { .kind = AST_KIND_block },
-        .next = NULL,
-        .visited = false,
-        .down = root,
-    };
-
+INLINE void strip_ast_annotations(AST *root) {
     Arr(AST*) cur_list = NULL;
     Arr(AST*) next_list = NULL;
 
-    arrpush(cur_list, (AST*)&head);
+    arrpush(cur_list, root);
 
     while(true) {
         int n = arrlen(cur_list);
@@ -10631,15 +10700,18 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                     {
                         AST_ifstatement *ast_if = (AST_ifstatement*)ast;
                         if(ast_if->next) {
-                            ast_if->next = arena_dup_ast(arena, ast_if->next);
                             arrpush(next_list, ast_if->next);
                         }
-                        ast_if->condition = arena_dup_ast(arena, ast_if->condition);
+                        if(ast_if->condition->loc.src_path == NULL) {
+                            assert(ast_if->condition->kind == AST_KIND_expr);
+                            AST_expr *implicit_cast = (AST_expr*)(ast_if->condition);
+                            assert(implicit_cast->token == TOKEN_CAST);
+                            assert(implicit_cast->right);
+                            ast_if->condition = implicit_cast->right;
+                        }
                         arrpush(next_list, ast_if->condition);
-                        ast_if->body = arena_dup_ast(arena, ast_if->body);
                         arrpush(next_list, ast_if->body);
                         if(ast_if->branch) {
-                            ast_if->branch = arena_dup_ast(arena, ast_if->branch);
                             arrpush(next_list, ast_if->branch);
                         }
                     }
@@ -10654,12 +10726,16 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                     {
                         AST_whilestatement *ast_while = (AST_whilestatement*)ast;
                         if(ast_while->next) {
-                            ast_while->next = arena_dup_ast(arena, ast_while->next);
                             arrpush(next_list, ast_while->next);
                         }
-                        ast_while->condition = arena_dup_ast(arena, ast_while->condition);
+                        if(ast_while->condition->loc.src_path == NULL) {
+                            assert(ast_while->condition->kind == AST_KIND_expr);
+                            AST_expr *implicit_cast = (AST_expr*)(ast_while->condition);
+                            assert(implicit_cast->token == TOKEN_CAST);
+                            assert(implicit_cast->right);
+                            ast_while->condition = implicit_cast->right;
+                        }
                         arrpush(next_list, ast_while->condition);
-                        ast_while->body = arena_dup_ast(arena, ast_while->body);
                         arrpush(next_list, ast_while->body);
                     }
                     break;
@@ -10670,7 +10746,6 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                     {
                         AST_breakstatement *ast_break = (AST_breakstatement*)ast;
                         if(ast_break->next) {
-                            ast_break->next = arena_dup_ast(arena, ast_break->next);
                             arrpush(next_list, ast_break->next);
                         }
                     }
@@ -10679,7 +10754,6 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                     {
                         AST_continuestatement *ast_continue = (AST_continuestatement*)ast;
                         if(ast_continue->next) {
-                            ast_continue->next = arena_dup_ast(arena, ast_continue->next);
                             arrpush(next_list, ast_continue->next);
                         }
                     }
@@ -10688,11 +10762,9 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                     {
                         AST_returnstatement *ast_return = (AST_returnstatement*)ast;
                         if(ast_return->next) {
-                            ast_return->next = arena_dup_ast(arena, ast_return->next);
                             arrpush(next_list, ast_return->next);
                         }
                         if(ast_return->expr_list) {
-                            ast_return->expr_list = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_return->expr_list));
                             arrpush(next_list, (AST*)(ast_return->expr_list));
                         }
                     }
@@ -10701,7 +10773,6 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                     {
                         AST_usingstatement *ast_using = (AST_usingstatement*)ast;
                         if(ast_using->next) {
-                            ast_using->next = arena_dup_ast(arena, ast_using->next);
                             arrpush(next_list, ast_using->next);
                         }
                     }
@@ -10710,13 +10781,17 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                     {
                         AST_statement *ast_statement = (AST_statement*)ast;
                         if(ast_statement->next) {
-                            ast_statement->next = arena_dup_ast(arena, ast_statement->next);
                             arrpush(next_list, ast_statement->next);
                         }
-                        ast_statement->left = arena_dup_ast(arena, ast_statement->left);
                         arrpush(next_list, ast_statement->left);
                         if(ast_statement->right) {
-                            ast_statement->right = arena_dup_ast(arena, ast_statement->right);
+                            if(ast_statement->right->loc.src_path == NULL) {
+                                assert(ast_statement->right->kind == AST_KIND_expr);
+                                AST_expr *implicit_cast = (AST_expr*)(ast_statement->right);
+                                assert(implicit_cast->token == TOKEN_CAST);
+                                assert(implicit_cast->right);
+                                ast_statement->right = implicit_cast->right;
+                            }
                             arrpush(next_list, ast_statement->right);
                         }
                     }
@@ -10725,10 +10800,8 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                     {
                         AST_block *ast_block = (AST_block*)ast;
                         if(ast_block->next) {
-                            ast_block->next = arena_dup_ast(arena, ast_block->next);
                             arrpush(next_list, ast_block->next);
                         }
-                        ast_block->down = arena_dup_ast(arena, ast_block->down);
                         arrpush(next_list, ast_block->down);
                     }
                     break;
@@ -10736,7 +10809,11 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                     {
                         AST_run_directive *ast_run = (AST_run_directive*)ast;
                         assert(ast_run->call_to_run);
-                        ast_run->call_to_run = (AST_call*)arena_dup_ast(arena, (AST*)(ast_run->call_to_run));
+                        ast_run->type_annotation = NULL;
+                        ast_run->value_annotation = NULL;
+                        ast_run->type_annotation_list = NULL;
+                        ast_run->value_annotation_list = NULL;
+                        ast_run->n_types_returned = 0;
                         arrpush(next_list, (AST*)(ast_run->call_to_run));
                     }
                     break;
@@ -10744,31 +10821,39 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                 case AST_KIND_uniondecl:
                     {
                         AST_structdecl *ast_struct = (AST_structdecl*)ast;
+                        ast_struct->symbol_annotation = NULL;
+                        ast_struct->record_type = NULL;
+                        ast_struct->visited = false;
+                        ast_struct->checked_params = false;
                         if(ast_struct->next) {
-                            ast_struct->next = arena_dup_ast(arena, ast_struct->next);
                             arrpush(next_list, ast_struct->next);
                         }
                         if(ast_struct->params) {
-                            ast_struct->params = (AST_paramdecl*)arena_dup_ast(arena, (AST*)(ast_struct->params));
                             arrpush(next_list, (AST*)(ast_struct->params));
                         }
-                        ast_struct->body = arena_dup_ast(arena, ast_struct->body);
                         arrpush(next_list, ast_struct->body);
                     }
                     break;
                 case AST_KIND_vardecl:
                     {
                         AST_vardecl *ast_var = (AST_vardecl*)ast;
+                        ast_var->symbol_annotation = NULL;
+                        ast_var->checked_type = false;
+                        ast_var->checked_init = false;
                         if(ast_var->next) {
-                            ast_var->next = arena_dup_ast(arena, ast_var->next);
                             arrpush(next_list, ast_var->next);
                         }
                         if(ast_var->type) {
-                            ast_var->type = arena_dup_ast(arena, ast_var->type);
                             arrpush(next_list, ast_var->type);
                         }
                         if(ast_var->init) {
-                            ast_var->init = arena_dup_ast(arena, ast_var->init);
+                            if(ast_var->init->loc.src_path == NULL) {
+                                assert(ast_var->init->kind == AST_KIND_expr);
+                                AST_expr *implicit_cast = (AST_expr*)(ast_var->init);
+                                assert(implicit_cast->token == TOKEN_CAST);
+                                assert(implicit_cast->right);
+                                ast_var->init = implicit_cast->right;
+                            }
                             arrpush(next_list, ast_var->init);
                         }
                     }
@@ -10776,36 +10861,23 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                 case AST_KIND_procdecl:
                     {
                         AST_procdecl *ast_proc = (AST_procdecl*)ast;
+                        ast_proc->symbol_annotation = NULL;
+                        ast_proc->proc_type = NULL;
+                        ast_proc->type_checked_body = false;
+                        ast_proc->checked_params = false;
+                        ast_proc->checked_rets = false;
+                        ast_proc->visited = false;
                         if(ast_proc->next) {
-                            ast_proc->next = arena_dup_ast(arena, ast_proc->next);
                             arrpush(next_list, ast_proc->next);
                         }
-                        if(ast_proc->polymorphic_params) {
-                            ast_proc->polymorphic_params =
-                                (AST_polymorphic_paramdecl*)arena_dup_ast(arena, (AST*)(ast_proc->polymorphic_params));
-                            arrpush(next_list, (AST*)(ast_proc->polymorphic_params));
-                        }
                         if(ast_proc->params) {
-                            ast_proc->params = (AST_paramdecl*)arena_dup_ast(arena, (AST*)(ast_proc->params));
                             arrpush(next_list, (AST*)(ast_proc->params));
                         }
                         if(ast_proc->rets) {
-                            ast_proc->rets = (AST_retdecl*)arena_dup_ast(arena, (AST*)(ast_proc->rets));
                             arrpush(next_list, (AST*)(ast_proc->rets));
                         }
                         if(ast_proc->body) {
-                            ast_proc->body = arena_dup_ast(arena, ast_proc->body);
                             arrpush(next_list, ast_proc->body);
-                        }
-                    }
-                    break;
-                case AST_KIND_polymorphic_paramdecl:
-                    {
-                        AST_polymorphic_paramdecl *ast_polymorphic_param = (AST_polymorphic_paramdecl*)ast;
-                        if(ast_polymorphic_param->next) {
-                            ast_polymorphic_param->next =
-                                (AST_polymorphic_paramdecl*)arena_dup_ast(arena, (AST*)(ast_polymorphic_param->next));
-                            arrpush(next_list, (AST*)(ast_polymorphic_param->next));
                         }
                     }
                     break;
@@ -10813,15 +10885,19 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                     {
                         AST_paramdecl *ast_param = (AST_paramdecl*)ast;
                         if(ast_param->next) {
-                            ast_param->next = (AST_paramdecl*)arena_dup_ast(arena, (AST*)(ast_param->next));
                             arrpush(next_list, (AST*)(ast_param->next));
                         }
                         if(ast_param->type) {
-                            ast_param->type = arena_dup_ast(arena, ast_param->type);
                             arrpush(next_list, ast_param->type);
                         }
                         if(ast_param->init) {
-                            ast_param->init = arena_dup_ast(arena, ast_param->init);
+                            if(ast_param->init->loc.src_path == NULL) {
+                                assert(ast_param->init->kind == AST_KIND_expr);
+                                AST_expr *implicit_cast = (AST_expr*)(ast_param->init);
+                                assert(implicit_cast->token == TOKEN_CAST);
+                                assert(implicit_cast->right);
+                                ast_param->init = implicit_cast->right;
+                            }
                             arrpush(next_list, ast_param->init);
                         }
                     }
@@ -10830,11 +10906,9 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                     {
                         AST_retdecl *ast_ret = (AST_retdecl*)ast;
                         if(ast_ret->next) {
-                            ast_ret->next = (AST_retdecl*)arena_dup_ast(arena, (AST*)(ast_ret->next));
                             arrpush(next_list, (AST*)(ast_ret->next));
                         }
                         if(ast_ret->expr) {
-                            ast_ret->expr = arena_dup_ast(arena, ast_ret->expr);
                             arrpush(next_list, ast_ret->expr);
                         }
                     }
@@ -10842,77 +10916,110 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                 case AST_KIND_expr_list:
                     {
                         AST_expr_list *ast_expr = (AST_expr_list*)ast;
-                        ast_expr->expr = arena_dup_ast(arena, ast_expr->expr);
+                        if(ast_expr->expr->loc.src_path == NULL) {
+                            assert(ast_expr->expr->kind == AST_KIND_expr);
+                            AST_expr *implicit_cast = (AST_expr*)(ast_expr->expr);
+                            assert(implicit_cast->token == TOKEN_CAST);
+                            assert(implicit_cast->right);
+                            ast_expr->expr = implicit_cast->right;
+                        }
                         arrpush(next_list, ast_expr->expr);
                         if(ast_expr->next) {
-                            ast_expr->next = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_expr->next));
                             arrpush(next_list, (AST*)(ast_expr->next));
                         }
                     }
                     break;
                 case AST_KIND_member_list:
                     {
-                        AST_member_list *ast_member = (AST_member_list*)ast;
-                        ast_member->value = arena_dup_ast(arena, ast_member->value);
-                        arrpush(next_list, ast_member->value);
-                        if(ast_member->next) {
-                            ast_member->next = (AST_member_list*)arena_dup_ast(arena, (AST*)(ast_member->next));
-                            arrpush(next_list, (AST*)(ast_member->next));
-                        }
+                        UNIMPLEMENTED;
+                        //AST_member_list *ast_member = (AST_member_list*)ast;
+                        //arrpush(next_list, ast_member->value);
+                        //if(ast_member->next) {
+                        //    arrpush(next_list, (AST*)(ast_member->next));
+                        //}
                     }
                     break;
                 case AST_KIND_expr:
                     {
                         AST_expr *ast_expr = (AST_expr*)ast;
+                        ast_expr->type_annotation = NULL;
+                        ast_expr->value_annotation = NULL;
                         if(ast_expr->left) {
-                            ast_expr->left = arena_dup_ast(arena, ast_expr->left);
-                            arrpush(next_list, (AST*)(ast_expr->left));
+                            if(ast_expr->left->loc.src_path == NULL) {
+                                assert(ast_expr->left->kind == AST_KIND_expr);
+                                AST_expr *implicit_cast = (AST_expr*)(ast_expr->left);
+                                assert(implicit_cast->token == TOKEN_CAST);
+                                assert(implicit_cast->right);
+                                ast_expr->left = implicit_cast->right;
+                            }
+                            arrpush(next_list, ast_expr->left);
                         }
                         if(ast_expr->right) {
-                            ast_expr->right = arena_dup_ast(arena, ast_expr->right);
-                            arrpush(next_list, (AST*)(ast_expr->right));
+                            if(ast_expr->right->loc.src_path == NULL) {
+                                assert(ast_expr->right->kind == AST_KIND_expr);
+                                AST_expr *implicit_cast = (AST_expr*)(ast_expr->right);
+                                assert(implicit_cast->token == TOKEN_CAST);
+                                assert(implicit_cast->right);
+                                ast_expr->right = implicit_cast->right;
+                            }
+                            arrpush(next_list, ast_expr->right);
                         }
                     }
                     break;
                 case AST_KIND_param:
                     {
                         AST_param *ast_param = (AST_param*)ast;
-                        ast_param->value = arena_dup_ast(arena, ast_param->value);
-                        arrpush(next_list, (AST*)(ast_param->value));
+                        ast_param->type_annotation = NULL;
+                        ast_param->value_annotation = NULL;
+                        ast_param->is_vararg = false;
+                        if(ast_param->value->loc.src_path == NULL) {
+                            assert(ast_param->value->kind == AST_KIND_expr);
+                            AST_expr *implicit_cast = (AST_expr*)(ast_param->value);
+                            assert(implicit_cast->token == TOKEN_CAST);
+                            assert(implicit_cast->right);
+                            ast_param->value = implicit_cast->right;
+                        }
+                        arrpush(next_list, ast_param->value);
                         if(ast_param->next) {
-                            ast_param->next = (AST_param*)arena_dup_ast(arena, (AST*)(ast_param->next));
                             arrpush(next_list, (AST*)(ast_param->next));
                         }
                     }
                     break;
                 case AST_KIND_atom:
+                    {
+                        AST_atom *ast_atom = (AST_atom*)ast;
+                        ast_atom->type_annotation = NULL;
+                        ast_atom->value_annotation = NULL;
+                        ast_atom->symbol_annotation = NULL;
+                    }
                     break;
                 case AST_KIND_array_literal:
                     {
                         AST_array_literal *ast_array = (AST_array_literal*)ast;
                         if(ast_array->type) {
-                            ast_array->type = arena_dup_ast(arena, ast_array->type);
                             arrpush(next_list, ast_array->type);
                         }
                         assert(ast_array->elements);
-                        ast_array->elements = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_array->elements));
                         arrpush(next_list, (AST*)(ast_array->elements));
                     }
                     break;
                 case AST_KIND_struct_literal:
                     {
-                        AST_struct_literal *ast_struct = (AST_struct_literal*)ast;
-                        assert(ast_struct->members);
-                        ast_struct->members = (AST_member_list*)arena_dup_ast(arena, (AST*)(ast_struct->members));
-                        arrpush(next_list, (AST*)(ast_struct->members));
+                        UNIMPLEMENTED;
+                        //AST_struct_literal *ast_struct = (AST_struct_literal*)ast;
+                        //assert(ast_struct->members);
+                        //arrpush(next_list, (AST*)(ast_struct->members));
                     }
                     break;
                 case AST_KIND_call:
                     {
                         AST_call *ast_call = (AST_call*)ast;
-                        ast_call->callee = arena_dup_ast(arena, ast_call->callee);
+                        ast_call->type_annotation = NULL;
+                        ast_call->value_annotation = NULL;
+                        ast_call->type_annotation_list = NULL;
+                        ast_call->value_annotation_list = NULL;
+                        ast_call->n_types_returned = 0;
                         arrpush(next_list, (AST*)(ast_call->callee));
-                        ast_call->params = (AST_param*)arena_dup_ast(arena, (AST*)(ast_call->params));
                         arrpush(next_list, (AST*)(ast_call->params));
                     }
                     break;
@@ -10920,11 +11027,9 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
                     {
                         AST_proctype *ast_proc = (AST_proctype*)ast;
                         if(ast_proc->params) {
-                            ast_proc->params = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_proc->params));
                             arrpush(next_list, (AST*)(ast_proc->params));
                         }
                         if(ast_proc->rets) {
-                            ast_proc->rets = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_proc->rets));
                             arrpush(next_list, (AST*)(ast_proc->rets));
                         }
                     }
@@ -10947,8 +11052,6 @@ INLINE AST* ast_copy(Arena *arena, AST *root) {
 
     arrfree(cur_list);
     arrfree(next_list);
-
-    return head.down;
 }
 
 //TODO better name conflicts
@@ -10999,8 +11102,8 @@ bool job_runner(char *src, char *src_path) {
     job_queue[0].global_scope = &global_scope;
 
     while(arrlen(job_queue) > 0) {
-        for(int i = 0; i < arrlen(job_queue); ) {
-            Job *jp = job_queue + i;
+        for(job_queue_pos = 0; job_queue_pos < arrlen(job_queue); ) {
+            Job *jp = job_queue + job_queue_pos;
 
             switch(jp->pipe_stage) {
                 case PIPE_STAGE_PARSE:
@@ -11043,14 +11146,17 @@ bool job_runner(char *src, char *src_path) {
                         new_job.global_scope = jp->global_scope;
 
                         if(ast->kind == AST_KIND_procdecl) {
-                            new_job.allocator.value = arena_alloc(&global_scratch_allocator, sizeof(Pool));
-                            new_job.allocator.sym = arena_alloc(&global_scratch_allocator, sizeof(Pool));
-                            new_job.allocator.type = arena_alloc(&global_scratch_allocator, sizeof(Pool));
+                            new_job.allocator.scratch = malloc(sizeof(Arena));
+                            new_job.allocator.value = malloc(sizeof(Pool));
+                            new_job.allocator.sym = malloc(sizeof(Pool));
+                            new_job.allocator.type = malloc(sizeof(Pool));
 
+                            job_init_allocator_scratch(&new_job);
                             job_init_allocator_value(&new_job);
                             job_init_allocator_sym(&new_job);
                             job_init_allocator_type(&new_job);
                         } else {
+                            new_job.allocator.scratch = &global_scratch_allocator;
                             new_job.allocator.value = &global_value_allocator;
                             new_job.allocator.sym = &global_sym_allocator;
                             new_job.allocator.type = &global_type_allocator;
@@ -11062,7 +11168,7 @@ bool job_runner(char *src, char *src_path) {
                         arrpush(new_job.tree_pos_stack, ast);
 
                         arrpush(job_queue_next, new_job);
-                        ++i;
+                        ++job_queue_pos;
                     }
                     break;
                 case PIPE_STAGE_TYPECHECK:
@@ -11081,7 +11187,7 @@ bool job_runner(char *src, char *src_path) {
                                 //arrpush(job_queue_next, *jp);
                                 //Job push_job = *jp;
                                 //arrpush(job_queue, push_job);
-                                //++i;
+                                //++job_queue_pos;
                                 popped_stack = true;
                                 break;
                             } else {
@@ -11108,14 +11214,14 @@ bool job_runner(char *src, char *src_path) {
                             if(jp->state == JOB_STATE_WAIT) {
                                 arrpush(job_queue_next, *jp);
                                 arrlast(job_queue_next).state = JOB_STATE_READY;
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
                                 job_die(jp);
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
@@ -11173,7 +11279,7 @@ bool job_runner(char *src, char *src_path) {
                                         if(inner_record->align > outer_record->align)
                                             outer_record->align = inner_record->align;
 
-                                        for(u64 i = 0; i < inner_record->record.member.n; ++i) {
+                                        for(u64 i = 0; i < inner_record->record.member.n; ++job_queue_pos) {
                                             u64 outer_i = outer_record->record.member.i;
 
                                             for(u64 j = 0; j < outer_i; ++j) {
@@ -11200,7 +11306,7 @@ bool job_runner(char *src, char *src_path) {
                                 if(jp->state == JOB_STATE_ERROR) {
                                     job_report_all_messages(jp);
                                     job_die(jp);
-                                    ++i;
+                                    ++job_queue_pos;
                                     continue;
                                 }
 
@@ -11220,14 +11326,14 @@ bool job_runner(char *src, char *src_path) {
                             if(jp->state == JOB_STATE_WAIT) {
                                 arrpush(job_queue_next, *jp);
                                 arrlast(job_queue_next).state = JOB_STATE_READY;
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
                                 job_die(jp);
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
@@ -11246,7 +11352,7 @@ bool job_runner(char *src, char *src_path) {
                                 jp->waiting_on_name = ast_using->name;
                                 arrpush(job_queue_next, *jp);
                                 arrlast(job_queue_next).state = JOB_STATE_READY;
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
@@ -11262,7 +11368,7 @@ bool job_runner(char *src, char *src_path) {
                                         ast_using->name);
                                 job_report_all_messages(jp);
                                 job_die(jp);
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
                             
@@ -11273,7 +11379,7 @@ bool job_runner(char *src, char *src_path) {
                                             ast_using->name);
                                     job_report_all_messages(jp);
                                     job_die(jp);
-                                    ++i;
+                                    ++job_queue_pos;
                                     continue;
                                 }
 
@@ -11286,7 +11392,7 @@ bool job_runner(char *src, char *src_path) {
                                             (record_type->kind == TYPE_KIND_UNION) ? "union" : "struct");
                                     job_report_all_messages(jp);
                                     job_die(jp);
-                                    ++i;
+                                    ++job_queue_pos;
                                     continue;
                                 }
 
@@ -11295,7 +11401,7 @@ bool job_runner(char *src, char *src_path) {
                                             "'using' can only include structs within structs and unions within unions");
                                     job_report_all_messages(jp);
                                     job_die(jp);
-                                    ++i;
+                                    ++job_queue_pos;
                                     continue;
                                 }
 
@@ -11305,7 +11411,7 @@ bool job_runner(char *src, char *src_path) {
                                             ast_using->name);
                                     job_report_all_messages(jp);
                                     job_die(jp);
-                                    ++i;
+                                    ++job_queue_pos;
                                     continue;
                                 }
 
@@ -11313,7 +11419,7 @@ bool job_runner(char *src, char *src_path) {
                                 if(records_have_member_name_conflicts(jp, ast_using->base.loc, record_type, using_type)) {
                                     job_report_all_messages(jp);
                                     job_die(jp);
-                                    ++i;
+                                    ++job_queue_pos;
                                     continue;
                                 }
 
@@ -11349,49 +11455,86 @@ bool job_runner(char *src, char *src_path) {
                         } else if(ast->kind == AST_KIND_procdecl) {
                             AST_procdecl *ast_procdecl = (AST_procdecl*)ast;
 
-                            if(ast_procdecl->type_checked_body) {
-                                jp->cur_proc_type = NULL;
-                                arrlast(jp->tree_pos_stack) = ast_procdecl->next;
-                                Scope s = arrpop(jp->scopes);
-                                for(int i = 0; i < shlen(s); ++i) {
-                                    if(s[i].value) {
-                                        print_sym(s[i].value[0]);
-                                        printf("\n");
-                                    }
+                            if(ast_procdecl->is_polymorphic) {
+                                if(ast_procdecl->visited == false) {
+                                    arrpush(jp->scopes, NULL);
+                                    ast_procdecl->visited = true;
                                 }
-                                shfree(s);
-                                fprintf(stderr, "\ntype checked the body of '%s'!!!!!!!!!\n\n", ast_procdecl->name);
-                                break;
-                            }
 
-                            if(ast_procdecl->visited == false) {
-                                arrpush(jp->scopes, NULL);
-                                ast_procdecl->visited = true;
-                            }
-                            typecheck_procdecl(jp);
+                                if(ast_procdecl->polymorphic_params_ready == false) {
+                                    typecheck_polymorphic_procdecl(jp);
+                                    arrlast(jp->tree_pos_stack) = ast_procdecl->next;
 
-                            if(jp->state == JOB_STATE_WAIT) {
-                                arrpush(job_queue_next, *jp);
-                                arrlast(job_queue_next).state = JOB_STATE_READY;
-                                ++i;
-                                continue;
-                            }
+                                    if(ast_procdecl->next == NULL) {
+                                        job_die(jp);
+                                        ++job_queue_pos;
+                                        continue;
+                                    }
 
-                            if(jp->state == JOB_STATE_ERROR) {
-                                job_report_all_messages(jp);
-                                job_die(jp);
-                                ++i;
-                                continue;
-                            }
+                                } else {
+                                    UNIMPLEMENTED;
+                                }
 
-                            if(ast_procdecl->body == NULL) {
-                                arrlast(jp->tree_pos_stack) = ast_procdecl->next;
+                                if(jp->state == JOB_STATE_WAIT) {
+                                    arrpush(job_queue_next, *jp);
+                                    arrlast(job_queue_next).state = JOB_STATE_READY;
+                                    ++job_queue_pos;
+                                    continue;
+                                }
+
+                                if(jp->state == JOB_STATE_ERROR) {
+                                    job_report_all_messages(jp);
+                                    job_die(jp);
+                                    ++job_queue_pos;
+                                    continue;
+                                }
+
                             } else {
-                                ast_procdecl->type_checked_body = true;
-                                AST_block *ast_block = (AST_block*)ast_procdecl->body;
-                                ast_block->visited = true;
-                                /* NOTE skip the body block so that params are in the same scope as body */
-                                arrpush(jp->tree_pos_stack, ast_block->down);
+                                if(ast_procdecl->type_checked_body) {
+                                    jp->cur_proc_type = NULL;
+                                    arrlast(jp->tree_pos_stack) = ast_procdecl->next;
+                                    Scope s = arrpop(jp->scopes);
+                                    for(int i = 0; i < shlen(s); ++i) {
+                                        if(s[i].value) {
+                                            print_sym(s[i].value[0]);
+                                            printf("\n");
+                                        }
+                                    }
+                                    shfree(s);
+                                    fprintf(stderr, "\ntype checked the body of '%s'!!!!!!!!!\n\n", ast_procdecl->name);
+                                    break;
+                                }
+
+                                if(ast_procdecl->visited == false) {
+                                    arrpush(jp->scopes, NULL);
+                                    ast_procdecl->visited = true;
+                                }
+
+                                typecheck_procdecl(jp);
+
+                                if(jp->state == JOB_STATE_WAIT) {
+                                    arrpush(job_queue_next, *jp);
+                                    arrlast(job_queue_next).state = JOB_STATE_READY;
+                                    ++job_queue_pos;
+                                    continue;
+                                }
+
+                                if(jp->state == JOB_STATE_ERROR) {
+                                    job_report_all_messages(jp);
+                                    job_die(jp);
+                                    ++job_queue_pos;
+                                    continue;
+                                }
+
+                                if(ast_procdecl->body == NULL) {
+                                    arrlast(jp->tree_pos_stack) = ast_procdecl->next;
+                                } else {
+                                    ast_procdecl->type_checked_body = true;
+                                    AST_block *ast_block = (AST_block*)ast_procdecl->body;
+                                    ast_block->visited = true;
+                                    /* NOTE skip the body block so that params are in the same scope as body */
+                                    arrpush(jp->tree_pos_stack, ast_block->down);
+                                }
                             }
 
                         } else if(ast->kind == AST_KIND_push_context) {
@@ -11407,7 +11550,7 @@ bool job_runner(char *src, char *src_path) {
 
                                 job_report_all_messages(jp);
                                 job_die(jp);
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
@@ -11450,14 +11593,14 @@ bool job_runner(char *src, char *src_path) {
                             if(jp->state == JOB_STATE_WAIT) {
                                 arrpush(job_queue_next, *jp);
                                 arrlast(job_queue_next).state = JOB_STATE_READY;
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
                                 job_die(jp);
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
@@ -11484,14 +11627,14 @@ bool job_runner(char *src, char *src_path) {
                             if(jp->state == JOB_STATE_WAIT) {
                                 arrpush(job_queue_next, *jp);
                                 arrlast(job_queue_next).state = JOB_STATE_READY;
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
                                 job_die(jp);
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
@@ -11519,14 +11662,14 @@ bool job_runner(char *src, char *src_path) {
                             if(jp->state == JOB_STATE_WAIT) {
                                 arrpush(job_queue_next, *jp);
                                 arrlast(job_queue_next).state = JOB_STATE_READY;
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
                                 job_die(jp);
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
@@ -11557,7 +11700,7 @@ bool job_runner(char *src, char *src_path) {
                                 if(jp->state == JOB_STATE_WAIT) {
                                     arrpush(job_queue_next, *jp);
                                     arrlast(job_queue_next).state = JOB_STATE_READY;
-                                    ++i;
+                                    ++job_queue_pos;
                                     continue;
                                 }
 
@@ -11589,7 +11732,7 @@ bool job_runner(char *src, char *src_path) {
                                     jp->state = JOB_STATE_ERROR;
                                     job_report_all_messages(jp);
                                     job_die(jp);
-                                    ++i;
+                                    ++job_queue_pos;
                                 }
 
                                 continue;
@@ -11613,7 +11756,7 @@ bool job_runner(char *src, char *src_path) {
                                     jp->state = JOB_STATE_ERROR;
                                     job_report_all_messages(jp);
                                     job_die(jp);
-                                    ++i;
+                                    ++job_queue_pos;
                                     continue;
                                 }
 
@@ -11633,7 +11776,7 @@ bool job_runner(char *src, char *src_path) {
                                 if(jp->state == JOB_STATE_WAIT) {
                                     arrpush(job_queue_next, *jp);
                                     arrlast(job_queue_next).state = JOB_STATE_READY;
-                                    ++i;
+                                    ++job_queue_pos;
                                     continue;
                                 }
 
@@ -11651,7 +11794,7 @@ bool job_runner(char *src, char *src_path) {
                                 jp->state = JOB_STATE_ERROR;
                                 job_report_all_messages(jp);
                                 job_die(jp);
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
@@ -11686,7 +11829,7 @@ bool job_runner(char *src, char *src_path) {
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
                                 job_die(jp);
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
@@ -11723,7 +11866,7 @@ bool job_runner(char *src, char *src_path) {
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
                                 job_die(jp);
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
@@ -11741,7 +11884,7 @@ bool job_runner(char *src, char *src_path) {
                                     jp->expr_list_pos = expr_list_pos;
                                     arrpush(job_queue_next, *jp);
                                     arrlast(job_queue_next).state = JOB_STATE_READY;
-                                    ++i;
+                                    ++job_queue_pos;
                                     job_needs_to_wait = true;
                                     break;
                                 }
@@ -11749,7 +11892,7 @@ bool job_runner(char *src, char *src_path) {
                                 if(jp->state == JOB_STATE_ERROR) {
                                     job_report_all_messages(jp);
                                     job_die(jp);
-                                    ++i;
+                                    ++job_queue_pos;
                                     continue;
                                 }
 
@@ -11788,7 +11931,7 @@ bool job_runner(char *src, char *src_path) {
                             if(jp->state == JOB_STATE_ERROR) {
                                 job_report_all_messages(jp);
                                 job_die(jp);
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
@@ -11796,7 +11939,7 @@ bool job_runner(char *src, char *src_path) {
                                 job_error(jp, ast_return->next->loc,
                                         "unreachable code after return from '%s'",
                                         cur_proc_type->proc.name);
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
@@ -11811,7 +11954,7 @@ bool job_runner(char *src, char *src_path) {
                                 Job push_job = *jp;
                                 arrpush(job_queue_next, push_job);
                                 arrlast(job_queue_next).state = JOB_STATE_READY;
-                                ++i;
+                                ++job_queue_pos;
                                 continue;
                             }
 
@@ -11826,7 +11969,7 @@ bool job_runner(char *src, char *src_path) {
 
                             //{
                             //    printf("\nlocal segment dump\n");
-                            //    for(int i = 0; i < 9; ++i) {
+                            //    for(int i = 0; i < 9; ++job_queue_pos) {
                             //        for(int j = 0; j < 30; ++j) {
                             //            printf("%.2X ", jp->interp.local_segment[i*30 + j]);
                             //        }
@@ -11837,7 +11980,7 @@ bool job_runner(char *src, char *src_path) {
 
                             //{
                             //    printf("\nport dump\n");
-                            //    for(int i = 0; i < arrlen(jp->interp.ports); ++i) {
+                            //    for(int i = 0; i < arrlen(jp->interp.ports); ++job_queue_pos) {
                             //        printf("port %i: { .i = %lu, .f32 = %f, .f64 = %g }\n",
                             //                i,
                             //                jp->interp.ports[i].integer,
@@ -11847,7 +11990,7 @@ bool job_runner(char *src, char *src_path) {
                             //}
 
                             job_die(jp);
-                            ++i;
+                            ++job_queue_pos;
 
                         } else if(ast->kind == AST_KIND_import_directive) {
                             AST_import_directive *ast_import = (AST_import_directive*)ast;
@@ -11859,7 +12002,7 @@ bool job_runner(char *src, char *src_path) {
                                     job_error(jp, ast->loc, "failed import, no such file '%s'", ast_import->path);
                                     job_report_all_messages(jp);
                                     job_die(jp);
-                                    ++i;
+                                    ++job_queue_pos;
                                     continue;
                                 }
 
@@ -11876,7 +12019,7 @@ bool job_runner(char *src, char *src_path) {
                             arrlast(job_queue).global_scope = &global_scope;
 
                             job_die(jp);
-                            ++i;
+                            ++job_queue_pos;
 
                         } else {
                             UNIMPLEMENTED;
@@ -11888,7 +12031,7 @@ bool job_runner(char *src, char *src_path) {
                         if(!jp->handling_name) {
                             assert(AST_KIND_IS_RECORD(jp->root->kind));
                             job_die(jp);
-                            ++i;
+                            ++job_queue_pos;
                             continue;
                         }
 
@@ -11900,14 +12043,14 @@ bool job_runner(char *src, char *src_path) {
                         if(jp->state == JOB_STATE_ERROR) {
                             job_report_all_messages(jp);
                             job_die(jp);
-                            ++i;
+                            ++job_queue_pos;
                             continue;
                         }
 
                         if(jp->state == JOB_STATE_WAIT) {
                             arrpush(job_queue_next, *jp);
                             arrlast(job_queue_next).state = JOB_STATE_READY;
-                            ++i;
+                            ++job_queue_pos;
                             continue;
                         }
 
@@ -11916,12 +12059,12 @@ bool job_runner(char *src, char *src_path) {
                         //IRproc procedure = hmget(proc_table, handling_sym->procid);
                         //if(!procedure.is_foreign) {
                         //    IRinst *instructions = procedure.instructions;
-                        //    for(int i = 0; i < procedure.n_instructions; ++i) {
+                        //    for(int i = 0; i < procedure.n_instructions; ++job_queue_pos) {
                         //        printf("%i: ",i);
                         //        print_ir_inst(instructions[i], stdout);
                         //    }
                         //}
-                        ++i;
+                        ++job_queue_pos;
                         break;
                     }
                     break;
@@ -12469,6 +12612,15 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
 }
 
 bool types_are_same(Type *a, Type *b) {
+
+    if(a->kind == TYPE_KIND_WILDCARD && a->wildcard.matched) {
+        a = a->wildcard.matched;
+    }
+
+    if(b->kind == TYPE_KIND_WILDCARD && b->wildcard.matched) {
+        b = b->wildcard.matched;
+    }
+
     if(a->kind != b->kind) return false;
 
     if(a->kind == TYPE_KIND_STRING && b->kind == TYPE_KIND_STRING)
@@ -12545,6 +12697,15 @@ bool types_are_same(Type *a, Type *b) {
 }
 
 Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST **right) {
+
+    if(a && a->kind == TYPE_KIND_WILDCARD && a->wildcard.matched != NULL) {
+        a = a->wildcard.matched;
+    }
+
+    if(b && b->kind == TYPE_KIND_WILDCARD && b->wildcard.matched != NULL) {
+        b = b->wildcard.matched;
+    }
+
     if(!(a && b)) { /* unary operators */
         switch(op) {
             default:
@@ -12586,6 +12747,7 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                 break;
             case '[':
                 if(a->kind == TYPE_KIND_TYPE) return builtin_type+TYPE_KIND_TYPE;
+                if(a->kind == TYPE_KIND_WILDCARD) return builtin_type+TYPE_KIND_TYPE;
                 break;
             case '+': case '-':
                 if(a->kind == TYPE_KIND_BOOL)  return a;
@@ -13043,6 +13205,13 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                 {
                     bool checked = false;
 
+                    if(a->kind == TYPE_KIND_WILDCARD) {
+                        assert(a->wildcard.matched == NULL);
+                        a->wildcard.matched = b;
+                        return b;
+                        //UNIMPLEMENTED;
+                    }
+
                     if(types_are_same(a, b))
                         return a;
 
@@ -13065,6 +13234,7 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                         checked = true;
                     }
 
+                    //TODO static array type checking is really horrible
                     if(!checked && a->kind == TYPE_KIND_ARRAY && b->kind == TYPE_KIND_ARRAY) {
                         if(right && right[0]->kind == AST_KIND_array_literal) {
                             AST_array_literal *right_array_lit = (AST_array_literal*)*right;
@@ -13081,7 +13251,7 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                             else
                                 checked = false;
                         } else {
-                            checked = typecheck_operation(jp, a->array.of, b->array.of, '=', NULL, NULL);
+                            checked = (a->array.n == b->array.n && typecheck_operation(jp, a->array.of, b->array.of, '=', NULL, NULL));
                         }
                     }
 
@@ -13347,6 +13517,36 @@ void typecheck_expr(Job *jp) {
                     atom->value_annotation = builtin_value+VALUE_KIND_NIL;
                     arrpush(value_stack, builtin_value+VALUE_KIND_NIL);
                 }
+            } else if(atom->token == TOKEN_POLYMORPHIC_IDENT) {
+                Sym *sym = job_scope_lookup(jp, atom->text);
+
+                if(sym) {
+                    //TODO custom printf formatting
+                    job_error(jp, atom->base.loc, "polymorphic variable '%s' already declared", atom->text);
+                    break;
+                }
+
+
+                sym = job_alloc_sym(jp);
+                sym->name = atom->text;
+                sym->type = job_alloc_type(jp, TYPE_KIND_WILDCARD);
+                sym->type->wildcard.name = atom->text;
+                sym->is_polymorphic_var = true;
+                sym->constant = true;
+
+                Value *v = job_alloc_value(jp, VALUE_KIND_TYPE);
+                v->val.type = sym->type;
+
+                sym->value = v;
+
+                job_scope_enter(jp, sym);
+
+                atom->type_annotation = sym->type;
+                atom->value_annotation = v;
+
+                arrpush(type_stack, sym->type);
+                arrpush(value_stack, v);
+
             } else if(atom->token == TOKEN_CONTEXT) {
                 if(type_Context_pointer.kind != TYPE_KIND_POINTER) {
                     Sym *sym = global_scope_lookup(jp, "Context");
@@ -13538,7 +13738,7 @@ void typecheck_expr(Job *jp) {
             paramp->type_annotation = arrlast(type_stack);
             paramp->value_annotation = arrlast(value_stack);
         } else if(kind == AST_KIND_call || kind == AST_KIND_run_directive) {
-            assert(arrlast(type_stack)->kind == TYPE_KIND_PROC);
+            //assert(arrlast(type_stack)->kind == TYPE_KIND_PROC);
 
             bool run_at_compile_time = (kind == AST_KIND_run_directive);
 
@@ -13548,186 +13748,211 @@ void typecheck_expr(Job *jp) {
             if(run_at_compile_time) {
                 ast_run = (AST_run_directive*)expr[pos];
                 callp = ast_run->call_to_run;
-                Sym *s = ((AST_atom*)(callp->callee))->symbol_annotation;
-                assert(s);
-                assert(s->name);
-                if(s->ready_to_run == false) {
-                    if(s->job_encountered_error) {
-                        job_error(jp, callp->callee->loc,
-                                "'%s' could not compile because of an error",
-                                s->name);
-                    } else {
-                        jp->state = JOB_STATE_WAIT;
-                        jp->waiting_on_name = s->name;
-                    }
-                    break;
-                }
             } else {
                 callp = (AST_call*)expr[pos];
             }
 
-            Type *proc_type = arrpop(type_stack);
-            arrsetlen(value_stack, arrlen(value_stack) - 1);
-            //bool c_call = proc_type->proc.c_call;
+            bool is_call_expr = (callp->n_params == (arrlen(type_stack) - 1) && pos == arrlen(expr) - 1);
 
-            u8 params_passed[proc_type->proc.param.n];
-            memset(params_passed, 0, proc_type->proc.param.n);
-            for(int i = proc_type->proc.first_default_param; i < proc_type->proc.param.n; ++i)
-                params_passed[i] = 2;
+            Type *proc_type = ((AST_expr_base*)(callp->callee))->type_annotation;
+            assert(callp->callee->kind == AST_KIND_atom);
+            assert(proc_type->kind == TYPE_KIND_PROC);
 
-            assert(arrlen(type_stack) == arrlen(value_stack));
+            if(!callp->checked_call) {
+                //proc_type = arrpop(type_stack);
+                arrsetlen(type_stack, arrlen(type_stack) - 1);
+                arrsetlen(value_stack, arrlen(value_stack) - 1);
 
-            if(proc_type->proc.has_defaults && callp->n_params < proc_type->proc.first_default_param) {
-                job_error(jp, callp->base.loc, "not enough parameters in call");
-                return;
-            } else if(!proc_type->proc.has_defaults && callp->n_params < proc_type->proc.param.n) {
-                job_error(jp, callp->base.loc, "not enough parameters in call");
-                return;
-            } else if(!proc_type->proc.varargs && callp->n_params > proc_type->proc.param.n) {
-                job_error(jp, callp->base.loc, "too many parameters in call");
-                return;
-            }
+                Sym *proc_sym = NULL; //NOTE 10/11/24 this is only used for polymorphic procedure stuff
+                assert(callp->callee->kind == AST_KIND_atom);
+                proc_sym = ((AST_atom*)(callp->callee))->symbol_annotation;
+                //if(proc_type->proc.is_polymorphic) {
+                //    assert(callp->callee->kind == AST_KIND_atom);
+                //    proc_sym = ((AST_atom*)(callp->callee))->symbol_annotation;
+                //}
 
-            int base_index = arrlen(type_stack) - callp->n_params;
-            int n_positional_params = callp->has_named_params ? callp->first_named_param : callp->n_params;
+                u8 params_passed[proc_type->proc.param.n];
+                memset(params_passed, 0, proc_type->proc.param.n);
+                for(int i = proc_type->proc.first_default_param; i < proc_type->proc.param.n; ++i)
+                    params_passed[i] = 2;
 
-            {
-                AST_param *param_list = callp->params;
+                assert(arrlen(type_stack) == arrlen(value_stack));
 
-                for(int i = 0; i < n_positional_params && i < proc_type->proc.param.n; ++i) {
-                    Type *param_type = type_stack[base_index + i];
-                    Type *expected_type = proc_type->proc.param.types[i];
-
-                    assert(param_type == param_list->type_annotation);
-
-                    Type *t = typecheck_operation(jp, expected_type, param_type, '=', NULL, &(param_list->value));
-                    param_list->type_annotation = t;
-
-                    if(!t) {
-                        if(proc_type->proc.name == NULL) {
-                            job_error(jp, param_list->base.loc,
-                                    "cannot pass type '%s' to parameter of type '%s'",
-                                    job_type_to_str(jp, param_type),
-                                    job_type_to_str(jp, expected_type));
-                        } else {
-                            job_error(jp, param_list->base.loc,
-                                    "cannot pass type '%s' to parameter '%s' of type '%s'",
-                                    job_type_to_str(jp, param_type),
-                                    proc_type->proc.param.names[i],
-                                    job_type_to_str(jp, expected_type));
-                        }
-                    }
-
-                    param_list = param_list->next;
-
-                    params_passed[i] = 1;
+                if(proc_type->proc.has_defaults && callp->n_params < proc_type->proc.first_default_param) {
+                    job_error(jp, callp->base.loc, "not enough parameters in call");
+                    return;
+                } else if(!proc_type->proc.has_defaults && callp->n_params < proc_type->proc.param.n) {
+                    job_error(jp, callp->base.loc, "not enough parameters in call");
+                    return;
+                } else if(!proc_type->proc.varargs && callp->n_params > proc_type->proc.param.n) {
+                    job_error(jp, callp->base.loc, "too many parameters in call");
+                    return;
                 }
-            }
 
-            if(callp->has_named_params) {
-                assert(proc_type->proc.name != NULL);
+                int base_index = arrlen(type_stack) - callp->n_params;
+                int n_positional_params = callp->has_named_params ? callp->first_named_param : callp->n_params;
 
-                base_index = arrlen(type_stack) - callp->n_params + callp->first_named_param;
+                {
+                    AST_param *param_list = callp->params;
 
-                AST_param *param_list = callp->params;
+                    for(int i = 0; i < n_positional_params && i < proc_type->proc.param.n; ++i) {
+                        Type *param_type = type_stack[base_index + i];
+                        Type *expected_type = proc_type->proc.param.types[i];
 
-                for(int i = 0; i < callp->n_params && i < proc_type->proc.param.n; ++i) {
-                    Type *param_type = type_stack[base_index + i];
-                    char *param_name = value_stack[base_index + i]->name;
+                        assert(param_type == param_list->type_annotation);
 
-                    assert(param_type == param_list->type_annotation);
+                        Type *t = typecheck_operation(jp, expected_type, param_type, '=', NULL, &(param_list->value));
+                        param_list->type_annotation = t;
 
-                    Type *expected_type = NULL;
-                    int param_index = 0;
-                    for(; param_index < proc_type->proc.param.n; ++param_index) {
-                        if(!strcmp(param_name, proc_type->proc.param.names[param_index])) {
-                            expected_type = proc_type->proc.param.types[param_index];
-                            break;
+                        if(!t) {
+                            if(proc_type->proc.name == NULL) {
+                                job_error(jp, param_list->base.loc,
+                                        "cannot pass type '%s' to parameter of type '%s'",
+                                        job_type_to_str(jp, param_type),
+                                        job_type_to_str(jp, expected_type));
+                            } else {
+                                job_error(jp, param_list->base.loc,
+                                        "cannot pass type '%s' to parameter '%s' of type '%s'",
+                                        job_type_to_str(jp, param_type),
+                                        proc_type->proc.param.names[i],
+                                        job_type_to_str(jp, expected_type));
+                            }
                         }
+
+                        param_list = param_list->next;
+
+                        params_passed[i] = 1;
                     }
-
-                    if(expected_type == NULL) {
-                        //TODO custom formatting for printing locations
-                        job_error(jp, callp->base.loc,
-                                "procedure '%s' has no parameter named '%s'", proc_type->proc.name, param_name);
-                    }
-
-                    if(params_passed[param_index] == 1) {
-                        //TODO custom formatting for printing locations
-                        job_error(jp, callp->base.loc,
-                                "parameter '%s' was passed multiple times", param_name);
-                    }
-
-                    params_passed[param_index] = 1;
-
-                    Type *t = typecheck_operation(jp, expected_type, param_type, '=', NULL, &(param_list->value));
-                    param_list->type_annotation = t;
-
-                    if(!t) {
-                        job_error(jp, param_list->base.loc,
-                                "invalid type '%s' passed to parameter '%s' in call to '%s', expected type '%s'",
-                                job_type_to_str(jp, param_type),
-                                proc_type->proc.param.names[param_index],
-                                proc_type->proc.name,
-                                job_type_to_str(jp, expected_type));
-                    }
-
-                    param_list = param_list->next;
                 }
-            }
 
-            for(int i = 0; i < proc_type->proc.param.n; ++i) {
-                if(params_passed[i] == 0) {
+                if(callp->has_named_params) {
                     assert(proc_type->proc.name != NULL);
-                    job_error(jp, callp->base.loc,
-                            "missing parameter '%s' in call to '%s'",
-                            proc_type->proc.param.names[i], proc_type->proc.name);
-                    break;
-                }
-            }
 
-            if(run_at_compile_time) {
-                for(int i = arrlen(value_stack) - callp->n_params; i < arrlen(value_stack); ++i) {
-                    if(value_stack[i]->kind == VALUE_KIND_NIL) {
-                        job_error(jp, callp->base.loc, "parameters to '#run' directive must const evaluate");
+                    base_index = arrlen(type_stack) - callp->n_params + callp->first_named_param;
+
+                    AST_param *param_list = callp->params;
+
+                    for(int i = 0; i < callp->n_params && i < proc_type->proc.param.n; ++i) {
+                        Type *param_type = type_stack[base_index + i];
+                        char *param_name = value_stack[base_index + i]->name;
+
+                        assert(param_type == param_list->type_annotation);
+
+                        Type *expected_type = NULL;
+                        int param_index = 0;
+                        for(; param_index < proc_type->proc.param.n; ++param_index) {
+                            if(!strcmp(param_name, proc_type->proc.param.names[param_index])) {
+                                expected_type = proc_type->proc.param.types[param_index];
+                                break;
+                            }
+                        }
+
+                        if(expected_type == NULL) {
+                            //TODO custom formatting for printing locations
+                            job_error(jp, callp->base.loc,
+                                    "procedure '%s' has no parameter named '%s'", proc_type->proc.name, param_name);
+                        }
+
+                        if(params_passed[param_index] == 1) {
+                            //TODO custom formatting for printing locations
+                            job_error(jp, callp->base.loc,
+                                    "parameter '%s' was passed multiple times", param_name);
+                        }
+
+                        params_passed[param_index] = 1;
+
+                        Type *t = typecheck_operation(jp, expected_type, param_type, '=', NULL, &(param_list->value));
+                        param_list->type_annotation = t;
+
+                        if(!t) {
+                            job_error(jp, param_list->base.loc,
+                                    "invalid type '%s' passed to parameter '%s' in call to '%s', expected type '%s'",
+                                    job_type_to_str(jp, param_type),
+                                    proc_type->proc.param.names[param_index],
+                                    proc_type->proc.name,
+                                    job_type_to_str(jp, expected_type));
+                        }
+
+                        param_list = param_list->next;
+                    }
+                }
+
+                for(int i = 0; i < proc_type->proc.param.n; ++i) {
+                    if(params_passed[i] == 0) {
+                        assert(proc_type->proc.name != NULL);
+                        job_error(jp, callp->base.loc,
+                                "missing parameter '%s' in call to '%s'",
+                                proc_type->proc.param.names[i], proc_type->proc.name);
                         break;
                     }
                 }
-            }
 
-            bool is_call_expr = (callp->n_params == arrlen(type_stack) && pos == arrlen(expr) - 1);
-
-            arrsetlen(type_stack, arrlen(type_stack) - callp->n_params);
-            arrsetlen(value_stack, arrlen(value_stack) - callp->n_params);
-
-            if(!is_call_expr && proc_type->proc.ret.n == 0) {
-                job_error(jp, callp->base.loc, "attempted to use void procedure in expression");
-            }
-
-            if(jp->state == JOB_STATE_ERROR) return;
-
-            if(is_call_expr) { /* if the only thing in the expr is a call */
-                assert(arrlen(type_stack) == 0);
-
-                callp->n_types_returned = proc_type->proc.ret.n;
-
-                if(callp->n_types_returned > 0) {
-                    callp->type_annotation = proc_type->proc.ret.types[0];
-                    callp->type_annotation_list = job_alloc_scratch(jp, sizeof(Type*) * proc_type->proc.ret.n);
-                    for(int i = 0; i < proc_type->proc.ret.n; ++i) {
-                        callp->type_annotation_list[i] = proc_type->proc.ret.types[i];
+                if(run_at_compile_time) {
+                    for(int i = arrlen(value_stack) - callp->n_params; i < arrlen(value_stack); ++i) {
+                        if(value_stack[i]->kind == VALUE_KIND_NIL) {
+                            job_error(jp, callp->base.loc, "parameters to '#run' directive must const evaluate");
+                            break;
+                        }
                     }
                 }
-            } else {
-                callp->n_types_returned = 1;
-                callp->type_annotation = proc_type->proc.ret.types[0];
-                arrpush(type_stack, proc_type->proc.ret.types[0]);
-            }
 
-            if(ast_run) {
-                ast_run->n_types_returned = callp->n_types_returned;
-                ast_run->type_annotation = callp->type_annotation;
-                ast_run->type_annotation_list = callp->type_annotation_list;
+                arrsetlen(type_stack, arrlen(type_stack) - callp->n_params);
+                arrsetlen(value_stack, arrlen(value_stack) - callp->n_params);
+
+                if(!is_call_expr && proc_type->proc.ret.n == 0) {
+                    job_error(jp, callp->base.loc, "attempted to use void procedure in expression");
+                }
+
+                if(jp->state == JOB_STATE_ERROR) return;
+
+                if(is_call_expr) { /* if the only thing in the expr is a call */
+                    assert(arrlen(type_stack) == 0);
+
+                    callp->n_types_returned = proc_type->proc.ret.n;
+
+                    if(callp->n_types_returned > 0) {
+                        callp->type_annotation = proc_type->proc.ret.types[0];
+                        callp->type_annotation_list = job_alloc_scratch(jp, sizeof(Type*) * proc_type->proc.ret.n);
+                        for(int i = 0; i < proc_type->proc.ret.n; ++i) {
+                            callp->type_annotation_list[i] = proc_type->proc.ret.types[i];
+                        }
+                    }
+                } else {
+                    callp->n_types_returned = 1;
+                    callp->type_annotation = proc_type->proc.ret.types[0];
+                    arrpush(type_stack, proc_type->proc.ret.types[0]);
+                }
+
+                if(ast_run) {
+                    ast_run->n_types_returned = callp->n_types_returned;
+                    ast_run->type_annotation = callp->type_annotation;
+                    ast_run->type_annotation_list = callp->type_annotation_list;
+                }
+
+                callp->checked_call = true;
+
+                if(proc_type->proc.is_polymorphic) {
+                    assert(proc_sym);
+                    callp->procid_annotation = procid_alloc;
+                    proc_sym->procid = procid_alloc++;
+                    Job new_job = job_spawn(&jobid_alloc, PIPE_STAGE_TYPECHECK);
+                    new_job.global_sym_allocator = jp->global_sym_allocator;
+                    new_job.global_scope = jp->global_scope;
+                    new_job.allocator.scratch = malloc(sizeof(Arena));
+                    new_job.allocator.value = malloc(sizeof(Pool));
+                    new_job.allocator.sym = malloc(sizeof(Pool));
+                    new_job.allocator.type = malloc(sizeof(Pool));
+                    job_init_allocator_ast(&new_job);
+                    job_init_allocator_scratch(&new_job);
+                    job_init_allocator_value(&new_job);
+                    job_init_allocator_sym(&new_job);
+                    job_init_allocator_type(&new_job);
+                    arrins(job_queue, job_queue_pos + 1, new_job);
+                    UNIMPLEMENTED;
+                } else {
+                    callp->procid_annotation = proc_sym->procid;
+                }
+
             }
 
             if(run_at_compile_time) {
@@ -13736,6 +13961,22 @@ void typecheck_expr(Job *jp) {
                 //NOTE make sure procedure has been compiled to IR
                 assert(call_to_run->callee->kind == AST_KIND_atom);
                 AST_atom *callee = (AST_atom*)(call_to_run->callee);
+                assert(callee->symbol_annotation);
+                assert(callee->symbol_annotation->name);
+
+                //TODO check if procedure is ready to run by looking up procid in procedure table
+                if(callee->symbol_annotation->ready_to_run == false) {
+                    if(callee->symbol_annotation->job_encountered_error) {
+                        job_error(jp, callp->callee->loc,
+                                "'%s' could not compile because of an error",
+                                callee->symbol_annotation->name);
+                    } else {
+                        jp->state = JOB_STATE_WAIT;
+                        jp->waiting_on_name = callee->symbol_annotation->name;
+                    }
+                    break;
+                }
+
                 assert(callee->symbol_annotation->procid >= 0);
 
                 jp->label_alloc = 1;
@@ -13777,32 +14018,8 @@ void typecheck_expr(Job *jp) {
                      * It would be a good idea to try and unify the things that fly around in the language in to
                      * one Entity struct, like in a game engine.
                      */
-                    if(TYPE_KIND_IS_NOT_SCALAR(t->kind)) {
-                        UNIMPLEMENTED;
 
-                        if(TYPE_KIND_IS_RECORD(t->kind)) {
-                            UNIMPLEMENTED;
-                        } else if(TYPE_KIND_IS_ARRAY_LIKE(t->kind)) {
-                            if(t->kind == TYPE_KIND_DYNAMIC_ARRAY) {
-                                UNIMPLEMENTED;
-                            } else if(t->kind == TYPE_KIND_ARRAY) {
-                                UNIMPLEMENTED;
-                            } else {
-                                assert(t->kind == TYPE_KIND_ARRAY_VIEW);
-                                UNIMPLEMENTED;
-                            }
-                        } else {
-                            UNIMPLEMENTED;
-                        }
-                    } else {
-                        if(t->kind == TYPE_KIND_POINTER) { 
-                            UNIMPLEMENTED;
-                        } else {
-                            assert(v);
-                            memcpy(jp->interp.global_segment + s->segment_offset, (void*)&(v->val), t->bytes);
-                        }
-                    }
-
+                    serialize_value(jp, jp->interp.global_segment + s->segment_offset, v, t);
                 }
 
                 arrsetlen(jp->interp.ports, 16);
@@ -14037,6 +14254,7 @@ void typecheck_expr(Job *jp) {
             } else if(!is_call_expr) {
                 arrpush(value_stack, builtin_value+VALUE_KIND_NIL);
             }
+
         } else if(kind == AST_KIND_proctype) {
             //TODO allow names to be given to the parameters in the proctype
             //NOTE I think this and other features should be added after we do an
@@ -14201,6 +14419,7 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
         if(expr->token == '@') {
             assert(expr->right && !expr->left);
 
+            //TODO don't edit the tree in this way, it makes the edit annoying to reverse
             if(expr->right->kind == AST_KIND_atom) {
                 AST_atom *atom = (AST_atom*)(expr->right);
                 assert(atom->token == TOKEN_IDENT || atom->token == TOKEN_CONTEXT);
@@ -14469,13 +14688,29 @@ void typecheck_structdecl(Job *jp) {
     }
 }
 
-void typecheck_procdecl(Job *jp) {
+void typecheck_polymorphic_procdecl(Job *jp) {
+    //NOTE copypasta of typecheck_procdecl()
     AST_procdecl *ast = (AST_procdecl*)arrlast(jp->tree_pos_stack);
     assert(ast->base.kind == AST_KIND_procdecl);
 
+    assert(ast->is_polymorphic);
+
     bool is_top_level = (arrlen(jp->tree_pos_stack) == 1);
 
-    Job_memory save_job_allocator = jp->allocator;
+    if(is_top_level && jp->handling_name == NULL)
+        jp->handling_name = ast->name;
+
+    if(ast->proc_type == NULL) {
+        ast->proc_type = job_alloc_type(jp, TYPE_KIND_PROC);
+        ast->proc_type->proc.name = ast->name;
+        ast->proc_type->proc.is_polymorphic = true;
+    }
+    Type *proc_type = ast->proc_type;
+
+    Arena *save_scratch = jp->allocator.scratch;
+    Pool *save_sym = jp->allocator.sym;
+    Pool *save_type = jp->allocator.type;
+    Pool *save_value = jp->allocator.value;
 
     if(is_top_level) {
         jp->allocator.scratch = &global_scratch_allocator;
@@ -14484,15 +14719,13 @@ void typecheck_procdecl(Job *jp) {
         jp->allocator.value = &global_value_allocator;
     }
 
-    if(is_top_level && jp->handling_name == NULL)
-        jp->handling_name = ast->name;
-
-    if(ast->proc_type == NULL) {
-        ast->proc_type = job_alloc_type(jp, TYPE_KIND_PROC);
-        ast->proc_type->proc.name = ast->name;
+    if(proc_type->proc.polymorphic_param_indexes == NULL) {
+        proc_type->proc.n_polymorphic_params = ast->n_polymorphic_params;
+        proc_type->proc.polymorphic_param_indexes =
+            (u64*)job_alloc_scratch(jp, sizeof(u64) * ast->n_polymorphic_params);
     }
-    Type *proc_type = ast->proc_type;
 
+    //NOTE copypasta of typecheck_procdecl()
     if(ast->checked_params == false) {
         u64 n = proc_type->proc.param.n;
 
@@ -14508,7 +14741,6 @@ void typecheck_procdecl(Job *jp) {
             if(p->vararg) {
                 proc_type->proc.param.vararg_name = p->name;
                 if(!ast->c_call) {
-                    //TODO implement Any type
                     Type *varargs_type = job_alloc_type(jp, TYPE_KIND_ARRAY_VIEW);
                     varargs_type->array.of = type_Any;
 
@@ -14518,6 +14750,10 @@ void typecheck_procdecl(Job *jp) {
                         job_error(jp, p->base.loc,
                                 "multiple declaration of parameter '%s' in header of '%s'",
                                 p->name, ast->name, ptr->loc.line);
+                        jp->allocator.scratch = save_scratch;
+                        jp->allocator.sym = save_sym;
+                        jp->allocator.type = save_type;
+                        jp->allocator.value = save_value;
                         return;
                     }
 
@@ -14551,7 +14787,10 @@ void typecheck_procdecl(Job *jp) {
 
                 if(jp->state == JOB_STATE_WAIT) {
                     jp->cur_paramdecl = p;
-                    jp->allocator = save_job_allocator;
+                    jp->allocator.scratch = save_scratch;
+                    jp->allocator.sym = save_sym;
+                    jp->allocator.type = save_type;
+                    jp->allocator.value = save_value;
                     return;
                 }
 
@@ -14574,7 +14813,10 @@ void typecheck_procdecl(Job *jp) {
 
                 if(jp->state == JOB_STATE_WAIT) {
                     jp->cur_paramdecl = p;
-                    jp->allocator = save_job_allocator;
+                    jp->allocator.scratch = save_scratch;
+                    jp->allocator.sym = save_sym;
+                    jp->allocator.type = save_type;
+                    jp->allocator.value = save_value;
                     return;
                 }
 
@@ -14609,7 +14851,13 @@ void typecheck_procdecl(Job *jp) {
                             job_type_to_str(jp, init_type), job_type_to_str(jp, bind_type));
                 }
 
-                if(jp->state == JOB_STATE_ERROR) return;
+                if(jp->state == JOB_STATE_ERROR) {
+                    jp->allocator.scratch = save_scratch;
+                    jp->allocator.sym = save_sym;
+                    jp->allocator.type = save_type;
+                    jp->allocator.value = save_value;
+                    return;
+                }
 
                 bind_type = t;
             }
@@ -14620,6 +14868,345 @@ void typecheck_procdecl(Job *jp) {
                 job_error(jp, p->base.loc,
                         "multiple declaration of parameter '%s' in header of '%s'",
                         p->name, ast->name, ptr->loc.line);
+                jp->allocator.scratch = save_scratch;
+                jp->allocator.sym = save_sym;
+                jp->allocator.type = save_type;
+                jp->allocator.value = save_value;
+                return;
+            }
+
+            Sym sym = {
+                .name = p->name,
+                .loc = p->base.loc,
+                .declared_by = jp->id,
+                .is_argument = true,
+                .type = bind_type,
+                .value = init_value,
+                .initializer = p->init,
+            };
+
+            Sym *symp = job_alloc_sym(jp);
+            *symp = sym;
+            job_scope_enter(jp, symp);
+
+            proc_type->proc.param.types[p->index] = bind_type;
+            proc_type->proc.param.values[p->index] = init_value;
+
+            if(p->is_polymorphic) {
+                u64 i = proc_type->proc.ith_polymorphic_param;
+                proc_type->proc.polymorphic_param_indexes[i++] = p->index;
+                proc_type->proc.ith_polymorphic_param = i;
+            }
+
+            p->symbol_annotation = symp;
+        }
+
+        ast->checked_params = true;
+    }
+
+    //NOTE copypasta of typecheck_procdecl()
+    if(ast->checked_rets == false) {
+        u64 n = proc_type->proc.ret.n;
+
+        if(n == 0) {
+            jp->cur_retdecl = ast->rets;
+            n = proc_type->proc.ret.n = ast->n_rets;
+            proc_type->proc.ret.types = (Type**)job_alloc_scratch(jp, sizeof(Type*) * n);
+        }
+
+        for(AST_retdecl *r = jp->cur_retdecl; r; r = r->next) {
+            if(arrlen(jp->expr) == 0) {
+                linearize_expr(jp, r->expr);
+            }
+            typecheck_expr(jp);
+
+            if(jp->state == JOB_STATE_WAIT) {
+                jp->cur_retdecl = r;
+                jp->allocator.scratch = save_scratch;
+                jp->allocator.sym = save_sym;
+                jp->allocator.type = save_type;
+                jp->allocator.value = save_value;
+                return;
+            }
+
+            if(jp->state == JOB_STATE_ERROR)
+                UNIMPLEMENTED;
+
+            arrsetlen(jp->type_stack, 0);
+            arrsetlen(jp->value_stack, 0);
+            arrsetlen(jp->expr, 0);
+            jp->expr_pos = 0;
+
+            Type *ret_type;
+
+            if(((AST_expr_base*)(r->expr))->type_annotation->kind == TYPE_KIND_TYPE) {
+                ret_type = ((AST_expr*)(r->expr))->value_annotation->val.type;
+            } else if(((AST_expr_base*)(r->expr))->type_annotation->kind == TYPE_KIND_WILDCARD) {
+                ret_type = ((AST_expr*)(r->expr))->type_annotation;
+            } else {
+                UNREACHABLE;
+            }
+
+            proc_type->proc.ret.types[r->index] = ret_type;
+        }
+
+        ast->checked_rets = true;
+    }
+
+    if(ast->n_rets > 0 && ast->body && !all_paths_return(jp, ast->body)) {
+        job_error(jp, jp->non_returning_path_loc,
+                "code path terminates with no return in procedure '%s'",
+                ast->name);
+        jp->allocator.scratch = save_scratch;
+        jp->allocator.sym = save_sym;
+        jp->allocator.type = save_type;
+        jp->allocator.value = save_value;
+        return;
+    }
+
+    assert(!ast->is_foreign && !ast->is_system && !ast->c_call);
+
+    //NOTE copypasta of typecheck_procdecl()
+    proc_type->proc.first_default_param = ast->first_default_param;
+    proc_type->proc.varargs = ast->varargs;
+    proc_type->proc.has_defaults = ast->has_defaults;
+
+    Sym proc_sym = {
+        .name = ast->name,
+        .loc = ast->base.loc,
+        .declared_by = jp->id,
+        .constant = true,
+        .procid = -1,
+        .polymorphic_proc_ast = (AST*)ast,
+        .is_foreign = ast->is_foreign,
+        .is_system = ast->is_system,
+        .is_polymorphic_procedure = true,
+        .type = proc_type,
+    };
+
+    Sym *ptr = is_top_level ? global_scope_lookup(jp, ast->name) : job_current_scope_lookup(jp, ast->name);
+
+    if(ptr) {
+        job_error(jp, ast->base.loc,
+                "multiple declaration of identifier '%s', previously declared at line %i",
+                ast->name, ptr->loc.line);
+        jp->allocator.scratch = save_scratch;
+        jp->allocator.sym = save_sym;
+        jp->allocator.type = save_type;
+        jp->allocator.value = save_value;
+        return;
+    }
+
+    jp->cur_proc_type = proc_type;
+    //TODO if(is_top_level) { // local procedures
+    Sym *symp = job_alloc_global_sym(jp);
+
+    ast->symbol_annotation = symp;
+
+    if(is_top_level) {
+        *symp = proc_sym;
+        global_scope_enter(jp, symp);
+    } else {
+        *symp = proc_sym;
+        job_scope_enter(jp, symp);
+    }
+
+    if(is_top_level) {
+        jp->allocator.scratch = save_scratch;
+        jp->allocator.sym = save_sym;
+        jp->allocator.type = save_type;
+        jp->allocator.value = save_value;
+    }
+
+    ast->polymorphic_params_ready = true;
+
+}
+
+void typecheck_procdecl(Job *jp) {
+    AST_procdecl *ast = (AST_procdecl*)arrlast(jp->tree_pos_stack);
+    assert(ast->base.kind == AST_KIND_procdecl);
+
+    bool is_top_level = (arrlen(jp->tree_pos_stack) == 1);
+
+    Arena *save_scratch = jp->allocator.scratch;
+    Pool *save_sym = jp->allocator.sym;
+    Pool *save_type = jp->allocator.type;
+    Pool *save_value = jp->allocator.value;
+
+    if(is_top_level) {
+        jp->allocator.scratch = &global_scratch_allocator;
+        //jp->allocator.sym = &global_sym_allocator;
+        jp->allocator.type = &global_type_allocator;
+        jp->allocator.value = &global_value_allocator;
+    }
+
+    if(is_top_level && jp->handling_name == NULL)
+        jp->handling_name = ast->name;
+
+    if(ast->proc_type == NULL) {
+        ast->proc_type = job_alloc_type(jp, TYPE_KIND_PROC);
+        ast->proc_type->proc.name = ast->name;
+    }
+    Type *proc_type = ast->proc_type;
+
+    if(ast->checked_params == false) {
+        u64 n = proc_type->proc.param.n;
+
+        if(n == 0) {
+            jp->cur_paramdecl = ast->params;
+            n = proc_type->proc.param.n = ast->n_params;
+            proc_type->proc.param.names = (char**)job_alloc_scratch(jp, sizeof(char*) * n);
+            proc_type->proc.param.types = (Type**)job_alloc_scratch(jp, sizeof(Type*) * n);
+            proc_type->proc.param.values = (Value**)job_alloc_scratch(jp, sizeof(Value*) * n);
+        }
+
+        for(AST_paramdecl *p = jp->cur_paramdecl; p; p = p->next) {
+            if(p->vararg) {
+                proc_type->proc.param.vararg_name = p->name;
+                if(!ast->c_call) {
+                    Type *varargs_type = job_alloc_type(jp, TYPE_KIND_ARRAY_VIEW);
+                    varargs_type->array.of = type_Any;
+
+                    Sym *ptr = job_current_scope_lookup(jp, p->name);
+
+                    if(ptr) {
+                        job_error(jp, p->base.loc,
+                                "multiple declaration of parameter '%s' in header of '%s'",
+                                p->name, ast->name, ptr->loc.line);
+                        jp->allocator.scratch = save_scratch;
+                        jp->allocator.sym = save_sym;
+                        jp->allocator.type = save_type;
+                        jp->allocator.value = save_value;
+                        return;
+                    }
+
+                    Sym sym = {
+                        .name = p->name,
+                        .loc = p->base.loc,
+                        .declared_by = jp->id,
+                        .is_argument = true,
+                        .type = varargs_type,
+                        .value = NULL,
+                        .initializer = p->init,
+                    };
+
+                    Sym *symp = job_alloc_sym(jp);
+                    *symp = sym;
+                    job_scope_enter(jp, symp);
+                    p->symbol_annotation = symp;
+                }
+                break;
+            }
+
+            proc_type->proc.param.names[p->index] = p->name;
+
+            bool initialize = (p->init != NULL);
+
+            if(p->checked_type == false) {
+                if(arrlen(jp->expr) == 0) {
+                    linearize_expr(jp, p->type);
+                }
+                typecheck_expr(jp);
+
+                if(jp->state == JOB_STATE_WAIT) {
+                    jp->cur_paramdecl = p;
+                    jp->allocator.scratch = save_scratch;
+                    jp->allocator.sym = save_sym;
+                    jp->allocator.type = save_type;
+                    jp->allocator.value = save_value;
+                    return;
+                }
+
+                if(jp->state == JOB_STATE_ERROR) {
+                    UNIMPLEMENTED;
+                    jp->allocator.scratch = save_scratch;
+                    jp->allocator.sym = save_sym;
+                    jp->allocator.type = save_type;
+                    jp->allocator.value = save_value;
+                    return;
+                }
+
+                arrsetlen(jp->type_stack, 0);
+                arrsetlen(jp->value_stack, 0);
+                arrsetlen(jp->expr, 0);
+                jp->expr_pos = 0;
+
+                p->checked_type = true;
+            }
+
+            if(initialize && p->checked_init == false) {
+                if(arrlen(jp->expr) == 0) {
+                    linearize_expr(jp, p->init);
+                }
+                typecheck_expr(jp);
+
+                if(jp->state == JOB_STATE_WAIT) {
+                    jp->cur_paramdecl = p;
+                    jp->allocator.scratch = save_scratch;
+                    jp->allocator.sym = save_sym;
+                    jp->allocator.type = save_type;
+                    jp->allocator.value = save_value;
+                    return;
+                }
+
+                if(jp->state == JOB_STATE_ERROR) {
+                    UNIMPLEMENTED;
+                    jp->allocator.scratch = save_scratch;
+                    jp->allocator.sym = save_sym;
+                    jp->allocator.type = save_type;
+                    jp->allocator.value = save_value;
+                    return;
+                }
+
+                arrsetlen(jp->type_stack, 0);
+                arrsetlen(jp->value_stack, 0);
+                arrsetlen(jp->expr, 0);
+                jp->expr_pos = 0;
+
+                p->checked_init = true;
+            }
+
+            Type *bind_type = ((AST_expr*)(p->type))->value_annotation->val.type;
+            Value *init_value = NULL;
+            Type *init_type = NULL;
+
+            if(initialize) {
+                init_value = ((AST_expr*)(p->init))->value_annotation;
+                init_type = ((AST_expr*)(p->init))->type_annotation;
+
+                if(init_value->kind == VALUE_KIND_NIL)
+                    job_error(jp, p->base.loc,
+                            "parameter default values must evaluate at compile time");
+
+                Type *t = typecheck_operation(jp, bind_type, init_type, '=', NULL, &(p->init));
+
+                if(!t) {
+                    job_error(jp, p->base.loc,
+                            "invalid assignment of '%s' to parameter of type '%s'",
+                            job_type_to_str(jp, init_type), job_type_to_str(jp, bind_type));
+                }
+
+                if(jp->state == JOB_STATE_ERROR) {
+                    jp->allocator.scratch = save_scratch;
+                    jp->allocator.sym = save_sym;
+                    jp->allocator.type = save_type;
+                    jp->allocator.value = save_value;
+                    return;
+                }
+
+                bind_type = t;
+            }
+
+            Sym *ptr = job_current_scope_lookup(jp, p->name);
+
+            if(ptr) {
+                job_error(jp, p->base.loc,
+                        "multiple declaration of parameter '%s' in header of '%s'",
+                        p->name, ast->name, ptr->loc.line);
+                jp->allocator.scratch = save_scratch;
+                jp->allocator.sym = save_sym;
+                jp->allocator.type = save_type;
+                jp->allocator.value = save_value;
                 return;
             }
 
@@ -14663,12 +15250,21 @@ void typecheck_procdecl(Job *jp) {
 
             if(jp->state == JOB_STATE_WAIT) {
                 jp->cur_retdecl = r;
-                jp->allocator = save_job_allocator;
+                jp->allocator.scratch = save_scratch;
+                jp->allocator.sym = save_sym;
+                jp->allocator.type = save_type;
+                jp->allocator.value = save_value;
                 return;
             }
 
-            if(jp->state == JOB_STATE_ERROR)
+            if(jp->state == JOB_STATE_ERROR) {
                 UNIMPLEMENTED;
+                jp->allocator.scratch = save_scratch;
+                jp->allocator.sym = save_sym;
+                jp->allocator.type = save_type;
+                jp->allocator.value = save_value;
+                return;
+            }
 
             arrsetlen(jp->type_stack, 0);
             arrsetlen(jp->value_stack, 0);
@@ -14687,6 +15283,10 @@ void typecheck_procdecl(Job *jp) {
         job_error(jp, jp->non_returning_path_loc,
                 "code path terminates with no return in procedure '%s'",
                 ast->name);
+        jp->allocator.scratch = save_scratch;
+        jp->allocator.sym = save_sym;
+        jp->allocator.type = save_type;
+        jp->allocator.value = save_value;
         return;
     }
 
@@ -14722,6 +15322,10 @@ void typecheck_procdecl(Job *jp) {
         job_error(jp, ast->base.loc,
                 "multiple declaration of identifier '%s', previously declared at line %i",
                 ast->name, ptr->loc.line);
+        jp->allocator.scratch = save_scratch;
+        jp->allocator.sym = save_sym;
+        jp->allocator.type = save_type;
+        jp->allocator.value = save_value;
         return;
     }
 
@@ -14740,7 +15344,10 @@ void typecheck_procdecl(Job *jp) {
     }
 
     if(is_top_level) {
-        jp->allocator = save_job_allocator;
+        jp->allocator.scratch = save_scratch;
+        jp->allocator.sym = save_sym;
+        jp->allocator.type = save_type;
+        jp->allocator.value = save_value;
     }
 }
 
@@ -14762,120 +15369,112 @@ void typecheck_vardecl(Job *jp) {
     Value *init_value = NULL;
     Type *init_type = NULL;
 
-    //if(ast->type && AST_KIND_IS_RECORD(ast->type->kind)) {
+    if(ast->checked_type == false) {
+        if(arrlen(jp->expr) == 0) {
+            linearize_expr(jp, ast->type);
+        }
+        typecheck_expr(jp);
 
-    //    //TODO this is badly done
-    //    AST_structdecl *ast_struct = (AST_structdecl*)(ast->type);
+        if(jp->state == JOB_STATE_WAIT)
+            return;
 
-    //    if(ast->checked_type == false) {
-    //        ast_struct->is_name_spaced = true;
-    //        arrpush(jp->tree_pos_stack, ast->type);
-    //        ast->checked_type = true;
-    //        ast->checked_init = true;
-    //        jp->state = JOB_STATE_CONTINUE;
-    //        return;
-    //    }
+        arrsetlen(jp->type_stack, 0);
+        arrsetlen(jp->value_stack, 0);
+        arrsetlen(jp->expr, 0);
+        jp->expr_pos = 0;
 
-    //    bind_type = ast_struct->record_type;
+        ast->checked_type = true;
 
-    //} else {
-        if(ast->checked_type == false) {
-            if(arrlen(jp->expr) == 0) {
-                linearize_expr(jp, ast->type);
-            }
-            typecheck_expr(jp);
-
-            if(jp->state == JOB_STATE_WAIT)
+        if(!AST_KIND_IS_RECORD(ast->type->kind)) {
+            if(((AST_expr_base*)ast->type)->value_annotation->kind != VALUE_KIND_TYPE) {
+                job_error(jp, ast->type->loc,
+                        "expected type to bind to '%s'", name);
                 return;
+            }
+        }
 
-            arrsetlen(jp->type_stack, 0);
-            arrsetlen(jp->value_stack, 0);
-            arrsetlen(jp->expr, 0);
-            jp->expr_pos = 0;
+    }
 
-            ast->checked_type = true;
+    if(ast->type) {
+        if(AST_KIND_IS_RECORD(ast->type->kind)) {
+            //NOTE maybe anonstructs could be given their own ast node
+            bind_type = ((AST_structdecl*)(ast->type))->record_type;
+        } else {
+            bind_type = ((AST_expr*)ast->type)->value_annotation->val.type;
+        }
+    }
 
-            if(!AST_KIND_IS_RECORD(ast->type->kind)) {
-                if(((AST_expr_base*)ast->type)->value_annotation->kind != VALUE_KIND_TYPE) {
-                    job_error(jp, ast->type->loc,
-                            "expected type to bind to '%s'", name);
-                    return;
+    if(!initialize) ast->checked_init = true;
+
+    if(ast->checked_init == false) {
+
+        if(bind_type && bind_type->kind == TYPE_KIND_ARRAY && ast->init->kind == AST_KIND_array_literal) {
+            AST_array_literal *array_lit = (AST_array_literal*)(ast->init);
+
+            //NOTE we only annotate 2 dimensional arrays, larger than that is kinda stupid
+
+            array_lit->type_annotation = bind_type;
+
+            for(AST_expr_list *elements = array_lit->elements; elements; elements = elements->next) {
+                if(elements->expr->kind == AST_KIND_array_literal) {
+                    AST_array_literal *array_lit_elem = (AST_array_literal*)(elements->expr);
+                    array_lit_elem->type_annotation = bind_type->array.of;
                 }
             }
-
         }
 
-        if(ast->type) {
-            if(AST_KIND_IS_RECORD(ast->type->kind)) {
-                //NOTE maybe anonstructs could be given their own ast node
-                bind_type = ((AST_structdecl*)(ast->type))->record_type;
-            } else {
-                bind_type = ((AST_expr*)ast->type)->value_annotation->val.type;
-            }
+        if(arrlen(jp->expr) == 0) {
+            linearize_expr(jp, ast->init);
         }
+        typecheck_expr(jp);
 
-        if(!initialize) ast->checked_init = true;
+        if(jp->state == JOB_STATE_WAIT)
+            return;
 
-        if(ast->checked_init == false) {
-            if(bind_type && bind_type->kind == TYPE_KIND_ARRAY && ast->init->kind == AST_KIND_array_literal) {
-                AST_array_literal *array_lit = (AST_array_literal*)(ast->init);
-                array_lit->type_annotation = bind_type;
+        arrsetlen(jp->type_stack, 0);
+        arrsetlen(jp->value_stack, 0);
+        arrsetlen(jp->expr, 0);
+        jp->expr_pos = 0;
+
+        ast->checked_init = true;
+    }
+
+    if(jp->state == JOB_STATE_ERROR) return;
+
+    if(initialize) {
+        //TODO multi-identifier declarations so we can initialize from a function that returns multiple values
+        init_value = ((AST_expr*)ast->init)->value_annotation;
+        init_type = ((AST_expr*)ast->init)->type_annotation;
+
+        //if(!ast->constant && is_top_level && (TYPE_KIND_IS_NOT_SCALAR(init_type->kind) || init_type->kind == TYPE_KIND_POINTER)) {
+        //    job_error(jp, ast->base.loc,
+        //            "initialization of non scalar global variables is currently unimplemented");
+        //    return;
+        //}
+
+        if(!infer_type) {
+            //TODO check assignment of arrays differently maybe, this is a bit bodged
+            if(bind_type->kind == TYPE_KIND_ARRAY &&
+                    init_type->kind == TYPE_KIND_ARRAY && bind_type->array.n > init_type->array.n &&
+                    ast->init->kind == AST_KIND_array_literal) {
+                init_type->array.n = bind_type->array.n;
             }
 
-            if(arrlen(jp->expr) == 0) {
-                linearize_expr(jp, ast->init);
-            }
-            typecheck_expr(jp);
+            Type *t = typecheck_operation(jp, bind_type, init_type, '=', NULL, &(ast->init));
 
-            if(jp->state == JOB_STATE_WAIT)
-                return;
-
-            arrsetlen(jp->type_stack, 0);
-            arrsetlen(jp->value_stack, 0);
-            arrsetlen(jp->expr, 0);
-            jp->expr_pos = 0;
-
-            ast->checked_init = true;
-        }
-
-        if(jp->state == JOB_STATE_ERROR) return;
-
-        if(initialize) {
-            //TODO multi-identifier declarations so we can initialize from a function that returns multiple values
-            init_value = ((AST_expr*)ast->init)->value_annotation;
-            init_type = ((AST_expr*)ast->init)->type_annotation;
-
-            if(!ast->constant && is_top_level && (TYPE_KIND_IS_NOT_SCALAR(init_type->kind) || init_type->kind == TYPE_KIND_POINTER)) {
+            if(!t) {
                 job_error(jp, ast->base.loc,
-                        "initialization of non scalar global variables is currently unimplemented");
-                return;
+                        "invalid assignment of '%s' to %s of type '%s'",
+                        job_type_to_str(jp, init_type), ast->constant ? "constant" : "variable", job_type_to_str(jp, bind_type));
             }
 
-            if(!infer_type) {
-                //TODO check assignment of arrays differently maybe, this is a bit bodged
-                if(bind_type->kind == TYPE_KIND_ARRAY &&
-                        init_type->kind == TYPE_KIND_ARRAY && bind_type->array.n > init_type->array.n &&
-                        ast->init->kind == AST_KIND_array_literal) {
-                    init_type->array.n = bind_type->array.n;
-                }
+            if(jp->state == JOB_STATE_ERROR) return;
 
-                Type *t = typecheck_operation(jp, bind_type, init_type, '=', NULL, &(ast->init));
-
-                if(!t) {
-                    job_error(jp, ast->base.loc,
-                            "invalid assignment of '%s' to %s of type '%s'",
-                            job_type_to_str(jp, init_type), ast->constant ? "constant" : "variable", job_type_to_str(jp, bind_type));
-                }
-
-                if(jp->state == JOB_STATE_ERROR) return;
-
-                bind_type = t;
-            } else {
-                bind_type = init_type;
-            }
+            bind_type = t;
+        } else {
+            bind_type = init_type;
         }
-
-    //}
+    }
 
     if(arrlen(jp->record_types) > 0) {
 
@@ -15009,17 +15608,20 @@ void print_sym(Sym sym) {
 
 //VERSION 1.0
 //
-//TODO proc types with argument names
 //TODO proc polymorphism
+//TODO refactor type inference for array literals
+//TODO finish globals
+//TODO proc types with argument names
 //TODO dynamic array procedures
 //TODO simple array for loops
 //TODO c-style for loops
 //TODO finish print()
-//TODO finish globals
 //TODO directives (#import, #assert, etc)
 //TODO test full C interop (raylib)
 //
+//TODO reduce memory usage (target is under 1MB)
 //TODO output assembly
+//TODO debug info (internal and convert to gdb debug format)
 //TODO procedures for interfacing with the compiler (e.g. add_source_file())
 //TODO parametrized structs
 //TODO enums
@@ -15102,10 +15704,10 @@ int main(int argc, char **argv) {
         }
     }
 
-    arena_destroy(&global_scratch_allocator);
-    pool_destroy(&global_sym_allocator);
-    pool_destroy(&global_type_allocator);
-    pool_destroy(&global_value_allocator);
+    //arena_destroy(&global_scratch_allocator);
+    //pool_destroy(&global_sym_allocator);
+    //pool_destroy(&global_type_allocator);
+    //pool_destroy(&global_value_allocator);
 
     return 0;
 }

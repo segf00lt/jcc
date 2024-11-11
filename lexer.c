@@ -13,6 +13,7 @@
     X(FLOATLIT,                           "")\
     X(DFLOATLIT,                          "")\
     X(STRINGLIT,                          "")\
+    X(POLYMORPHIC_IDENT,                  "")\
     X(KEYWORD,                            "")\
     X(IMPORT_DIRECTIVE,            "#import")\
     X(LOAD_DIRECTIVE,                "#load")\

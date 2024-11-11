@@ -1,5 +1,20 @@
 //TODO
-proc poly_factorial<T>(n: T) T {
-    if n == cast(T)0 return cast(T)1;
-    return n * factorial(n - cast(T)1);
+
+proc add_to_array(arr: []$T, n: T) {
+    i := 0;
+    while i < arr.count {
+        defer i++;
+
+        arr[i] += n;
+    }
 }
+
+proc main() {
+    arr := [1, 2, 3, 4];
+    add_to_array(arr, 3);
+}
+
+//proc poly_factorial(n: $T) T {
+//    if n == cast(T)0 return cast(T)1;
+//    return n * factorial(n - cast(T)1);
+//}

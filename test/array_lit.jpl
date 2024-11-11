@@ -1,3 +1,4 @@
+//TODO refactor type inference for array literals
 proc main() int {
     ivar := 35;
     

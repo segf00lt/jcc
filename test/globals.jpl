@@ -4,16 +4,23 @@ struct Foo {
     arr: [4]float;
 }
 
-proc main() float {
+proc main() {
     PI *= 2;
     twopi := PI;
     uninitialized_global = 12;
-    return twopi * uninitialized_global;
+    print("%\n", twopi * uninitialized_global);
+    print("arr[0] = %\n", arr[0]);
+    print("arr[1] = %\n", arr[1]);
 }
 
-arr: [20]float;
+initialized_arr: [4][4]float =
+    [[3, 4, 2, 5],
+     [7, 4.24, 291.2, 5],
+     [3, 4, 20.2, 5],
+     [1, 4.21, 2, 0.5], ];
+
+arr: [20]float = [3.5, 1.2 ];
 foo: Foo;
-initialized_arr: [4][4]float;
 uninitialized_global: float;
 PI: float = 3.14159;
 
