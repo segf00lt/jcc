@@ -22,7 +22,6 @@
 #define JOB_STATES                      \
     X(READY)                            \
     X(WAIT)                             \
-    X(CONTINUE)                         \
     X(FORK)                             \
     X(ERROR)                            \
 
@@ -618,8 +617,7 @@ struct Job {
     Arr(Sym*)                        run_dependencies;
 
     /* procedure polymorphism */
-    Arr(char*)                       polymorphic_vars_matched;
-    Arr(Type*)                       types_matched; 
+    AST_call                        *polymorph_call;
                                           
     /* struct and union */                
     Arr(Type*)                       record_types;
@@ -4755,6 +4753,8 @@ void ir_gen(Job *jp) {
 
     if(node->kind == AST_KIND_procdecl) {
         AST_procdecl *ast_proc = (AST_procdecl*)node;
+
+        if(ast_proc->is_polymorphic) UNIMPLEMENTED;
 
         if(ast_proc->body == NULL) {
             if(ast_proc->is_foreign && ast_proc->c_call)
@@ -11206,13 +11206,16 @@ bool job_runner(char *src, char *src_path) {
 
                             typecheck_vardecl(jp);
 
-                            if(jp->state == JOB_STATE_CONTINUE) {
-                                jp->state = JOB_STATE_READY;
+                            if(jp->state == JOB_STATE_FORK) {
+                                arrins(job_queue, job_queue_pos + 2, *jp);
+                                job_queue[job_queue_pos + 2].state = JOB_STATE_READY;
+                                ++job_queue_pos;
                                 continue;
                             }
 
                             if(jp->state == JOB_STATE_WAIT) {
                                 arrpush(job_queue_next, *jp);
+                                arrlast(job_queue_next).waiting_on_name = NULL;
                                 arrlast(job_queue_next).state = JOB_STATE_READY;
                                 ++job_queue_pos;
                                 continue;
@@ -11323,8 +11326,16 @@ bool job_runner(char *src, char *src_path) {
                             }
                             typecheck_structdecl(jp);
 
+                            if(jp->state == JOB_STATE_FORK) {
+                                arrins(job_queue, job_queue_pos + 2, *jp);
+                                job_queue[job_queue_pos + 2].state = JOB_STATE_READY;
+                                ++job_queue_pos;
+                                continue;
+                            }
+
                             if(jp->state == JOB_STATE_WAIT) {
                                 arrpush(job_queue_next, *jp);
+                                arrlast(job_queue_next).waiting_on_name = NULL;
                                 arrlast(job_queue_next).state = JOB_STATE_READY;
                                 ++job_queue_pos;
                                 continue;
@@ -11472,11 +11483,23 @@ bool job_runner(char *src, char *src_path) {
                                     }
 
                                 } else {
-                                    UNIMPLEMENTED;
+                                    if(ast_procdecl->type_checked_body) {
+                                        UNIMPLEMENTED;
+                                    } else {
+                                        UNIMPLEMENTED;
+                                    }
+                                }
+
+                                if(jp->state == JOB_STATE_FORK) {
+                                    arrins(job_queue, job_queue_pos + 2, *jp);
+                                    job_queue[job_queue_pos + 2].state = JOB_STATE_READY;
+                                    ++job_queue_pos;
+                                    continue;
                                 }
 
                                 if(jp->state == JOB_STATE_WAIT) {
                                     arrpush(job_queue_next, *jp);
+                                    arrlast(job_queue_next).waiting_on_name = NULL;
                                     arrlast(job_queue_next).state = JOB_STATE_READY;
                                     ++job_queue_pos;
                                     continue;
@@ -11512,8 +11535,16 @@ bool job_runner(char *src, char *src_path) {
 
                                 typecheck_procdecl(jp);
 
+                                if(jp->state == JOB_STATE_FORK) {
+                                    arrins(job_queue, job_queue_pos + 2, *jp);
+                                    job_queue[job_queue_pos + 2].state = JOB_STATE_READY;
+                                    ++job_queue_pos;
+                                    continue;
+                                }
+
                                 if(jp->state == JOB_STATE_WAIT) {
                                     arrpush(job_queue_next, *jp);
+                                    arrlast(job_queue_next).waiting_on_name = NULL;
                                     arrlast(job_queue_next).state = JOB_STATE_READY;
                                     ++job_queue_pos;
                                     continue;
@@ -11590,8 +11621,16 @@ bool job_runner(char *src, char *src_path) {
                             }
                             typecheck_expr(jp);
 
+                            if(jp->state == JOB_STATE_FORK) {
+                                arrins(job_queue, job_queue_pos + 2, *jp);
+                                job_queue[job_queue_pos + 2].state = JOB_STATE_READY;
+                                ++job_queue_pos;
+                                continue;
+                            }
+
                             if(jp->state == JOB_STATE_WAIT) {
                                 arrpush(job_queue_next, *jp);
+                                arrlast(job_queue_next).waiting_on_name = NULL;
                                 arrlast(job_queue_next).state = JOB_STATE_READY;
                                 ++job_queue_pos;
                                 continue;
@@ -11624,8 +11663,16 @@ bool job_runner(char *src, char *src_path) {
                             }
                             typecheck_expr(jp);
 
+                            if(jp->state == JOB_STATE_FORK) {
+                                arrins(job_queue, job_queue_pos + 2, *jp);
+                                job_queue[job_queue_pos + 2].state = JOB_STATE_READY;
+                                ++job_queue_pos;
+                                continue;
+                            }
+
                             if(jp->state == JOB_STATE_WAIT) {
                                 arrpush(job_queue_next, *jp);
+                                arrlast(job_queue_next).waiting_on_name = NULL;
                                 arrlast(job_queue_next).state = JOB_STATE_READY;
                                 ++job_queue_pos;
                                 continue;
@@ -11659,8 +11706,16 @@ bool job_runner(char *src, char *src_path) {
                                         "for loop expression must evaluate to array type not '%s'",
                                         job_type_to_str(jp, for_expr_type));
 
+                            if(jp->state == JOB_STATE_FORK) {
+                                arrins(job_queue, job_queue_pos + 2, *jp);
+                                job_queue[job_queue_pos + 2].state = JOB_STATE_READY;
+                                ++job_queue_pos;
+                                continue;
+                            }
+
                             if(jp->state == JOB_STATE_WAIT) {
                                 arrpush(job_queue_next, *jp);
+                                arrlast(job_queue_next).waiting_on_name = NULL;
                                 arrlast(job_queue_next).state = JOB_STATE_READY;
                                 ++job_queue_pos;
                                 continue;
@@ -11697,8 +11752,16 @@ bool job_runner(char *src, char *src_path) {
                                 }
                                 typecheck_expr(jp);
 
+                                if(jp->state == JOB_STATE_FORK) {
+                                    arrins(job_queue, job_queue_pos + 2, *jp);
+                                    job_queue[job_queue_pos + 2].state = JOB_STATE_READY;
+                                    ++job_queue_pos;
+                                    continue;
+                                }
+
                                 if(jp->state == JOB_STATE_WAIT) {
                                     arrpush(job_queue_next, *jp);
+                                    arrlast(job_queue_next).waiting_on_name = NULL;
                                     arrlast(job_queue_next).state = JOB_STATE_READY;
                                     ++job_queue_pos;
                                     continue;
@@ -11773,8 +11836,16 @@ bool job_runner(char *src, char *src_path) {
                                 }
                                 typecheck_expr(jp);
 
+                                if(jp->state == JOB_STATE_FORK) {
+                                    arrins(job_queue, job_queue_pos + 2, *jp);
+                                    job_queue[job_queue_pos + 2].state = JOB_STATE_READY;
+                                    ++job_queue_pos;
+                                    continue;
+                                }
+
                                 if(jp->state == JOB_STATE_WAIT) {
                                     arrpush(job_queue_next, *jp);
+                                    arrlast(job_queue_next).waiting_on_name = NULL;
                                     arrlast(job_queue_next).state = JOB_STATE_READY;
                                     ++job_queue_pos;
                                     continue;
@@ -11871,6 +11942,7 @@ bool job_runner(char *src, char *src_path) {
                             }
 
                             bool job_needs_to_wait = false;
+                            bool job_needs_to_fork = false;
 
                             for(u64 expr_list_pos = jp->expr_list_pos; expr_list_pos < arrlen(jp->expr_list); ++expr_list_pos) {
                                 AST_expr_base *ret_expr = (AST_expr_base*)(jp->expr_list[expr_list_pos]->expr);
@@ -11880,9 +11952,18 @@ bool job_runner(char *src, char *src_path) {
                                 }
                                 typecheck_expr(jp);
 
+                                if(jp->state == JOB_STATE_FORK) {
+                                    arrins(job_queue, job_queue_pos + 2, *jp);
+                                    job_queue[job_queue_pos + 2].state = JOB_STATE_READY;
+                                    ++job_queue_pos;
+                                    job_needs_to_fork = true;
+                                    break;
+                                }
+
                                 if(jp->state == JOB_STATE_WAIT) {
                                     jp->expr_list_pos = expr_list_pos;
                                     arrpush(job_queue_next, *jp);
+                                    arrlast(job_queue_next).waiting_on_name = NULL;
                                     arrlast(job_queue_next).state = JOB_STATE_READY;
                                     ++job_queue_pos;
                                     job_needs_to_wait = true;
@@ -11924,6 +12005,7 @@ bool job_runner(char *src, char *src_path) {
                             }
 
                             if(job_needs_to_wait) continue;
+                            if(job_needs_to_fork) continue;
 
                             arrsetlen(jp->expr_list, 0);
                             jp->expr_list_pos = 0;
@@ -11950,9 +12032,17 @@ bool job_runner(char *src, char *src_path) {
                                 linearize_expr(jp, ast);
                             typecheck_expr(jp);
 
+                            if(jp->state == JOB_STATE_FORK) {
+                                arrins(job_queue, job_queue_pos + 2, *jp);
+                                job_queue[job_queue_pos + 2].state = JOB_STATE_READY;
+                                ++job_queue_pos;
+                                continue;
+                            }
+
                             if(jp->state == JOB_STATE_WAIT) {
                                 Job push_job = *jp;
                                 arrpush(job_queue_next, push_job);
+                                arrlast(job_queue_next).waiting_on_name = NULL;
                                 arrlast(job_queue_next).state = JOB_STATE_READY;
                                 ++job_queue_pos;
                                 continue;
@@ -12049,6 +12139,7 @@ bool job_runner(char *src, char *src_path) {
 
                         if(jp->state == JOB_STATE_WAIT) {
                             arrpush(job_queue_next, *jp);
+                            arrlast(job_queue_next).waiting_on_name = NULL;
                             arrlast(job_queue_next).state = JOB_STATE_READY;
                             ++job_queue_pos;
                             continue;
@@ -13932,27 +14023,51 @@ void typecheck_expr(Job *jp) {
                 callp->checked_call = true;
 
                 if(proc_type->proc.is_polymorphic) {
+                    /* job_fork() */
+
                     assert(proc_sym);
+
                     callp->procid_annotation = procid_alloc;
-                    proc_sym->procid = procid_alloc++;
+                    //proc_sym->procid = procid_alloc++;
+
                     Job new_job = job_spawn(&jobid_alloc, PIPE_STAGE_TYPECHECK);
+
                     new_job.global_sym_allocator = jp->global_sym_allocator;
                     new_job.global_scope = jp->global_scope;
+
                     new_job.allocator.scratch = malloc(sizeof(Arena));
                     new_job.allocator.value = malloc(sizeof(Pool));
                     new_job.allocator.sym = malloc(sizeof(Pool));
                     new_job.allocator.type = malloc(sizeof(Pool));
+
+                    new_job.polymorph_call = callp;
+                    
+                    arrpush(new_job.tree_pos_stack, proc_sym->polymorphic_proc_ast);
+                    new_job.root = proc_sym->polymorphic_proc_ast;
+
                     job_init_allocator_ast(&new_job);
                     job_init_allocator_scratch(&new_job);
                     job_init_allocator_value(&new_job);
                     job_init_allocator_sym(&new_job);
                     job_init_allocator_type(&new_job);
+
+                    //NOTE by forking in this way I think we avoid the case of the procid being overwritten by another instance of the poly
+                    //     except in the case of the polymorphic procedure being recursive
+
                     arrins(job_queue, job_queue_pos + 1, new_job);
-                    UNIMPLEMENTED;
+
+                    jp->state = JOB_STATE_FORK;
+                    assert(jp->waiting_on_name == NULL);
+
+                    break;
+
                 } else {
                     callp->procid_annotation = proc_sym->procid;
                 }
 
+            } else if(proc_type->proc.is_polymorphic) {
+                //NOTE this is when we can clear the WILDCARD types
+                UNIMPLEMENTED;
             }
 
             if(run_at_compile_time) {
@@ -14308,6 +14423,8 @@ void typecheck_expr(Job *jp) {
                 arrpush(type_stack, ast_struct->record_type);
                 arrpush(value_stack, v);
             } else {
+                /* job_fork() */
+
                 Job new_job = job_spawn(&jobid_alloc, PIPE_STAGE_TYPECHECK);
 
                 new_job.allocator = jp->allocator;
@@ -14317,10 +14434,19 @@ void typecheck_expr(Job *jp) {
 
                 new_job.root = expr[pos];
                 arrpush(new_job.tree_pos_stack, expr[pos]);
+
                 arrpush(job_queue, new_job);
 
                 jp->state = JOB_STATE_WAIT;
                 jp->waiting_on_name = NULL;
+
+                //TODO
+                //arrins(job_queue, job_queue_pos + 1, new_job);
+                //arrins(job_queue, job_queue_pos + 2, *jp);
+
+                //jp->state = JOB_STATE_FORK;
+                //assert(jp->waiting_on_name == NULL);
+
                 break;
             }
         } else {
@@ -14328,8 +14454,7 @@ void typecheck_expr(Job *jp) {
         }
     }
 
-    if(jp->state != JOB_STATE_WAIT && jp->state != JOB_STATE_ERROR) {
-        assert(jp->state == JOB_STATE_READY);
+    if(jp->state == JOB_STATE_READY) {
         AST *expr_root = arrlast(jp->expr);
         add_implicit_casts_to_expr(jp, expr_root);
     }
@@ -14485,6 +14610,7 @@ Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
     return ir_expr;
 }
 
+//TODO use global allocators when inside typecheck_structdecl()
 void typecheck_structdecl(Job *jp) {
     AST_structdecl *ast = (AST_structdecl*)arrlast(jp->tree_pos_stack);
     assert(ast->base.kind == AST_KIND_structdecl || ast->base.kind == AST_KIND_uniondecl);
@@ -14563,6 +14689,11 @@ void typecheck_structdecl(Job *jp) {
                 }
                 typecheck_expr(jp);
 
+                if(jp->state == JOB_STATE_FORK) {
+                    jp->cur_paramdecl = p;
+                    return;
+                }
+
                 if(jp->state == JOB_STATE_WAIT) {
                     jp->cur_paramdecl = p;
                     return;
@@ -14581,6 +14712,11 @@ void typecheck_structdecl(Job *jp) {
                     linearize_expr(jp, p->init);
                 }
                 typecheck_expr(jp);
+
+                if(jp->state == JOB_STATE_FORK) {
+                    jp->cur_paramdecl = p;
+                    return;
+                }
 
                 if(jp->state == JOB_STATE_WAIT) {
                     jp->cur_paramdecl = p;
@@ -14700,13 +14836,6 @@ void typecheck_polymorphic_procdecl(Job *jp) {
     if(is_top_level && jp->handling_name == NULL)
         jp->handling_name = ast->name;
 
-    if(ast->proc_type == NULL) {
-        ast->proc_type = job_alloc_type(jp, TYPE_KIND_PROC);
-        ast->proc_type->proc.name = ast->name;
-        ast->proc_type->proc.is_polymorphic = true;
-    }
-    Type *proc_type = ast->proc_type;
-
     Arena *save_scratch = jp->allocator.scratch;
     Pool *save_sym = jp->allocator.sym;
     Pool *save_type = jp->allocator.type;
@@ -14718,6 +14847,13 @@ void typecheck_polymorphic_procdecl(Job *jp) {
         jp->allocator.type = &global_type_allocator;
         jp->allocator.value = &global_value_allocator;
     }
+
+    if(ast->proc_type == NULL) {
+        ast->proc_type = job_alloc_type(jp, TYPE_KIND_PROC);
+        ast->proc_type->proc.name = ast->name;
+        ast->proc_type->proc.is_polymorphic = true;
+    }
+    Type *proc_type = ast->proc_type;
 
     if(proc_type->proc.polymorphic_param_indexes == NULL) {
         proc_type->proc.n_polymorphic_params = ast->n_polymorphic_params;
@@ -14785,6 +14921,15 @@ void typecheck_polymorphic_procdecl(Job *jp) {
                 }
                 typecheck_expr(jp);
 
+                if(jp->state == JOB_STATE_FORK) {
+                    jp->cur_paramdecl = p;
+                    jp->allocator.scratch = save_scratch;
+                    jp->allocator.sym = save_sym;
+                    jp->allocator.type = save_type;
+                    jp->allocator.value = save_value;
+                    return;
+                }
+
                 if(jp->state == JOB_STATE_WAIT) {
                     jp->cur_paramdecl = p;
                     jp->allocator.scratch = save_scratch;
@@ -14810,6 +14955,15 @@ void typecheck_polymorphic_procdecl(Job *jp) {
                     linearize_expr(jp, p->init);
                 }
                 typecheck_expr(jp);
+
+                if(jp->state == JOB_STATE_FORK) {
+                    jp->cur_paramdecl = p;
+                    jp->allocator.scratch = save_scratch;
+                    jp->allocator.sym = save_sym;
+                    jp->allocator.type = save_type;
+                    jp->allocator.value = save_value;
+                    return;
+                }
 
                 if(jp->state == JOB_STATE_WAIT) {
                     jp->cur_paramdecl = p;
@@ -14919,6 +15073,15 @@ void typecheck_polymorphic_procdecl(Job *jp) {
                 linearize_expr(jp, r->expr);
             }
             typecheck_expr(jp);
+
+            if(jp->state == JOB_STATE_FORK) {
+                jp->cur_retdecl = r;
+                jp->allocator.scratch = save_scratch;
+                jp->allocator.sym = save_sym;
+                jp->allocator.type = save_type;
+                jp->allocator.value = save_value;
+                return;
+            }
 
             if(jp->state == JOB_STATE_WAIT) {
                 jp->cur_retdecl = r;
@@ -15108,6 +15271,15 @@ void typecheck_procdecl(Job *jp) {
                 }
                 typecheck_expr(jp);
 
+                if(jp->state == JOB_STATE_FORK) {
+                    jp->cur_paramdecl = p;
+                    jp->allocator.scratch = save_scratch;
+                    jp->allocator.sym = save_sym;
+                    jp->allocator.type = save_type;
+                    jp->allocator.value = save_value;
+                    return;
+                }
+
                 if(jp->state == JOB_STATE_WAIT) {
                     jp->cur_paramdecl = p;
                     jp->allocator.scratch = save_scratch;
@@ -15139,6 +15311,15 @@ void typecheck_procdecl(Job *jp) {
                     linearize_expr(jp, p->init);
                 }
                 typecheck_expr(jp);
+
+                if(jp->state == JOB_STATE_FORK) {
+                    jp->cur_paramdecl = p;
+                    jp->allocator.scratch = save_scratch;
+                    jp->allocator.sym = save_sym;
+                    jp->allocator.type = save_type;
+                    jp->allocator.value = save_value;
+                    return;
+                }
 
                 if(jp->state == JOB_STATE_WAIT) {
                     jp->cur_paramdecl = p;
@@ -15247,6 +15428,15 @@ void typecheck_procdecl(Job *jp) {
                 linearize_expr(jp, r->expr);
             }
             typecheck_expr(jp);
+
+            if(jp->state == JOB_STATE_FORK) {
+                jp->cur_retdecl = r;
+                jp->allocator.scratch = save_scratch;
+                jp->allocator.sym = save_sym;
+                jp->allocator.type = save_type;
+                jp->allocator.value = save_value;
+                return;
+            }
 
             if(jp->state == JOB_STATE_WAIT) {
                 jp->cur_retdecl = r;
@@ -15375,6 +15565,9 @@ void typecheck_vardecl(Job *jp) {
         }
         typecheck_expr(jp);
 
+        if(jp->state == JOB_STATE_FORK)
+            return;
+
         if(jp->state == JOB_STATE_WAIT)
             return;
 
@@ -15427,6 +15620,9 @@ void typecheck_vardecl(Job *jp) {
             linearize_expr(jp, ast->init);
         }
         typecheck_expr(jp);
+
+        if(jp->state == JOB_STATE_FORK)
+            return;
 
         if(jp->state == JOB_STATE_WAIT)
             return;
