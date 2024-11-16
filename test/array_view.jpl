@@ -99,6 +99,7 @@ proc main() {
     print_int(cast(int)v.count);
     putchar();
     putchar();
+    print("here\n");
     v = int:[7, 7, 7, 3, 5, 1, 2];
     test(v);
     arr2 := [0, 0, 0, 1];

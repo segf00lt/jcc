@@ -587,6 +587,7 @@ struct Job_memory {
 
 struct Job {
     Jobid                            id;
+    Jobid                            parent_job;
 
     Pipe_stage                       pipe_stage;
     Job_state                        state;
@@ -617,7 +618,7 @@ struct Job {
     Arr(Sym*)                        run_dependencies;
 
     /* procedure polymorphism */
-    AST_call                        *polymorph_call;
+    Arr(Type*)                       save_polymorphic_proc_param_and_return_types;
                                           
     /* struct and union */                
     Arr(Type*)                       record_types;
@@ -664,7 +665,7 @@ struct Job {
 
     bool                             parser_at_top_level : 1;
     bool                             dont_free_allocators : 1;
-    bool                             free_ast_allocators : 1;
+    bool                             dont_free_ast_allocators : 1;
     bool                             doing_polymorph : 1;
     bool                             typechecker_encountered_wildcard : 1;
 
@@ -742,7 +743,6 @@ struct AST_param {
     AST base;
     Type *type_annotation;
     Value *value_annotation;
-    Type *expected_type_annotation;
     char *name;
     AST *value;
     AST_param *next;
@@ -762,7 +762,6 @@ struct AST_call {
     int n_types_returned;
     int n_params;
     int first_named_param;
-    int procid_annotation;
     bool has_named_params : 1;
     bool checked_call : 1;
 };
@@ -883,6 +882,7 @@ struct AST_retdecl {
     AST *expr;
     int index;
     bool checked_expr : 1;
+    bool type_has_wildcard : 1;
 };
 
 struct AST_ifstatement {
@@ -974,6 +974,7 @@ struct AST_statement {
     bool deferred : 1;
     bool checked_left : 1;
     bool checked_right : 1;
+    bool dont_push_local_offset : 1;
 };
 
 struct AST_procdecl {
@@ -1098,6 +1099,7 @@ struct Type {
             } param;
             struct {
                 Type  **types;
+                bool   *has_wildcard;
                 int     n;
             } ret;
             bool is_polymorphic : 1;
@@ -1396,7 +1398,7 @@ void job_die(Job *jp) {
             jp->symbol->job_encountered_error = true;
         }
     } else {
-        if(!jp->dont_free_allocators) {
+        if(jp->dont_free_allocators == false) {
             if(jp->allocator.scratch && jp->allocator.scratch != &global_scratch_allocator)
                 arena_destroy(jp->allocator.scratch);
 
@@ -1405,7 +1407,7 @@ void job_die(Job *jp) {
             if(jp->allocator.type) pool_destroy(jp->allocator.type);
         }
 
-        if(!jp->dont_free_allocators || jp->free_ast_allocators) {
+        if(jp->dont_free_ast_allocators == false) {
 #define X(x) pool_destroy(&(jp->allocator.ast_##x));
             ASTKINDS
 #undef X
@@ -3359,7 +3361,8 @@ AST* parse_procdecl(Job *jp) {
 
     jp->parser_at_top_level = false;
 
-    jp->allocator.scratch = save_allocator;
+    if(node->is_polymorphic == false)
+        jp->allocator.scratch = save_allocator;
 
     node->body = parse_procblock(jp);
 
@@ -4764,8 +4767,6 @@ void ir_gen(Job *jp) {
     if(node->kind == AST_KIND_procdecl) {
         AST_procdecl *ast_proc = (AST_procdecl*)node;
 
-        if(ast_proc->is_polymorphic) UNIMPLEMENTED;
-
         if(ast_proc->body == NULL) {
             if(ast_proc->is_foreign && ast_proc->c_call)
                 ir_gen_foreign_proc_x64(jp);
@@ -4773,7 +4774,7 @@ void ir_gen(Job *jp) {
         }
 
         Sym *sym = ast_proc->symbol_annotation;
-        Type *type = sym->type;
+        Type *proc_type = sym->type;
 
         if(sym->ir_generated) {
             for(int i = 0; i < arrlen(jp->run_dependencies); ++i) {
@@ -4790,7 +4791,7 @@ void ir_gen(Job *jp) {
             return;
         }
 
-        assert(type->kind == TYPE_KIND_PROC);
+        assert(proc_type->kind == TYPE_KIND_PROC);
 
         u64 local_offset = 0;
 
@@ -4817,9 +4818,8 @@ void ir_gen(Job *jp) {
 
         int non_scalar_returns = 0;
 
-        for(AST_retdecl *r = ast_proc->rets; r; r = r->next) {
-            AST_expr_base *expr = (AST_expr_base*)(r->expr);
-            Type *ret_type = expr->value_annotation->val.type;
+        for(u64 i = 0; i < proc_type->proc.ret.n; ++i) {
+            Type *ret_type = proc_type->proc.ret.types[i];
             if(TYPE_KIND_IS_NOT_SCALAR(ret_type->kind)) {
                     IRinst inst_read = {
                         .opcode = IROP_GETARG,
@@ -4906,7 +4906,7 @@ void ir_gen(Job *jp) {
             }
         }
 
-        jp->cur_proc_type = type;
+        jp->cur_proc_type = proc_type;
 
         jp->label_alloc = 1;
         jp->reg_alloc = 0;
@@ -4925,7 +4925,7 @@ void ir_gen(Job *jp) {
 
         if(jp->state == JOB_STATE_ERROR) return;
 
-        if(type->proc.ret.n == 0) {
+        if(proc_type->proc.ret.n == 0) {
             IRinst end = { .opcode = IROP_RET };
             arrpush(jp->instructions, end);
         }
@@ -4974,6 +4974,11 @@ void ir_gen(Job *jp) {
 
         arrfree(jp->run_dependencies);
         sym->ready_to_run = true;
+
+        if(proc_type->proc.is_polymorphic) {
+            sym->being_polymorphed_by_jobid = jp->parent_job;
+            strip_ast_annotations(ast_proc->body);
+        }
 
     } else if(node->kind == AST_KIND_vardecl) {
         AST_vardecl *ast_global = (AST_vardecl*)node;
@@ -6011,6 +6016,7 @@ u64 ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array
     u64 cur_offset = arrlast(jp->local_offset);
     u64 expected_offset = offset + expected_size;
 
+    //TODO filling in of array literal with 0s is wrong
     for(u64 step = 8; cur_offset < expected_offset; cur_offset += step) {
         while(cur_offset + step > expected_offset) step >>= 1;
         IRinst inst =
@@ -6216,166 +6222,21 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 return;
             }
         } else if(left_type->kind == TYPE_KIND_ARRAY_VIEW) {
-            if(ast_statement->right->kind == AST_KIND_array_literal) {
-                u64 array_data_offset =
-                    ir_gen_array_literal(jp, right_type, (AST_array_literal*)(ast_statement->right));
-                ir_gen_expr(jp, ast_statement->left);
-                jp->reg_alloc--;
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_ADDRVAR,
-                        .addrvar = {
-                            .segment = IRSEG_LOCAL,
-                            .offset = array_data_offset,
-                            .reg_dest = jp->reg_alloc + 1,
-                        },
-                    };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_STOR,
-                        .stor = {
-                            .reg_dest_ptr = jp->reg_alloc,
-                            .reg_src = jp->reg_alloc + 1,
-                            .bytes = 8,
-                        },
-                    };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_STOR,
-                        .stor = {
-                            .reg_dest_ptr = jp->reg_alloc,
-                            .imm.integer = right_type->array.n,
-                            .immediate = true,
-                            .has_immediate_offset = true,
-                            .byte_offset_imm = 8,
-                            .bytes = 8,
-                        },
-                    };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
-            } else if(right_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
-                UNREACHABLE; //REFACTOR
-
-                ir_gen_expr(jp, ast_statement->right);
-                ir_gen_expr(jp, ast_statement->left);
-                assert(jp->reg_alloc == 2);
-
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_LOAD,
-                        .load = {
-                            .reg_dest = jp->reg_alloc,
-                            .reg_src_ptr = jp->reg_alloc - 2,
-                            .bytes = member_size(Dynamic_array, data),
-                        },
-                    };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
-
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_STOR,
-                        .stor = {
-                            .reg_dest_ptr = jp->reg_alloc - 1,
-                            .reg_src = jp->reg_alloc,
-                            .bytes = member_size(Array_view, data),
-                        },
-                    };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
-
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_LOAD,
-                        .load = {
-                            .reg_dest = jp->reg_alloc,
-                            .reg_src_ptr = jp->reg_alloc - 2,
-                            .byte_offset_imm = offsetof(Dynamic_array, count),
-                            .bytes = member_size(Dynamic_array, data),
-                            .has_immediate_offset = true,
-                        },
-                    };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
-
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_STOR,
-                        .stor = {
-                            .reg_dest_ptr = jp->reg_alloc - 1,
-                            .reg_src = jp->reg_alloc,
-                            .byte_offset_imm = offsetof(Array_view, count),
-                            .bytes = member_size(Array_view, count),
-                            .has_immediate_offset = true,
-                        },
-                    };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
-
-                jp->reg_alloc -= 2;
-                assert(jp->reg_alloc == 0);
-            } else if(right_type->kind == TYPE_KIND_ARRAY) {
-                UNREACHABLE; //REFACTOR
-
-                ir_gen_expr(jp, ast_statement->right);
-                ir_gen_expr(jp, ast_statement->left);
-                assert(jp->reg_alloc == 2);
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_STOR,
-                        .stor = {
-                            .reg_dest_ptr = jp->reg_alloc - 1,
-                            .reg_src = jp->reg_alloc - 2,
-                            .bytes = member_size(Array_view, data),
-                        },
-                    };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
-                inst =
-                    (IRinst) {
-                        .opcode = IROP_STOR,
-                        .stor = {
-                            .reg_dest_ptr = jp->reg_alloc - 1,
-                            .imm.integer = right_type->array.n,
-                            .immediate = true,
-                            .has_immediate_offset = true,
-                            .byte_offset_imm = offsetof(Array_view, count),
-                            .bytes = member_size(Array_view, count),
-                        },
-                    };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
-                jp->reg_alloc -= 2;
-                assert(jp->reg_alloc == 0);
-            } else {
-                assert(right_type->kind == TYPE_KIND_ARRAY_VIEW);
-                ir_gen_expr(jp, ast_statement->right);
-                ir_gen_expr(jp, ast_statement->left);
-                assert(jp->reg_alloc == 2);
-                ir_gen_memorycopy(jp, left_type->bytes, left_type->align, jp->reg_alloc - 1, jp->reg_alloc - 2);
-                jp->reg_alloc -= 2;
-                assert(jp->reg_alloc == 0);
-            }
+            assert(right_type->kind == TYPE_KIND_ARRAY_VIEW);
+            ir_gen_expr(jp, ast_statement->right);
+            ir_gen_expr(jp, ast_statement->left);
+            assert(jp->reg_alloc == 2);
+            ir_gen_memorycopy(jp, left_type->bytes, left_type->align, jp->reg_alloc - 1, jp->reg_alloc - 2);
+            jp->reg_alloc -= 2;
+            assert(jp->reg_alloc == 0);
         } else if(left_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
-            if(ast_statement->right->kind == AST_KIND_array_literal) {
-                UNIMPLEMENTED;
-            } else if(right_type->kind == TYPE_KIND_ARRAY) {
-                UNIMPLEMENTED;
-            } else if(right_type->kind == TYPE_KIND_ARRAY_VIEW) {
-                UNIMPLEMENTED;
-            } else {
-                assert(right_type->kind == TYPE_KIND_DYNAMIC_ARRAY);
-                ir_gen_expr(jp, ast_statement->right);
-                ir_gen_expr(jp, ast_statement->left);
-                assert(jp->reg_alloc == 2);
-                ir_gen_memorycopy(jp, left_type->bytes, left_type->align, jp->reg_alloc - 1, jp->reg_alloc - 2);
-                jp->reg_alloc -= 2;
-                assert(jp->reg_alloc == 0);
-            }
+            assert(right_type->kind == TYPE_KIND_DYNAMIC_ARRAY);
+            ir_gen_expr(jp, ast_statement->right);
+            ir_gen_expr(jp, ast_statement->left);
+            assert(jp->reg_alloc == 2);
+            ir_gen_memorycopy(jp, left_type->bytes, left_type->align, jp->reg_alloc - 1, jp->reg_alloc - 2);
+            jp->reg_alloc -= 2;
+            assert(jp->reg_alloc == 0);
         } else if(left_type->kind == TYPE_KIND_PROC) {
             assert(ast_statement->right);
 
@@ -6536,14 +6397,14 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 op_type = left_expr->type_annotation;
                 op_bytes = op_type->bytes;
 
-                read_reg = 2;
+                read_reg = jp->float_reg_alloc;
 
                 inst_read =
                     (IRinst) {
                         .opcode = IROP_LOADF,
                         .load = {
                             .reg_dest = read_reg,
-                            .reg_src_ptr = 1,
+                            .reg_src_ptr = 0,
                             .bytes = left_expr->type_annotation->bytes,
                         }
                     };
@@ -6673,7 +6534,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                 op_type = left_expr->type_annotation;
                 op_bytes = op_type->bytes;
 
-                read_reg = 3;
+                read_reg = jp->reg_alloc;
 
                 inst_read =
                     (IRinst) {
@@ -8128,7 +7989,8 @@ void ir_gen_block(Job *jp, AST *ast) {
                 {
                     AST_statement *ast_statement = (AST_statement*)ast;
 
-                    arrpush(jp->local_offset, arrlast(jp->local_offset));
+                    if(!ast_statement->dont_push_local_offset)
+                        arrpush(jp->local_offset, arrlast(jp->local_offset));
 
                     if(ast_statement->deferred) {
                         ast = ast_statement->next;
@@ -8140,7 +8002,9 @@ void ir_gen_block(Job *jp, AST *ast) {
                     }
 
                     if(arrlast(jp->local_offset) > jp->max_local_offset) jp->max_local_offset = arrlast(jp->local_offset);
-                    arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
+
+                    if(!ast_statement->dont_push_local_offset)
+                        arrsetlen(jp->local_offset, arrlen(jp->local_offset) - 1);
 
                     jp->reg_alloc = 0;
                     jp->float_reg_alloc = 0;
@@ -9879,6 +9743,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
             }
 
             type_stack = ir_gen_call(jp, type_stack, ast_call);
+
         } else {
             UNIMPLEMENTED;
         }
@@ -9983,10 +9848,10 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
     AST_atom *callee = (AST_atom*)(ast_call->callee);
     Sym *callee_symbol = callee->symbol_annotation;
     /*
-    printf("\n");
-    print_sym(*callee_symbol);
-    printf("\n");
-    */
+       printf("\n");
+       print_sym(*callee_symbol);
+       printf("\n");
+       */
     assert(callee_symbol);
     //Type *callee_type = callee_symbol->type;
     Type *callee_type = callee->type_annotation;
@@ -10012,12 +9877,27 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
     u64 non_scalar_return_addrs[callee_type->proc.ret.n];
     int non_scalar_return_count = 0;
 
-    for(int i = 0; i < callee_type->proc.ret.n; ++i) {
-        Type *t = callee_type->proc.ret.types[i];
-        if(TYPE_KIND_IS_NOT_SCALAR(t->kind)) {
-            arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), t->align);
-            non_scalar_return_addrs[non_scalar_return_count++] = arrlast(jp->local_offset);
-            arrlast(jp->local_offset) += t->bytes;
+    if(callee_type->proc.is_polymorphic) {
+        if(ast_call->n_types_returned > 1) {
+            UNIMPLEMENTED;
+
+        } else if(ast_call->n_types_returned == 1) {
+            Type *t = ast_call->type_annotation;
+            if(TYPE_KIND_IS_NOT_SCALAR(t->kind)) {
+                arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), t->align);
+                non_scalar_return_addrs[non_scalar_return_count++] = arrlast(jp->local_offset);
+                arrlast(jp->local_offset) += t->bytes;
+            }
+        }
+    } else {
+
+        for(int i = 0; i < callee_type->proc.ret.n; ++i) {
+            Type *t = callee_type->proc.ret.types[i];
+            if(TYPE_KIND_IS_NOT_SCALAR(t->kind)) {
+                arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), t->align);
+                non_scalar_return_addrs[non_scalar_return_count++] = arrlast(jp->local_offset);
+                arrlast(jp->local_offset) += t->bytes;
+            }
         }
     }
 
@@ -10539,23 +10419,6 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 .call = {
                     .id_reg = jp->reg_alloc,
                     .immediate = false,
-                    .c_call = c_call,
-                },
-            };
-        inst.loc = jp->cur_loc;
-        arrpush(jp->instructions, inst);
-    } else if(callee_symbol->is_polymorphic_procedure) {
-        //NOTE each time we generate a polymorph of a procedure (or retrieve one that was cached)
-        //     the procid field on the callee_symbol gets set to the appropriate value, be it a newly allocated
-        //     procid or one that was cached
-        UNIMPLEMENTED;
-        inst =
-            (IRinst) {
-                .opcode = IROP_CALL,
-                .call = {
-                    .name = callee_symbol->name,
-                    .id_imm = ast_call->procid_annotation,
-                    .immediate = true,
                     .c_call = c_call,
                 },
             };
@@ -11165,13 +11028,17 @@ bool job_runner(char *src, char *src_path) {
                             job_init_allocator_value(&new_job);
                             job_init_allocator_sym(&new_job);
                             job_init_allocator_type(&new_job);
+
+                            AST_procdecl *ast_procdecl = (AST_procdecl*)ast;
+                            if(ast_procdecl->is_polymorphic) {
+                                new_job.dont_free_ast_allocators = true;
+                            }
                         } else {
                             new_job.allocator.scratch = &global_scratch_allocator;
                             new_job.allocator.value = &global_value_allocator;
                             new_job.allocator.sym = &global_sym_allocator;
                             new_job.allocator.type = &global_type_allocator;
                             new_job.dont_free_allocators = true;
-                            new_job.free_ast_allocators = true;
                         }
 
                         new_job.root = ast;
@@ -11470,6 +11337,22 @@ bool job_runner(char *src, char *src_path) {
 
                                 if(ast_procdecl->polymorphic_params_ready == false) {
                                     typecheck_polymorphic_procdecl(jp);
+
+                                    if(jp->state == JOB_STATE_WAIT) {
+                                        arrpush(job_queue_next, *jp);
+                                        arrlast(job_queue_next).waiting_on_name = NULL;
+                                        arrlast(job_queue_next).state = JOB_STATE_READY;
+                                        ++job_queue_pos;
+                                        continue;
+                                    }
+
+                                    if(jp->state == JOB_STATE_ERROR) {
+                                        job_report_all_messages(jp);
+                                        job_die(jp);
+                                        ++job_queue_pos;
+                                        continue;
+                                    }
+
                                     arrlast(jp->tree_pos_stack) = ast_procdecl->next;
 
                                     if(ast_procdecl->next == NULL) {
@@ -11481,11 +11364,27 @@ bool job_runner(char *src, char *src_path) {
 
                                 } else {
                                     if(ast_procdecl->type_checked_body) {
-                                        UNIMPLEMENTED;
+                                        jp->cur_proc_type = NULL;
+                                        arrlast(jp->tree_pos_stack) = ast_procdecl->next;
+
+                                        ast_procdecl->type_checked_body = false;
+                                        ast_procdecl->visited = false;
+                                        AST_block *ast_block = (AST_block*)ast_procdecl->body;
+                                        ast_block->visited = true;
+
+                                        Scope s = arrpop(jp->scopes);
+                                        for(int i = 0; i < shlen(s); ++i) {
+                                            if(s[i].value) {
+                                                print_sym(s[i].value[0]);
+                                                printf("\n");
+                                            }
+                                        }
+                                        shfree(s);
+                                        fprintf(stderr, "\ntype checked the body of '%s'!!!!!!!!!\n\n", ast_procdecl->name);
+                                        break;
                                     } else {
                                         Type *proc_type = ast_procdecl->proc_type;
                                         jp->cur_proc_type = proc_type;
-                                        assert(jp->polymorph_call != NULL);
 
                                         for(u64 i = 0; i < proc_type->proc.n_wildcards; ++i) {
                                             Type *wildcard = proc_type->proc.wildcards[i];
@@ -11523,13 +11422,13 @@ bool job_runner(char *src, char *src_path) {
                                         // owns the polymorphic proc has finished (it's like a lock, but it's fake!)
                                         // see Sym.is_being_used_in_polymorph
 
-                                        AST_call *polymorph_call = jp->polymorph_call;
+                                        AST_paramdecl *param_decls = ast_procdecl->params;
+                                        for(u64 i = 0; i < proc_type->proc.param.n; ++i) {
+                                            char *param_name = proc_type->proc.param.names[i];
+                                            Type *param_type = proc_type->proc.param.types[i];
 
-                                        for(AST_param *param = polymorph_call->params; param; param = param->next) {
-                                            fprintf(stderr, "%s: %s\n", param->name, job_type_to_str(jp, param->expected_type_annotation));
+                                            fprintf(stderr, "%s: %s\n", param_name, job_type_to_str(jp, param_type));
 
-                                            char *param_name = param->name;
-                                            Type *param_type = param->expected_type_annotation;
                                             Sym *sym = job_alloc_sym(jp);
 
                                             *sym =
@@ -11541,26 +11440,18 @@ bool job_runner(char *src, char *src_path) {
                                                     .is_argument = true,
                                                 };
 
+                                            param_decls->symbol_annotation = sym;
+                                            param_decls = param_decls->next;
+
                                             job_scope_enter(jp, sym);
                                         }
 
-                                        UNIMPLEMENTED;
+                                        ast_procdecl->type_checked_body = true;
+                                        AST_block *ast_block = (AST_block*)ast_procdecl->body;
+                                        ast_block->visited = true;
+                                        /* NOTE skip the body block so that params are in the same scope as body */
+                                        arrpush(jp->tree_pos_stack, ast_block->down);
                                     }
-                                }
-
-                                if(jp->state == JOB_STATE_WAIT) {
-                                    arrpush(job_queue_next, *jp);
-                                    arrlast(job_queue_next).waiting_on_name = NULL;
-                                    arrlast(job_queue_next).state = JOB_STATE_READY;
-                                    ++job_queue_pos;
-                                    continue;
-                                }
-
-                                if(jp->state == JOB_STATE_ERROR) {
-                                    job_report_all_messages(jp);
-                                    job_die(jp);
-                                    ++job_queue_pos;
-                                    continue;
                                 }
 
                             } else {
@@ -11768,6 +11659,9 @@ bool job_runner(char *src, char *src_path) {
                         } else if(ast->kind == AST_KIND_statement) {
                             AST_statement *ast_statement = (AST_statement*)ast;
                             bool type_error_in_statement = false;
+
+                            ast_statement->dont_push_local_offset =
+                                (ast_statement->right && ast_statement->right->kind == AST_KIND_array_literal);
 
                             if(ast_statement->checked_left == false) {
                                 if(arrlen(jp->expr) == 0) {
@@ -12157,6 +12051,7 @@ bool job_runner(char *src, char *src_path) {
 
         }
 
+        //TODO add a job id graph to the dependency tracker
         if(arrlen(job_queue_next) == arrlen(job_queue)) {
             int waiting_count = 0;
             for(int i = 0; i < arrlen(job_queue_next); ++i) {
@@ -13874,9 +13769,14 @@ void typecheck_expr(Job *jp) {
             assert(callp->callee->kind == AST_KIND_atom);
             proc_sym = ((AST_atom*)(callp->callee))->symbol_annotation;
 
+            bool already_doing_polymorph = false;
+
             if(proc_type->proc.is_polymorphic) {
                 assert(proc_sym->is_polymorphic_procedure);
-                if(proc_sym->is_being_used_in_polymorph) {
+
+                already_doing_polymorph = (proc_sym->being_polymorphed_by_jobid == jp->id);
+
+                if(proc_sym->is_being_used_in_polymorph && proc_sym->being_polymorphed_by_jobid != jp->id) {
                     jp->state = JOB_STATE_WAIT;
                     jp->waiting_on_id = proc_sym->being_polymorphed_by_jobid;
                     break;
@@ -13913,7 +13813,7 @@ void typecheck_expr(Job *jp) {
 
                 if(callp->has_named_params) assert(proc_type->proc.name != NULL);
 
-                for(AST_param *param_list = callp->params; param_list; param_list = param_list->next) {
+                for(AST_param *param_list = callp->params; param_list && param_list->index < proc_type->proc.param.n; param_list = param_list->next) {
                     int i = param_list->index;
                     Type *param_type = param_list->type_annotation;
                     char *param_name = param_list->name;
@@ -13945,7 +13845,7 @@ void typecheck_expr(Job *jp) {
 
                     params_passed[param_index] = 1;
 
-                    if(proc_type->proc.is_polymorphic) {
+                    if(proc_type->proc.is_polymorphic && !already_doing_polymorph) {
                         if(proc_type->proc.param.is_polymorphic[param_index] || proc_type->proc.param.has_wildcard[param_index]) {
                             Type *expect = expected_type;
                             Type *have = param_type;
@@ -13995,6 +13895,8 @@ void typecheck_expr(Job *jp) {
                                         break;
                                     } else {
                                         expect = expect->wildcard.matched;
+                                        *dest = expect;
+                                        break;
                                     }
                                 } else if(expect->kind == TYPE_KIND_POINTER) {
                                     *dest = job_alloc_type(jp, expect->kind);
@@ -14003,6 +13905,7 @@ void typecheck_expr(Job *jp) {
                                     have = have->array.of;
                                 } else if(TYPE_KIND_IS_ARRAY_LIKE(expect->kind)) {
                                     *dest = job_alloc_type(jp, expect->kind);
+                                    **dest = *have;
                                     dest = &((*dest)->array.of);
                                     expect = expect->array.of;
                                     have = have->array.of;
@@ -14015,20 +13918,21 @@ void typecheck_expr(Job *jp) {
                                 } else if(expect->kind == TYPE_KIND_PROC) {
                                     UNIMPLEMENTED;
                                 } else {
-                                    assert(proc_type->proc.param.has_wildcard[param_index]);
-                                    *dest = have;
-                                    break;
+                                    UNREACHABLE;
                                 }
 
                             }
 
                             expected_type = new_expected_type;
                         }
+
+                        arrpush(jp->save_polymorphic_proc_param_and_return_types, proc_type->proc.param.types[i]);
+                        proc_type->proc.param.types[i] = expected_type;
+
                     }
 
                     Type *t = typecheck_operation(jp, expected_type, param_type, '=', NULL, &(param_list->value));
                     param_list->type_annotation = t;
-                    param_list->expected_type_annotation = expected_type;
 
                     if(!t) {
                         job_error(jp, param_list->base.loc,
@@ -14073,6 +13977,48 @@ void typecheck_expr(Job *jp) {
 
                 if(jp->state == JOB_STATE_ERROR) return;
 
+                if(proc_type->proc.is_polymorphic && !already_doing_polymorph) {
+                    for(u64 i = 0; i < proc_type->proc.ret.n; ++i) {
+                        if(proc_type->proc.ret.has_wildcard[i]) {
+                            Type *ret_type = proc_type->proc.ret.types[i];
+                            Type *new_ret_type = NULL;
+                            Type **dest = &new_ret_type;
+
+                            while(true) {
+
+                                if(ret_type->kind == TYPE_KIND_WILDCARD) {
+                                    assert(ret_type->wildcard.matched != NULL);
+                                    ret_type = ret_type->wildcard.matched;
+                                } else if(ret_type->kind == TYPE_KIND_POINTER) {
+                                    *dest = job_alloc_type(jp, ret_type->kind);
+                                    dest = &((*dest)->pointer.to);
+                                    ret_type = ret_type->array.of;
+                                } else if(TYPE_KIND_IS_ARRAY_LIKE(ret_type->kind)) {
+                                    *dest = job_alloc_type(jp, ret_type->kind);
+                                    **dest = *ret_type;
+                                    dest = &((*dest)->array.of);
+                                    ret_type = ret_type->array.of;
+                                } else if(ret_type->kind == TYPE_KIND_STRUCT) {
+                                    UNIMPLEMENTED;
+                                } else if(ret_type->kind == TYPE_KIND_UNION) {
+                                    UNIMPLEMENTED;
+                                } else if(ret_type->kind == TYPE_KIND_ENUM) {
+                                    UNIMPLEMENTED;
+                                } else if(ret_type->kind == TYPE_KIND_PROC) {
+                                    UNIMPLEMENTED;
+                                } else {
+                                    *dest = ret_type;
+                                    break;
+                                }
+
+                            }
+
+                            arrpush(jp->save_polymorphic_proc_param_and_return_types, proc_type->proc.ret.types[i]);
+                            proc_type->proc.ret.types[i] = new_ret_type;
+                        }
+                    }
+                }
+
                 if(is_call_expr) { /* if the only thing in the expr is a call */
                     assert(arrlen(type_stack) == 0);
 
@@ -14099,13 +14045,12 @@ void typecheck_expr(Job *jp) {
 
                 callp->checked_call = true;
 
-                if(proc_type->proc.is_polymorphic) {
+                if(proc_type->proc.is_polymorphic && !already_doing_polymorph) {
                     /* job_fork() */
 
                     assert(proc_sym);
 
-                    callp->procid_annotation = procid_alloc;
-                    //proc_sym->procid = procid_alloc++;
+                    proc_sym->procid = procid_alloc++;
 
                     Job new_job = job_spawn(&jobid_alloc, PIPE_STAGE_TYPECHECK);
 
@@ -14117,13 +14062,13 @@ void typecheck_expr(Job *jp) {
                     new_job.allocator.sym = malloc(sizeof(Pool));
                     new_job.allocator.type = malloc(sizeof(Pool));
 
-                    new_job.polymorph_call = callp;
-
                     proc_sym->is_being_used_in_polymorph = true;
                     proc_sym->being_polymorphed_by_jobid = new_job.id;
                     
                     arrpush(new_job.tree_pos_stack, proc_sym->polymorphic_proc_ast);
                     new_job.root = proc_sym->polymorphic_proc_ast;
+                    new_job.handling_name = proc_sym->name;
+                    new_job.parent_job = jp->id;
 
                     job_init_allocator_ast(&new_job);
                     job_init_allocator_scratch(&new_job);
@@ -14142,13 +14087,28 @@ void typecheck_expr(Job *jp) {
 
                     break;
 
-                } else {
-                    callp->procid_annotation = proc_sym->procid;
                 }
 
-            } else if(proc_type->proc.is_polymorphic) {
-                //NOTE this is when we can clear the WILDCARD types
-                UNIMPLEMENTED;
+            }
+
+            if(proc_type->proc.is_polymorphic && jp->cur_proc_type != proc_type) {
+                proc_sym->is_being_used_in_polymorph = false;
+                proc_sym->being_polymorphed_by_jobid = -1;
+                proc_sym->ir_generated = false;
+
+                u64 save_i = 0;
+
+                for(u64 i = 0; i < proc_type->proc.param.n; ++i) {
+                    proc_type->proc.param.types[i] = jp->save_polymorphic_proc_param_and_return_types[save_i];
+                    save_i++;
+                }
+
+                for(u64 i = 0; i < proc_type->proc.ret.n; ++i) {
+                    proc_type->proc.ret.types[i] = jp->save_polymorphic_proc_param_and_return_types[save_i];
+                    save_i++;
+                }
+
+                arrsetlen(jp->save_polymorphic_proc_param_and_return_types, 0);
             }
 
             if(run_at_compile_time) {
@@ -15125,6 +15085,7 @@ void typecheck_polymorphic_procdecl(Job *jp) {
             jp->cur_retdecl = ast->rets;
             n = proc_type->proc.ret.n = ast->n_rets;
             proc_type->proc.ret.types = (Type**)job_alloc_scratch(jp, sizeof(Type*) * n);
+            proc_type->proc.ret.has_wildcard = (bool*)job_alloc_scratch(jp, sizeof(bool) * n);
         }
 
         for(AST_retdecl *r = jp->cur_retdecl; r; r = r->next) {
@@ -15144,6 +15105,12 @@ void typecheck_polymorphic_procdecl(Job *jp) {
 
             if(jp->state == JOB_STATE_ERROR)
                 UNIMPLEMENTED;
+
+            if(jp->typechecker_encountered_wildcard) {
+                r->type_has_wildcard = true;
+                proc_type->proc.ret.has_wildcard[r->index] = true;
+                jp->typechecker_encountered_wildcard = false;
+            }
 
             arrsetlen(jp->type_stack, 0);
             arrsetlen(jp->value_stack, 0);
@@ -15821,6 +15788,7 @@ void print_sym(Sym sym) {
 
 //VERSION 1.0
 //
+//TODO polymorph caching
 //TODO proc polymorphism
 //TODO dynamic array procedures
 //TODO typechecking for [N] [..] [] and * is wrong, it allows things like [..][..]int = [][]int

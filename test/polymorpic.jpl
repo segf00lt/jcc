@@ -9,12 +9,27 @@ proc add_to_array(arr: []$T, n: T) {
     }
 }
 
+proc poly_factorial(n: $T) T {
+    if n == cast(T)0 return cast(T)1;
+    return n * poly_factorial(n - cast(T)1);
+}
+
 proc main() {
     arr := [1, 2, 3, 4];
     add_to_array(arr, 3);
+
+    i := 0;
+    print("[");
+    while i < arr.count - 1 {
+        print("%, ", arr[i]);
+        i++;
+    }
+    print("%]\n", arr[i]);
+
+    x := poly_factorial(5);
+    print("poly_factorial(%) = %\n", 5, x);
+    //print("poly_factorial(%) = %\n", 12.0, poly_factorial(12.0));
 }
 
-//proc poly_factorial(n: $T) T {
-//    if n == cast(T)0 return cast(T)1;
-//    return n * factorial(n - cast(T)1);
-//}
+#run main();
+

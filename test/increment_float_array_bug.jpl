@@ -1,0 +1,7 @@
+#run main();
+
+proc main() {
+    arr := float:[1.1, 2.3, 3.4, 4.12];
+    arr[2] += 2.2;
+    print("%\n", arr[2]);
+}
