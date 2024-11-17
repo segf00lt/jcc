@@ -619,6 +619,7 @@ struct Job {
 
     /* procedure polymorphism */
     Arr(Type*)                       save_polymorphic_proc_param_and_return_types;
+    AST                             *save_polymorphic_proc_body;
                                           
     /* struct and union */                
     Arr(Type*)                       record_types;
@@ -1157,8 +1158,8 @@ bool        has_nested_call(AST *ast);
 void        add_implicit_casts_to_expr(Job *jp, AST *ast);
 u64         align_up(u64 offset, u64 align);
 u64         next_pow_2(u64 v);
-void        strip_ast_annotations(AST *ast);
 AST*        arena_dup_ast(Arena *a, AST* ast);
+AST*        ast_copy(Arena *arena, AST *root);
 void        serialize_value(Job *jp, u8 *dest, Value *v, Type *t);
 bool        records_have_member_name_conflicts(Job *jp, Loc_info using_loc, Type *a, Type *b);
 void        do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type);
@@ -4977,7 +4978,7 @@ void ir_gen(Job *jp) {
 
         if(proc_type->proc.is_polymorphic) {
             sym->being_polymorphed_by_jobid = jp->parent_job;
-            strip_ast_annotations(ast_proc->body);
+            body->down = jp->save_polymorphic_proc_body;
         }
 
     } else if(node->kind == AST_KIND_vardecl) {
@@ -9860,9 +9861,6 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
     bool varargs = callee_type->proc.varargs;
     bool c_call = callee_type->proc.c_call;
 
-    Type *return_type = NULL;
-    if(ast_call->n_types_returned > 0)
-        return_type = callee_type->proc.ret.types[0];
 
     Arr(AST_param*) params = NULL;
     Arr(u64) saved_param_offsets = NULL;
@@ -9877,11 +9875,14 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
     u64 non_scalar_return_addrs[callee_type->proc.ret.n];
     int non_scalar_return_count = 0;
 
+    Type *return_type = NULL;
+
     if(callee_type->proc.is_polymorphic) {
         if(ast_call->n_types_returned > 1) {
             UNIMPLEMENTED;
 
         } else if(ast_call->n_types_returned == 1) {
+            return_type = ast_call->type_annotation;
             Type *t = ast_call->type_annotation;
             if(TYPE_KIND_IS_NOT_SCALAR(t->kind)) {
                 arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), t->align);
@@ -9890,6 +9891,8 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
             }
         }
     } else {
+        if(ast_call->n_types_returned > 0)
+            return_type = callee_type->proc.ret.types[0];
 
         for(int i = 0; i < callee_type->proc.ret.n; ++i) {
             Type *t = callee_type->proc.ret.types[i];
@@ -10556,35 +10559,34 @@ INLINE AST* arena_dup_ast(Arena *a, AST* ast) {
     return ptr;
 }
 
-INLINE void strip_ast_annotations(AST *root) {
+INLINE AST* ast_copy(Arena *arena, AST *root) {
+    AST_block head = {
+        .base = { .kind = AST_KIND_block },
+        .next = NULL,
+        .visited = false,
+        .down = root,
+    };
     Arr(AST*) cur_list = NULL;
     Arr(AST*) next_list = NULL;
-
-    arrpush(cur_list, root);
-
+    arrpush(cur_list, (AST*)&head);
     while(true) {
         int n = arrlen(cur_list);
-
         for(int i = 0; i < n; ++i) {
             AST *ast = cur_list[i];
-
             switch(ast->kind) {
                 case AST_KIND_ifstatement:
                     {
                         AST_ifstatement *ast_if = (AST_ifstatement*)ast;
                         if(ast_if->next) {
+                            ast_if->next = arena_dup_ast(arena, ast_if->next);
                             arrpush(next_list, ast_if->next);
                         }
-                        if(ast_if->condition->loc.src_path == NULL) {
-                            assert(ast_if->condition->kind == AST_KIND_expr);
-                            AST_expr *implicit_cast = (AST_expr*)(ast_if->condition);
-                            assert(implicit_cast->token == TOKEN_CAST);
-                            assert(implicit_cast->right);
-                            ast_if->condition = implicit_cast->right;
-                        }
+                        ast_if->condition = arena_dup_ast(arena, ast_if->condition);
                         arrpush(next_list, ast_if->condition);
+                        ast_if->body = arena_dup_ast(arena, ast_if->body);
                         arrpush(next_list, ast_if->body);
                         if(ast_if->branch) {
+                            ast_if->branch = arena_dup_ast(arena, ast_if->branch);
                             arrpush(next_list, ast_if->branch);
                         }
                     }
@@ -10599,16 +10601,12 @@ INLINE void strip_ast_annotations(AST *root) {
                     {
                         AST_whilestatement *ast_while = (AST_whilestatement*)ast;
                         if(ast_while->next) {
+                            ast_while->next = arena_dup_ast(arena, ast_while->next);
                             arrpush(next_list, ast_while->next);
                         }
-                        if(ast_while->condition->loc.src_path == NULL) {
-                            assert(ast_while->condition->kind == AST_KIND_expr);
-                            AST_expr *implicit_cast = (AST_expr*)(ast_while->condition);
-                            assert(implicit_cast->token == TOKEN_CAST);
-                            assert(implicit_cast->right);
-                            ast_while->condition = implicit_cast->right;
-                        }
+                        ast_while->condition = arena_dup_ast(arena, ast_while->condition);
                         arrpush(next_list, ast_while->condition);
+                        ast_while->body = arena_dup_ast(arena, ast_while->body);
                         arrpush(next_list, ast_while->body);
                     }
                     break;
@@ -10619,6 +10617,7 @@ INLINE void strip_ast_annotations(AST *root) {
                     {
                         AST_breakstatement *ast_break = (AST_breakstatement*)ast;
                         if(ast_break->next) {
+                            ast_break->next = arena_dup_ast(arena, ast_break->next);
                             arrpush(next_list, ast_break->next);
                         }
                     }
@@ -10627,17 +10626,31 @@ INLINE void strip_ast_annotations(AST *root) {
                     {
                         AST_continuestatement *ast_continue = (AST_continuestatement*)ast;
                         if(ast_continue->next) {
+                            ast_continue->next = arena_dup_ast(arena, ast_continue->next);
                             arrpush(next_list, ast_continue->next);
                         }
+                    }
+                    break;
+                case AST_KIND_push_context:
+                    {
+                        AST_push_context *ast_push_context = (AST_push_context*)ast;
+                        if(ast_push_context->next) {
+                            ast_push_context->next = arena_dup_ast(arena, ast_push_context->next);
+                            arrpush(next_list, ast_push_context->next);
+                        }
+                        ast_push_context->down = arena_dup_ast(arena, ast_push_context->down);
+                        arrpush(next_list, ast_push_context->down);
                     }
                     break;
                 case AST_KIND_returnstatement:
                     {
                         AST_returnstatement *ast_return = (AST_returnstatement*)ast;
                         if(ast_return->next) {
+                            ast_return->next = arena_dup_ast(arena, ast_return->next);
                             arrpush(next_list, ast_return->next);
                         }
                         if(ast_return->expr_list) {
+                            ast_return->expr_list = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_return->expr_list));
                             arrpush(next_list, (AST*)(ast_return->expr_list));
                         }
                     }
@@ -10646,6 +10659,7 @@ INLINE void strip_ast_annotations(AST *root) {
                     {
                         AST_usingstatement *ast_using = (AST_usingstatement*)ast;
                         if(ast_using->next) {
+                            ast_using->next = arena_dup_ast(arena, ast_using->next);
                             arrpush(next_list, ast_using->next);
                         }
                     }
@@ -10654,17 +10668,13 @@ INLINE void strip_ast_annotations(AST *root) {
                     {
                         AST_statement *ast_statement = (AST_statement*)ast;
                         if(ast_statement->next) {
+                            ast_statement->next = arena_dup_ast(arena, ast_statement->next);
                             arrpush(next_list, ast_statement->next);
                         }
+                        ast_statement->left = arena_dup_ast(arena, ast_statement->left);
                         arrpush(next_list, ast_statement->left);
                         if(ast_statement->right) {
-                            if(ast_statement->right->loc.src_path == NULL) {
-                                assert(ast_statement->right->kind == AST_KIND_expr);
-                                AST_expr *implicit_cast = (AST_expr*)(ast_statement->right);
-                                assert(implicit_cast->token == TOKEN_CAST);
-                                assert(implicit_cast->right);
-                                ast_statement->right = implicit_cast->right;
-                            }
+                            ast_statement->right = arena_dup_ast(arena, ast_statement->right);
                             arrpush(next_list, ast_statement->right);
                         }
                     }
@@ -10673,8 +10683,10 @@ INLINE void strip_ast_annotations(AST *root) {
                     {
                         AST_block *ast_block = (AST_block*)ast;
                         if(ast_block->next) {
+                            ast_block->next = arena_dup_ast(arena, ast_block->next);
                             arrpush(next_list, ast_block->next);
                         }
+                        ast_block->down = arena_dup_ast(arena, ast_block->down);
                         arrpush(next_list, ast_block->down);
                     }
                     break;
@@ -10682,11 +10694,7 @@ INLINE void strip_ast_annotations(AST *root) {
                     {
                         AST_run_directive *ast_run = (AST_run_directive*)ast;
                         assert(ast_run->call_to_run);
-                        ast_run->type_annotation = NULL;
-                        ast_run->value_annotation = NULL;
-                        ast_run->type_annotation_list = NULL;
-                        ast_run->value_annotation_list = NULL;
-                        ast_run->n_types_returned = 0;
+                        ast_run->call_to_run = (AST_call*)arena_dup_ast(arena, (AST*)(ast_run->call_to_run));
                         arrpush(next_list, (AST*)(ast_run->call_to_run));
                     }
                     break;
@@ -10694,39 +10702,32 @@ INLINE void strip_ast_annotations(AST *root) {
                 case AST_KIND_uniondecl:
                     {
                         AST_structdecl *ast_struct = (AST_structdecl*)ast;
-                        ast_struct->symbol_annotation = NULL;
-                        ast_struct->record_type = NULL;
-                        ast_struct->visited = false;
-                        ast_struct->checked_params = false;
                         if(ast_struct->next) {
+                            ast_struct->next = arena_dup_ast(arena, ast_struct->next);
                             arrpush(next_list, ast_struct->next);
                         }
                         if(ast_struct->params) {
+                            ast_struct->params = (AST_paramdecl*)arena_dup_ast(arena, (AST*)(ast_struct->params));
                             arrpush(next_list, (AST*)(ast_struct->params));
                         }
+                        ast_struct->body = arena_dup_ast(arena, ast_struct->body);
                         arrpush(next_list, ast_struct->body);
                     }
                     break;
                 case AST_KIND_vardecl:
                     {
                         AST_vardecl *ast_var = (AST_vardecl*)ast;
-                        ast_var->symbol_annotation = NULL;
-                        ast_var->checked_type = false;
-                        ast_var->checked_init = false;
                         if(ast_var->next) {
+                            ast_var->next = arena_dup_ast(arena, ast_var->next);
                             arrpush(next_list, ast_var->next);
                         }
+                        assert(ast_var->type || ast_var->init);
                         if(ast_var->type) {
+                            ast_var->type = arena_dup_ast(arena, ast_var->type);
                             arrpush(next_list, ast_var->type);
                         }
                         if(ast_var->init) {
-                            if(ast_var->init->loc.src_path == NULL) {
-                                assert(ast_var->init->kind == AST_KIND_expr);
-                                AST_expr *implicit_cast = (AST_expr*)(ast_var->init);
-                                assert(implicit_cast->token == TOKEN_CAST);
-                                assert(implicit_cast->right);
-                                ast_var->init = implicit_cast->right;
-                            }
+                            ast_var->init = arena_dup_ast(arena, ast_var->init);
                             arrpush(next_list, ast_var->init);
                         }
                     }
@@ -10734,22 +10735,20 @@ INLINE void strip_ast_annotations(AST *root) {
                 case AST_KIND_procdecl:
                     {
                         AST_procdecl *ast_proc = (AST_procdecl*)ast;
-                        ast_proc->symbol_annotation = NULL;
-                        ast_proc->proc_type = NULL;
-                        ast_proc->type_checked_body = false;
-                        ast_proc->checked_params = false;
-                        ast_proc->checked_rets = false;
-                        ast_proc->visited = false;
                         if(ast_proc->next) {
+                            ast_proc->next = arena_dup_ast(arena, ast_proc->next);
                             arrpush(next_list, ast_proc->next);
                         }
                         if(ast_proc->params) {
+                            ast_proc->params = (AST_paramdecl*)arena_dup_ast(arena, (AST*)(ast_proc->params));
                             arrpush(next_list, (AST*)(ast_proc->params));
                         }
                         if(ast_proc->rets) {
+                            ast_proc->rets = (AST_retdecl*)arena_dup_ast(arena, (AST*)(ast_proc->rets));
                             arrpush(next_list, (AST*)(ast_proc->rets));
                         }
                         if(ast_proc->body) {
+                            ast_proc->body = arena_dup_ast(arena, ast_proc->body);
                             arrpush(next_list, ast_proc->body);
                         }
                     }
@@ -10758,19 +10757,16 @@ INLINE void strip_ast_annotations(AST *root) {
                     {
                         AST_paramdecl *ast_param = (AST_paramdecl*)ast;
                         if(ast_param->next) {
+                            ast_param->next = (AST_paramdecl*)arena_dup_ast(arena, (AST*)(ast_param->next));
                             arrpush(next_list, (AST*)(ast_param->next));
                         }
+                        assert(ast_param->type);
                         if(ast_param->type) {
+                            ast_param->type = arena_dup_ast(arena, ast_param->type);
                             arrpush(next_list, ast_param->type);
                         }
                         if(ast_param->init) {
-                            if(ast_param->init->loc.src_path == NULL) {
-                                assert(ast_param->init->kind == AST_KIND_expr);
-                                AST_expr *implicit_cast = (AST_expr*)(ast_param->init);
-                                assert(implicit_cast->token == TOKEN_CAST);
-                                assert(implicit_cast->right);
-                                ast_param->init = implicit_cast->right;
-                            }
+                            ast_param->init = arena_dup_ast(arena, ast_param->init);
                             arrpush(next_list, ast_param->init);
                         }
                     }
@@ -10779,9 +10775,12 @@ INLINE void strip_ast_annotations(AST *root) {
                     {
                         AST_retdecl *ast_ret = (AST_retdecl*)ast;
                         if(ast_ret->next) {
+                            ast_ret->next = (AST_retdecl*)arena_dup_ast(arena, (AST*)(ast_ret->next));
                             arrpush(next_list, (AST*)(ast_ret->next));
                         }
+                        assert(ast_ret->expr);
                         if(ast_ret->expr) {
+                            ast_ret->expr = arena_dup_ast(arena, ast_ret->expr);
                             arrpush(next_list, ast_ret->expr);
                         }
                     }
@@ -10789,110 +10788,77 @@ INLINE void strip_ast_annotations(AST *root) {
                 case AST_KIND_expr_list:
                     {
                         AST_expr_list *ast_expr = (AST_expr_list*)ast;
-                        if(ast_expr->expr->loc.src_path == NULL) {
-                            assert(ast_expr->expr->kind == AST_KIND_expr);
-                            AST_expr *implicit_cast = (AST_expr*)(ast_expr->expr);
-                            assert(implicit_cast->token == TOKEN_CAST);
-                            assert(implicit_cast->right);
-                            ast_expr->expr = implicit_cast->right;
-                        }
+                        ast_expr->expr = arena_dup_ast(arena, ast_expr->expr);
                         arrpush(next_list, ast_expr->expr);
                         if(ast_expr->next) {
+                            ast_expr->next = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_expr->next));
                             arrpush(next_list, (AST*)(ast_expr->next));
                         }
                     }
                     break;
                 case AST_KIND_member_list:
                     {
-                        UNIMPLEMENTED;
-                        //AST_member_list *ast_member = (AST_member_list*)ast;
-                        //arrpush(next_list, ast_member->value);
-                        //if(ast_member->next) {
-                        //    arrpush(next_list, (AST*)(ast_member->next));
-                        //}
+                        AST_member_list *ast_member = (AST_member_list*)ast;
+                        ast_member->value = arena_dup_ast(arena, ast_member->value);
+                        arrpush(next_list, ast_member->value);
+                        if(ast_member->next) {
+                            ast_member->next = (AST_member_list*)arena_dup_ast(arena, (AST*)(ast_member->next));
+                            arrpush(next_list, (AST*)(ast_member->next));
+                        }
                     }
                     break;
                 case AST_KIND_expr:
                     {
                         AST_expr *ast_expr = (AST_expr*)ast;
-                        ast_expr->type_annotation = NULL;
-                        ast_expr->value_annotation = NULL;
                         if(ast_expr->left) {
-                            if(ast_expr->left->loc.src_path == NULL) {
-                                assert(ast_expr->left->kind == AST_KIND_expr);
-                                AST_expr *implicit_cast = (AST_expr*)(ast_expr->left);
-                                assert(implicit_cast->token == TOKEN_CAST);
-                                assert(implicit_cast->right);
-                                ast_expr->left = implicit_cast->right;
-                            }
-                            arrpush(next_list, ast_expr->left);
+                            ast_expr->left = arena_dup_ast(arena, ast_expr->left);
+                            arrpush(next_list, (AST*)(ast_expr->left));
                         }
                         if(ast_expr->right) {
-                            if(ast_expr->right->loc.src_path == NULL) {
-                                assert(ast_expr->right->kind == AST_KIND_expr);
-                                AST_expr *implicit_cast = (AST_expr*)(ast_expr->right);
-                                assert(implicit_cast->token == TOKEN_CAST);
-                                assert(implicit_cast->right);
-                                ast_expr->right = implicit_cast->right;
-                            }
-                            arrpush(next_list, ast_expr->right);
+                            ast_expr->right = arena_dup_ast(arena, ast_expr->right);
+                            arrpush(next_list, (AST*)(ast_expr->right));
                         }
                     }
                     break;
                 case AST_KIND_param:
                     {
                         AST_param *ast_param = (AST_param*)ast;
-                        ast_param->type_annotation = NULL;
-                        ast_param->value_annotation = NULL;
-                        ast_param->is_vararg = false;
-                        if(ast_param->value->loc.src_path == NULL) {
-                            assert(ast_param->value->kind == AST_KIND_expr);
-                            AST_expr *implicit_cast = (AST_expr*)(ast_param->value);
-                            assert(implicit_cast->token == TOKEN_CAST);
-                            assert(implicit_cast->right);
-                            ast_param->value = implicit_cast->right;
-                        }
-                        arrpush(next_list, ast_param->value);
+                        ast_param->value = arena_dup_ast(arena, ast_param->value);
+                        arrpush(next_list, (AST*)(ast_param->value));
                         if(ast_param->next) {
+                            ast_param->next = (AST_param*)arena_dup_ast(arena, (AST*)(ast_param->next));
                             arrpush(next_list, (AST*)(ast_param->next));
                         }
                     }
                     break;
                 case AST_KIND_atom:
-                    {
-                        AST_atom *ast_atom = (AST_atom*)ast;
-                        ast_atom->type_annotation = NULL;
-                        ast_atom->value_annotation = NULL;
-                        ast_atom->symbol_annotation = NULL;
-                    }
                     break;
                 case AST_KIND_array_literal:
                     {
                         AST_array_literal *ast_array = (AST_array_literal*)ast;
                         if(ast_array->type) {
+                            ast_array->type = arena_dup_ast(arena, ast_array->type);
                             arrpush(next_list, ast_array->type);
                         }
                         assert(ast_array->elements);
+                        ast_array->elements = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_array->elements));
                         arrpush(next_list, (AST*)(ast_array->elements));
                     }
                     break;
                 case AST_KIND_struct_literal:
                     {
-                        UNIMPLEMENTED;
-                        //AST_struct_literal *ast_struct = (AST_struct_literal*)ast;
-                        //assert(ast_struct->members);
-                        //arrpush(next_list, (AST*)(ast_struct->members));
+                        AST_struct_literal *ast_struct = (AST_struct_literal*)ast;
+                        assert(ast_struct->members);
+                        ast_struct->members = (AST_member_list*)arena_dup_ast(arena, (AST*)(ast_struct->members));
+                        arrpush(next_list, (AST*)(ast_struct->members));
                     }
                     break;
                 case AST_KIND_call:
                     {
                         AST_call *ast_call = (AST_call*)ast;
-                        ast_call->type_annotation = NULL;
-                        ast_call->value_annotation = NULL;
-                        ast_call->type_annotation_list = NULL;
-                        ast_call->value_annotation_list = NULL;
-                        ast_call->n_types_returned = 0;
+                        ast_call->callee = arena_dup_ast(arena, ast_call->callee);
                         arrpush(next_list, (AST*)(ast_call->callee));
+                        ast_call->params = (AST_param*)arena_dup_ast(arena, (AST*)(ast_call->params));
                         arrpush(next_list, (AST*)(ast_call->params));
                     }
                     break;
@@ -10900,31 +10866,29 @@ INLINE void strip_ast_annotations(AST *root) {
                     {
                         AST_proctype *ast_proc = (AST_proctype*)ast;
                         if(ast_proc->params) {
+                            ast_proc->params = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_proc->params));
                             arrpush(next_list, (AST*)(ast_proc->params));
                         }
                         if(ast_proc->rets) {
+                            ast_proc->rets = (AST_expr_list*)arena_dup_ast(arena, (AST*)(ast_proc->rets));
                             arrpush(next_list, (AST*)(ast_proc->rets));
                         }
                     }
                     break;
             }
         }
-
         if(arrlen(next_list) == 0) {
             break;
         }
-
         arrsetlen(cur_list, 0);
-
         Arr(AST*) tmp;
-
         tmp = cur_list;
         cur_list = next_list;
         next_list = tmp;
     }
-
     arrfree(cur_list);
     arrfree(next_list);
+    return head.down;
 }
 
 //TODO better name conflicts
@@ -11449,8 +11413,11 @@ bool job_runner(char *src, char *src_path) {
                                         ast_procdecl->type_checked_body = true;
                                         AST_block *ast_block = (AST_block*)ast_procdecl->body;
                                         ast_block->visited = true;
+                                        jp->save_polymorphic_proc_body = ast_block->down;
+                                        AST *body_copy = ast_copy(jp->allocator.scratch, ast_block->down);
+                                        ast_block->down = body_copy;
                                         /* NOTE skip the body block so that params are in the same scope as body */
-                                        arrpush(jp->tree_pos_stack, ast_block->down);
+                                        arrpush(jp->tree_pos_stack, body_copy);
                                     }
                                 }
 
@@ -13652,6 +13619,7 @@ void typecheck_expr(Job *jp) {
                         break;
                     a_type = a_value->val.type;
 
+                    //NOTE this was a really really dumb idea
                     node->left = NULL; // the type will already be on the cast
                 }
 
@@ -14092,6 +14060,12 @@ void typecheck_expr(Job *jp) {
             }
 
             if(proc_type->proc.is_polymorphic && jp->cur_proc_type != proc_type) {
+
+                assert(callp->callee->kind == AST_KIND_atom);
+                AST_atom *callee = (AST_atom*)(callp->callee);
+                callee->symbol_annotation = job_alloc_sym(jp);
+                *(callee->symbol_annotation) = *proc_sym;
+
                 proc_sym->is_being_used_in_polymorph = false;
                 proc_sym->being_polymorphed_by_jobid = -1;
                 proc_sym->ir_generated = false;
