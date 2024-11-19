@@ -1,0 +1,21 @@
+proc test_poly(x: **$T) T {
+    return >>x + 1;
+}
+
+#run main();
+
+proc main() {
+    {
+        n: int = 12;
+        np := @n;
+        x := test_poly(@np);
+        print("x = %\n", x);
+    }
+
+    {
+        n: float = 12.0;
+        np := @n;
+        x := test_poly(@np);
+        print("x = %\n", x);
+    }
+}

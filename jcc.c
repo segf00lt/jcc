@@ -6323,7 +6323,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
                         inst.loc = jp->cur_loc;
                         arrpush(jp->instructions, inst);
                     } else {
-                        assert(array_type->kind == TYPE_KIND_ARRAY);
+                        assert(array_type->kind == TYPE_KIND_ARRAY || array_type->kind == TYPE_KIND_POINTER);
                     }
 
                     ir_gen_expr(jp, left_expr->right);
@@ -13437,6 +13437,10 @@ Type* typecheck_dot(Job *jp, Type *a, char *field, u64 *offsetp) {
             result = job_alloc_type(jp, TYPE_KIND_U64);
         } else if(!strcmp(field, "cap") && a->kind == TYPE_KIND_DYNAMIC_ARRAY) {
             result = job_alloc_type(jp, TYPE_KIND_U64);
+        } else if(!strcmp(field, "allocator") && a->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+            result = type_Dynamic_array->record.member.types[3];
+        } else if(!strcmp(field, "allocator_data") && a->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+            result = type_Dynamic_array->record.member.types[4];
         } else if(!strcmp(field, "data")) {
             result = job_alloc_type(jp, TYPE_KIND_POINTER);
             result->pointer.to = a->array.of;
@@ -13870,7 +13874,7 @@ void typecheck_expr(Job *jp) {
                                     *dest = job_alloc_type(jp, expect->kind);
                                     dest = &((*dest)->pointer.to);
                                     expect = expect->pointer.to;
-                                    have = have->array.of;
+                                    have = have->pointer.to;
                                 } else if(TYPE_KIND_IS_ARRAY_LIKE(expect->kind)) {
                                     *dest = job_alloc_type(jp, expect->kind);
                                     **dest = *have;
@@ -15763,8 +15767,6 @@ void print_sym(Sym sym) {
 //VERSION 1.0
 //
 //TODO polymorph caching
-//TODO proc polymorphism
-//TODO dynamic array procedures
 //TODO typechecking for [N] [..] [] and * is wrong, it allows things like [..][..]int = [][]int
 //TODO refactor type inference for array literals
 //TODO finish globals
@@ -15775,13 +15777,17 @@ void print_sym(Sym sym) {
 //TODO test full C interop (raylib)
 //
 //TODO reduce memory usage (target is under 1MB)
-//TODO output assembly
 //TODO debug info (internal and convert to gdb debug format)
+//TODO output assembly
 //TODO procedures for interfacing with the compiler (e.g. add_source_file())
 //TODO parametrized structs
 //TODO enums
 //TODO struct literals
 //TODO directives (#import, #assert, etc)
+
+// MOSTLY DONE, NOW LOW PRIORITY
+//TODO proc polymorphism
+//TODO dynamic array procedures
 
 //VERSION 2.0
 //TODO redesign from scratch

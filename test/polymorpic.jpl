@@ -1,17 +1,17 @@
 #run main();
 
-proc add_to_array(arr: *[]$T, n: T) {
+proc add_to_array(arr: []$T, n: T) {
     i := 0;
-    while i < arr[].count {
+    while i < arr.count {
         defer i++;
 
-        arr[][i] += n;
+        arr[i] += n;
     }
 }
 
 proc main() {
     arr := [1, 2, 3, 4];
-    add_to_array(@arr, 3);
+    add_to_array(arr, 3);
 
     i := 0;
     print("[");
@@ -22,7 +22,7 @@ proc main() {
     print("%]\n", arr[i]);
 
     arr2 := [1.5, 2.13, 3.2, 4.4, 5.12];
-    add_to_array(@arr2, 3.9);
+    add_to_array(arr2, 3.9);
 
     i = 0;
     print("[");
@@ -32,11 +32,15 @@ proc main() {
     }
     print("%]\n", arr2[i]);
 
+    {
     x := poly_factorial(5);
     print("poly_factorial(%) = %\n", 5, x);
+    }
     print("poly_factorial(%) = %\n", 12.0, poly_factorial(12.0));
     print("poly_factorial(%) = %\n", 8, poly_factorial(8));
     print("factorial_float(%) = %\n", 12.0, factorial_float(12.0));
+
+    print("\n================================\n\n");
 }
 
 proc poly_factorial(n: $T) T {

@@ -1,6 +1,6 @@
 _ARRAY_INITIAL_CAP : u64 : 64;
 
-proc arr_push(arr: *_Dynamic_array, elem: Any) {
+proc arr_push(arr: *[..]$T, elem: T) {
     if arr.count >= arr.cap {
         new_cap := arr.cap << 2;
 
@@ -20,8 +20,8 @@ proc arr_push(arr: *_Dynamic_array, elem: Any) {
         arr.data =
             allocator(
                 ALLOC_MODE_RESIZE,
-                new_cap * elem.type.bytes,
-                arr.cap * elem.type.bytes,
+                new_cap * sizeof(elem),
+                arr.cap * sizeof(elem),
                 arr.data,
                 allocator_data,
                 0
@@ -30,7 +30,7 @@ proc arr_push(arr: *_Dynamic_array, elem: Any) {
         arr.cap = new_cap;
     }
 
-    memmove(arr.data + arr.count * elem.type.bytes, elem.data, elem.type.bytes);
+    arr.data[arr.count] = elem;
     arr.count++;
 }
 
