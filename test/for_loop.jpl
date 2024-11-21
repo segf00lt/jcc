@@ -1,0 +1,55 @@
+#run main();
+
+proc main() {
+    arr := [5, 3, 1, 2, 7];
+
+    print("testing array for loop with 'it'\n\n");
+
+    for arr {
+        print("arr[%] = %\n", it_index, it);
+    }
+
+    print("\n===========================================\n\n");
+
+    print("testing array for loop with label\n\n");
+
+    for bob: arr {
+        print("arr[%] = %\n", bob_index, bob);
+    }
+
+    print("\n===========================================\n\n");
+
+    arr_view: []int = arr;
+
+    for arr_view {
+        print("arr_view[%] = %\n", it_index, it);
+    }
+
+    print("\n===========================================\n\n");
+
+    arr_dynamic: [..]float;
+
+    for arr arr_push(@arr_dynamic, it);
+
+    for i: arr_dynamic {
+        print("arr_dynamic[%] = %\n", i_index, i);
+    }
+
+    arr_free(@arr_dynamic);
+
+    print("\n===========================================\n\n");
+
+    print("2d array for loop\n\n");
+
+    arr2d := [
+        [1, 2, 3],
+        [4, 5, 6],
+        [7, 8, 9],
+    ];
+
+    for row: arr2d {
+        for col: row {
+            print("%\n", col);
+        }
+    }
+}
