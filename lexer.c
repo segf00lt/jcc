@@ -9,6 +9,7 @@
     X(INTLIT,                             "")\
     X(HEXLIT,                             "")\
     X(BINLIT,                             "")\
+    X(CHARLIT,                            "")\
     X(UINTLIT,                            "")\
     X(FLOATLIT,                           "")\
     X(DFLOATLIT,                          "")\
@@ -373,7 +374,7 @@ INLINE Token lex(Lexer *l) {
     /* keywords */
     for(int i = TOKEN_KEYWORD + 1 - TOKEN_INVALID; i < STATICARRLEN(token_keywords); ++i) {
         int keyword_length = token_keyword_lengths[i];
-        if(strstr(tp, token_keywords[i]) == tp && !IS_KEYWORD_CHAR(tp[keyword_length])) {
+        if(strstr(tp, token_keywords[i]) == tp && (!(isalpha(tp[keyword_length]) || tp[keyword_length] == '_') || isdigit(tp[keyword_length]))) {
             l->text.e = tp + keyword_length;
             l->pos += keyword_length;
             l->loc_next.col += keyword_length;
@@ -383,9 +384,67 @@ INLINE Token lex(Lexer *l) {
 
     /* literals */
     if(*tp == '\'') {
-        if(tp[2] != '\'') {
-            // TODO lexer error
-            return (l->token = TOKEN_INVALID);
+        if(tp[1] == '\\') {
+            if(tp[3] != '\'' && tp[4] != '\'' && tp[5] != '\'')
+                return (l->token = TOKEN_INVALID);
+
+            switch(tp[2]) {
+                case 'x':
+                    if(!isxdigit(tp[3])) {
+                        return (l->token = TOKEN_INVALID);
+                    } else {
+                        if(isupper(tp[3])) {
+                            l->character = tp[3] - 'A' + 10;
+                        } else if(isdigit(tp[3])) {
+                            l->character = tp[3] - '0';
+                        } else {
+                            l->character = tp[3] - 'a' + 10;
+                        }
+
+                        l->pos += 5;
+                        l->loc_next.col += 5;
+
+                        if(isxdigit(tp[4])) {
+                            l->pos++;
+                            l->loc_next.col++;
+
+                            char c;
+                            if(isupper(tp[4])) {
+                                c = tp[4] - 'A' + 10;
+                            } else if(isdigit(tp[4])) {
+                                c = tp[4] - '0';
+                            } else {
+                                c = tp[4] - 'a' + 10;
+                            }
+                            c <<= 4;
+                            l->character += c;
+                        }
+
+                    }
+                    break;
+                case 'n':
+                    l->pos += 4;
+                    l->loc_next.col += 4;
+                    l->character = '\n';
+                    break;
+                case 't':
+                    l->pos += 4;
+                    l->loc_next.col += 4;
+                    l->character = '\t';
+                    break;
+                case 'r':
+                    l->pos += 4;
+                    l->loc_next.col += 4;
+                    l->character = '\r';
+                    break;
+            }
+
+            return (l->token = TOKEN_CHARLIT);
+        } else {
+            l->pos += 3;
+            l->loc_next.col += 3;
+            l->character = tp[1];
+            return (l->token = TOKEN_CHARLIT);
         }
     } else if(*tp == '"') {
         for(s = tp + 1; *s != '\n' && *s != 0 && *s != '"'; ++s)
@@ -402,11 +461,57 @@ INLINE Token lex(Lexer *l) {
     } else {
         /* find possible end of number */
         s = tp;
-        if(*s == '-' || *s == '+') ++s;
-        for(;isxdigit(*s)||*s=='.'||*s=='x'||*s=='X'||*s=='b'||*s=='B'||*s=='e'||*s=='E'||*s=='-'||*s=='+'; ++s);
-        int n = s - tp;
 
-        l->token = get_literal(tp, n);
+        if(*s == '0' && (s[1] == 'x' || s[1] == 'X' || s[1] == 'b' || s[1] == 'B')) {
+            switch(s[1]) {
+                case 'x': case 'X':
+                    if(!isxdigit(s[2])) {
+                        l->token = TOKEN_INVALID;
+                    } else {
+                        l->token = TOKEN_HEXLIT;
+                        s += 2;
+                        while(isxdigit(*s)) s++;
+                    }
+                    break;
+                case 'b': case 'B':
+                    if(s[2] != '0' && s[2] != '1') {
+                        l->token = TOKEN_INVALID;
+                    } else {
+                        l->token = TOKEN_BINLIT;
+                        s += 2;
+                        while(*s == '0' || *s == '1') s++;
+                    }
+                    break;
+            }
+        } else if(isdigit(*s)) {
+            while(isdigit(*s)) s++;
+
+            l->token = TOKEN_INTLIT;
+
+            if(*s == '.') {
+                s++;
+                if(*s == '.') {
+                    s -= 2;
+                } else {
+                    while(isdigit(*s)) s++;
+                    l->token = TOKEN_FLOATLIT;
+                }
+            }
+
+            if(l->token != TOKEN_INTLIT && (*s == 'e' || *s == 'E')) {
+                s++;
+                if(*s == '-' || *s == '+') s++;
+
+                if(!isdigit(*s)) {
+                    l->token = TOKEN_INVALID;
+                } else {
+                    while(isdigit(*s)) s++;
+                    l->token = TOKEN_FLOATLIT;
+                }
+            }
+        }
+
+        int n = s - tp;
 
         switch(l->token) {
             case TOKEN_INVALID:
@@ -437,13 +542,14 @@ INLINE Token lex(Lexer *l) {
     }
 
     /* chars */
-    for(int i = 0; i < STRLEN(token_chars); ++i)
+    for(int i = 0; i < STRLEN(token_chars); ++i) {
         if(!(*l->pos ^ token_chars[i])) {
             l->token = *l->pos;
             ++l->pos;
             ++l->loc_next.col;
             return l->token;
         }
+    }
 
     /* identifier */
     if(isalpha(*tp) || *tp == '_') {

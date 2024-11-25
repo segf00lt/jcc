@@ -223,6 +223,9 @@ proc print(fmt: string, args: ..) {
                 write(STDOUT, frac_format_buf.data, i);
             }
 
+        } else if t.tag == TYPE_INFO_TAG_CHAR {
+            c := >cast(*char)v;
+            write(STDOUT, @c, 1);
         } else if t.tag == TYPE_INFO_TAG_STRING {
             s := >cast(*string)v;
             write(STDOUT, s.data, s.len);

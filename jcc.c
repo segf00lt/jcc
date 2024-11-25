@@ -922,17 +922,26 @@ struct AST_forstatement {
     AST base;
     AST *next;
     char *label;
-    AST *expr;
+    union {
+        AST *expr;
+        AST *begin_range_expr;
+    };
+    AST *end_range_expr;
     AST *body;
-    Type *expr_type;
+    union {
+        Type *expr_type;
+        Type *begin_range_type;
+    };
+    Type *end_range_type;
     Sym *it_symbol;
     Sym *it_index_symbol;
     Sym *named_it_symbol;
     Sym *named_it_index_symbol;
+    u64 checked_begin_range : 1;
+    u64 checked_end_range : 1;
     u64 by_pointer : 1;
     u64 reverse_order : 1;
     u64 is_range_for : 1;
-    u64 is_cstyle_for : 1;
     u64 visited : 1;
 };
 
@@ -1729,6 +1738,9 @@ Type_info* job_make_type_info(Job *jp, Type *t) {
             tinfo->tag = TYPE_INFO_TAG_STRING;
             break;
         case TYPE_KIND_CHAR:
+            tinfo = arena_alloc(&type_info_arena, sizeof(Type_info));
+            tinfo->tag = TYPE_INFO_TAG_CHAR;
+            break;
         case TYPE_KIND_U8:
         case TYPE_KIND_U16:
         case TYPE_KIND_U32:
@@ -3530,6 +3542,19 @@ AST* parse_controlflow(Job *jp) {
 
                 unlex = *lexer;
                 t = lex(lexer);
+
+                if(t == '!') {
+                    node->reverse_order = true;
+                    unlex = *lexer;
+                    t = lex(lexer);
+                }
+
+                if(t == '*') {
+                    node->by_pointer = true;
+                    unlex = *lexer;
+                    t = lex(lexer);
+                }
+
                 if(t == TOKEN_IDENT) {
                     char *s = lexer->text.s;
                     char *e = lexer->text.e;
@@ -3542,9 +3567,33 @@ AST* parse_controlflow(Job *jp) {
                     *lexer = unlex;
                 }
 
-                node->expr = parse_expr(jp);
+                char *dot_pos = NULL;
+                for(int i = 0; lexer->pos[i] != 0 && lexer->pos[i] != ';' && lexer->pos[i] != '{'; ++i) {
+                    if(lexer->pos[i] == '.' && lexer->pos[i+1] == '.') {
+                        dot_pos = lexer->pos + i;
+                        lexer->pos[i] = ';';
+                        lexer->pos[i+1] = ' ';
+                        node->is_range_for = true;
+                        break;
+                    }
+                }
 
-                if(node->expr == NULL) job_error(jp, node->base.loc, "for statement missing expression");
+                if(node->is_range_for) {
+                    node->begin_range_expr = parse_expr(jp);
+                    if(node->begin_range_expr == NULL) job_error(jp, node->base.loc, "for statement missing expression");
+
+                    t = lex(lexer);
+                    assert(t == ';');
+
+                    node->end_range_expr = parse_expr(jp);
+                    if(node->end_range_expr == NULL) job_error(jp, node->base.loc, "for statement missing expression");
+
+                    dot_pos[0] = '.';
+                    dot_pos[1] = '.';
+                } else {
+                    node->expr = parse_expr(jp);
+                    if(node->expr == NULL) job_error(jp, node->base.loc, "for statement missing expression");
+                }
 
                 unlex = *lexer;
                 t = lex(lexer);
@@ -4300,6 +4349,13 @@ AST* parse_term(Job *jp) {
         case TOKEN_STRING:
             atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
             atom->token = t;
+            node = (AST*)atom;
+            node->weight = 1;
+            break;
+        case TOKEN_CHARLIT:
+            atom = (AST_atom*)job_alloc_ast(jp, AST_KIND_atom);
+            atom->token = t;
+            atom->character = lexer->character;
             node = (AST*)atom;
             node->weight = 1;
             break;
@@ -7137,78 +7193,175 @@ void ir_gen_block(Job *jp, AST *ast) {
 
                     arrpush(jp->local_offset, arrlast(jp->local_offset));
 
-                    assert(ast_for->it_index_symbol->type->align == 8 && ast_for->it_index_symbol->type->bytes == 8);
+                    u64 it_index_addr = 0;
 
-                    u64 it_index_addr = align_up(arrlast(jp->local_offset), 8);
-                    arrlast(jp->local_offset) += 8;
+                    if(!ast_for->is_range_for) {
+                        assert(ast_for->it_index_symbol->type->align == 8 && ast_for->it_index_symbol->type->bytes == 8);
+
+                        it_index_addr = align_up(arrlast(jp->local_offset), 8);
+                        arrlast(jp->local_offset) += 8;
+                        ast_for->it_index_symbol->segment_offset = it_index_addr;
+                    }
 
                     u64 it_addr = align_up(arrlast(jp->local_offset), ast_for->it_symbol->type->align);
                     Type *it_type = ast_for->it_symbol->type;
                     arrlast(jp->local_offset) += ast_for->it_symbol->type->bytes;
-
-                    ast_for->it_index_symbol->segment_offset = it_index_addr;
                     ast_for->it_symbol->segment_offset = it_addr;
+
                     if(ast_for->label) {
                         ast_for->named_it_symbol->segment_offset = it_addr;
-                        ast_for->named_it_index_symbol->segment_offset = it_index_addr;
+                        if(!ast_for->is_range_for) {
+                            ast_for->named_it_index_symbol->segment_offset = it_index_addr;
+                        }
                     }
 
-                    /* save the address of the iterable */
-                    ir_gen_expr(jp, ast_for->expr);
-                    assert(jp->reg_alloc == 1);
-                    jp->reg_alloc = 0;
+                    if(ast_for->is_range_for) {
+                        u64 end_range_addr = 0;
 
-                    u64 iterable_addr = align_up(arrlast(jp->local_offset), 8);
-                    arrlast(jp->local_offset) += 8;
+                        /* setup begin and end of range */
+                        end_range_addr = align_up(arrlast(jp->local_offset), ast_for->end_range_type->align);
+                        arrlast(jp->local_offset) += ast_for->end_range_type->bytes;
 
-                    inst =
-                        (IRinst) {
-                            .opcode = IROP_SETVAR,
-                            .setvar = {
-                                .segment = IRSEG_LOCAL,
-                                .offset = iterable_addr,
-                                .reg_src = 0,
-                                .bytes = 8,
-                            },
-                        };
-                    inst.loc = jp->cur_loc;
-                    arrpush(jp->instructions, inst);
+                        ir_gen_expr(jp, ast_for->end_range_expr);
+                        assert(jp->reg_alloc == 1);
+                        jp->reg_alloc = 0;
 
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_SETVAR,
+                                .setvar = {
+                                    .segment = IRSEG_LOCAL,
+                                    .offset = end_range_addr,
+                                    .reg_src = 0,
+                                    .bytes = ast_for->end_range_type->bytes,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
 
-                    if(ast_for->reverse_order) {
-                        u64 iterable_count_offset = 0;
+                        ir_gen_expr(jp, ast_for->begin_range_expr);
+                        assert(jp->reg_alloc == 1);
+                        jp->reg_alloc = 0;
 
-                        if(ast_for->expr_type->kind == TYPE_KIND_ARRAY) {
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_SETVAR,
+                                .setvar = {
+                                    .segment = IRSEG_LOCAL,
+                                    .offset = it_addr,
+                                    .reg_src = 0,
+                                    .bytes = ast_for->begin_range_type->bytes,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_JMP,
+                                .branch = {
+                                    .label_id = cond_label,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_LABEL,
+                                .label = {
+                                    .id = update_label,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        /* increment or decrement it depending on the order of the loop */
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_GETVAR,
+                                .getvar = {
+                                    .segment = IRSEG_LOCAL,
+                                    .offset = it_addr,
+                                    .reg_dest = 0,
+                                    .bytes = 8,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        inst =
+                            (IRinst) {
+                                .opcode = ast_for->reverse_order ? IROP_SUB : IROP_ADD,
+                                .arith = {
+                                    .operand_bytes = { 8, 8, 8 },
+                                    .reg = { 0, 0, },
+                                    .imm.integer = 1,
+                                    .immediate = true,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_SETVAR,
+                                .setvar = {
+                                    .segment = IRSEG_LOCAL,
+                                    .offset = it_addr,
+                                    .reg_src = 0,
+                                    .bytes = 8,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_LABEL,
+                                .label = {
+                                    .id = cond_label,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        assert(jp->reg_alloc == 0);
+
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_GETVAR,
+                                .getvar = {
+                                    .segment = IRSEG_LOCAL,
+                                    .offset = end_range_addr,
+                                    .reg_dest = 1,
+                                    .bytes = ast_for->end_range_type->bytes,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        if(ast_for->reverse_order) {
                             inst =
                                 (IRinst) {
-                                    .opcode = IROP_LOAD,
-                                    .load = {
-                                        .reg_dest = 0,
-                                        .imm.integer = ast_for->expr_type->array.n,
-                                        .bytes = 8,
-                                        .immediate = true,
+                                    .opcode = IROP_LE,
+                                    .arith = {
+                                        .operand_bytes = { it_type->bytes, ast_for->end_range_type->bytes, it_type->bytes },
+                                        .reg = { 0, 1, 0 },
+                                        .sign = true,
                                     },
                                 };
                             inst.loc = jp->cur_loc;
                             arrpush(jp->instructions, inst);
                         } else {
-                            if(ast_for->expr_type->kind == TYPE_KIND_ARRAY_VIEW) {
-                                iterable_count_offset = offsetof(Array_view, count);
-                            } else if(ast_for->expr_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
-                                iterable_count_offset = offsetof(Dynamic_array, count);
-                            } else if(ast_for->expr_type->kind == TYPE_KIND_STRING) {
-                                iterable_count_offset = offsetof(String_view, len);
-                            } 
-
+                            //TODO should ranges be inclusive?
                             inst =
                                 (IRinst) {
-                                    .opcode = IROP_LOAD,
-                                    .load = {
-                                        .reg_dest = 0,
-                                        .reg_src_ptr = 0,
-                                        .byte_offset_imm = iterable_count_offset,
-                                        .bytes = 8,
-                                        .has_immediate_offset = true,
+                                    .opcode = IROP_LE,
+                                    .arith = {
+                                        .operand_bytes = { it_type->bytes, it_type->bytes, ast_for->end_range_type->bytes },
+                                        .reg = { 0, 0, 1 },
+                                        .sign = true,
                                     },
                                 };
                             inst.loc = jp->cur_loc;
@@ -7217,10 +7370,50 @@ void ir_gen_block(Job *jp, AST *ast) {
 
                         inst =
                             (IRinst) {
+                                .opcode = IROP_IF,
+                                .branch = {
+                                    .cond_reg = 0,
+                                    .label_id = body_label,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_JMP,
+                                .branch = {
+                                    .label_id = last_label,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_LABEL,
+                                .label = {
+                                    .id = body_label,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                    } else {
+                        /* save the address of the iterable */
+                        ir_gen_expr(jp, ast_for->expr);
+                        assert(jp->reg_alloc == 1);
+                        jp->reg_alloc = 0;
+
+                        u64 iterable_addr = align_up(arrlast(jp->local_offset), 8);
+                        arrlast(jp->local_offset) += 8;
+
+                        inst =
+                            (IRinst) {
                                 .opcode = IROP_SETVAR,
                                 .setvar = {
                                     .segment = IRSEG_LOCAL,
-                                    .offset = it_index_addr,
+                                    .offset = iterable_addr,
                                     .reg_src = 0,
                                     .bytes = 8,
                                 },
@@ -7228,13 +7421,140 @@ void ir_gen_block(Job *jp, AST *ast) {
                         inst.loc = jp->cur_loc;
                         arrpush(jp->instructions, inst);
 
-                    } else {
+                        if(ast_for->reverse_order) {
+                            u64 iterable_count_offset = 0;
+
+                            if(ast_for->expr_type->kind == TYPE_KIND_ARRAY) {
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_LOAD,
+                                        .load = {
+                                            .reg_dest = 0,
+                                            .imm.integer = ast_for->expr_type->array.n - 1,
+                                            .bytes = 8,
+                                            .immediate = true,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+                            } else {
+                                if(ast_for->expr_type->kind == TYPE_KIND_ARRAY_VIEW) {
+                                    iterable_count_offset = offsetof(Array_view, count);
+                                } else if(ast_for->expr_type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+                                    iterable_count_offset = offsetof(Dynamic_array, count);
+                                } else if(ast_for->expr_type->kind == TYPE_KIND_STRING) {
+                                    iterable_count_offset = offsetof(String_view, len);
+                                } 
+
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_LOAD,
+                                        .load = {
+                                            .reg_dest = 0,
+                                            .reg_src_ptr = 0,
+                                            .byte_offset_imm = iterable_count_offset,
+                                            .bytes = 8,
+                                            .has_immediate_offset = true,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+
+                                inst =
+                                    (IRinst) {
+                                        .opcode = IROP_SUB,
+                                        .arith = {
+                                            .operand_bytes = { 8, 8, 8 },
+                                            .reg = { 0, 0 },
+                                            .imm.integer = 1,
+                                            .immediate = true,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+                            }
+
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_SETVAR,
+                                    .setvar = {
+                                        .segment = IRSEG_LOCAL,
+                                        .offset = it_index_addr,
+                                        .reg_src = 0,
+                                        .bytes = 8,
+                                    },
+                                };
+                            inst.loc = jp->cur_loc;
+                            arrpush(jp->instructions, inst);
+
+                        } else {
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_LOAD,
+                                    .load = {
+                                        .reg_dest = 0,
+                                        .bytes = 8,
+                                        .immediate = true,
+                                    },
+                                };
+                            inst.loc = jp->cur_loc;
+                            arrpush(jp->instructions, inst);
+
+                            inst =
+                                (IRinst) {
+                                    .opcode = IROP_SETVAR,
+                                    .setvar = {
+                                        .segment = IRSEG_LOCAL,
+                                        .offset = it_index_addr,
+                                        .bytes = 8,
+                                        .immediate = true,
+                                    },
+                                };
+                            inst.loc = jp->cur_loc;
+                            arrpush(jp->instructions, inst);
+                        }
+
                         inst =
                             (IRinst) {
-                                .opcode = IROP_LOAD,
-                                .load = {
-                                    .reg_dest = 0,
+                                .opcode = IROP_JMP,
+                                .branch = {
+                                    .label_id = cond_label,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_LABEL,
+                                .label = {
+                                    .id = update_label,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        /* increment or decrement the index depending on the order of the loop */
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_GETVAR,
+                                .getvar = {
+                                    .segment = IRSEG_LOCAL,
+                                    .offset = it_index_addr,
+                                    .reg_dest = jp->reg_alloc,
                                     .bytes = 8,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        inst =
+                            (IRinst) {
+                                .opcode = ast_for->reverse_order ? IROP_SUB : IROP_ADD,
+                                .arith = {
+                                    .operand_bytes = { 8, 8, 8 },
+                                    .reg = { jp->reg_alloc, jp->reg_alloc, },
+                                    .imm.integer = 1,
                                     .immediate = true,
                                 },
                             };
@@ -7247,92 +7567,27 @@ void ir_gen_block(Job *jp, AST *ast) {
                                 .setvar = {
                                     .segment = IRSEG_LOCAL,
                                     .offset = it_index_addr,
+                                    .reg_src = jp->reg_alloc,
                                     .bytes = 8,
-                                    .immediate = true,
                                 },
                             };
                         inst.loc = jp->cur_loc;
                         arrpush(jp->instructions, inst);
-                    }
 
-                    inst =
-                        (IRinst) {
-                            .opcode = IROP_JMP,
-                            .branch = {
-                                .label_id = cond_label,
-                            },
-                        };
-                    inst.loc = jp->cur_loc;
-                    arrpush(jp->instructions, inst);
+                        inst =
+                            (IRinst) {
+                                .opcode = IROP_LABEL,
+                                .label = {
+                                    .id = cond_label,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
 
-                    inst =
-                        (IRinst) {
-                            .opcode = IROP_LABEL,
-                            .label = {
-                                .id = update_label,
-                            },
-                        };
-                    inst.loc = jp->cur_loc;
-                    arrpush(jp->instructions, inst);
+                        assert(jp->reg_alloc == 0);
 
-                    /* increment or decrement the index depending on the order of the loop */
-                    inst =
-                        (IRinst) {
-                            .opcode = IROP_GETVAR,
-                            .getvar = {
-                                .segment = IRSEG_LOCAL,
-                                .offset = it_index_addr,
-                                .reg_dest = jp->reg_alloc,
-                                .bytes = 8,
-                            },
-                        };
-                    inst.loc = jp->cur_loc;
-                    arrpush(jp->instructions, inst);
-
-                    inst =
-                        (IRinst) {
-                            .opcode = ast_for->reverse_order ? IROP_SUB : IROP_ADD,
-                            .arith = {
-                                .operand_bytes = { 8, 8, 8 },
-                                .reg = { jp->reg_alloc, jp->reg_alloc, },
-                                .imm.integer = 1,
-                                .immediate = true,
-                            },
-                        };
-                    inst.loc = jp->cur_loc;
-                    arrpush(jp->instructions, inst);
-
-                    inst =
-                        (IRinst) {
-                            .opcode = IROP_SETVAR,
-                            .setvar = {
-                                .segment = IRSEG_LOCAL,
-                                .offset = it_index_addr,
-                                .reg_src = jp->reg_alloc,
-                                .bytes = 8,
-                            },
-                        };
-                    inst.loc = jp->cur_loc;
-                    arrpush(jp->instructions, inst);
-
-                    inst =
-                        (IRinst) {
-                            .opcode = IROP_LABEL,
-                            .label = {
-                                .id = cond_label,
-                            },
-                        };
-                    inst.loc = jp->cur_loc;
-                    arrpush(jp->instructions, inst);
-
-                    assert(jp->reg_alloc == 0);
-
-                    if(ast_for->is_range_for) {
-                        UNIMPLEMENTED;
-                    } else {
                         // generate the condition depending on loop order
                         if(ast_for->reverse_order) {
-                            UNIMPLEMENTED;
                             // here we just check if it_index >= 0, signed comparison
                             assert(jp->reg_alloc == 0);
 
@@ -12135,41 +12390,148 @@ bool job_runner(char *src, char *src_path) {
                                 continue;
                             }
 
-                            if(arrlen(jp->expr) == 0) {
-                                linearize_expr(jp, ast_for->expr);
+                            Type *for_elem_type;
+
+                            if(ast_for->is_range_for) {
+                                if(ast_for->by_pointer) {
+                                    job_error(jp, ast_for->base.loc, "range for cannot be iterated by pointer");
+                                }
+
+                                Type *for_begin_expr_type = NULL;
+
+                                if(!ast_for->checked_begin_range) {
+                                    if(arrlen(jp->expr) == 0) {
+                                        linearize_expr(jp, ast_for->begin_range_expr);
+                                    }
+                                    typecheck_expr(jp);
+                                    for_begin_expr_type = ((AST_expr_base*)(ast_for->begin_range_expr))->type_annotation;
+                                    ast_for->begin_range_type = for_begin_expr_type;
+
+                                    if(jp->state == JOB_STATE_WAIT) {
+                                        arrpush(job_queue_next, *jp);
+                                        arrlast(job_queue_next).waiting_on_name = NULL;
+                                        arrlast(job_queue_next).state = JOB_STATE_READY;
+                                        ++job_queue_pos;
+                                        continue;
+                                    }
+
+                                    if(jp->state == JOB_STATE_ERROR) {
+                                        job_report_all_messages(jp);
+                                        job_die(jp);
+                                        ++job_queue_pos;
+                                        continue;
+                                    }
+
+                                    arrsetlen(jp->type_stack, 0);
+                                    arrsetlen(jp->value_stack, 0);
+                                    arrsetlen(jp->expr, 0);
+                                    jp->expr_pos = 0;
+                                }
+
+                                assert(for_begin_expr_type);
+
+                                Type *for_end_expr_type = NULL;
+
+                                if(!ast_for->checked_end_range) {
+                                    if(arrlen(jp->expr) == 0) {
+                                        linearize_expr(jp, ast_for->end_range_expr);
+                                    }
+                                    typecheck_expr(jp);
+                                    for_end_expr_type = ((AST_expr_base*)(ast_for->end_range_expr))->type_annotation;
+
+                                    ast_for->end_range_type = for_end_expr_type;
+
+                                    if(jp->state == JOB_STATE_WAIT) {
+                                        arrpush(job_queue_next, *jp);
+                                        arrlast(job_queue_next).waiting_on_name = NULL;
+                                        arrlast(job_queue_next).state = JOB_STATE_READY;
+                                        ++job_queue_pos;
+                                        continue;
+                                    }
+
+                                    if(jp->state == JOB_STATE_ERROR) {
+                                        job_report_all_messages(jp);
+                                        job_die(jp);
+                                        ++job_queue_pos;
+                                        continue;
+                                    }
+
+                                    arrsetlen(jp->type_stack, 0);
+                                    arrsetlen(jp->value_stack, 0);
+                                    arrsetlen(jp->expr, 0);
+                                    jp->expr_pos = 0;
+                                }
+
+                                assert(for_end_expr_type);
+
+                                if(!TYPE_KIND_IS_INTEGER(for_begin_expr_type->kind)) {
+                                    job_error(jp, ast_for->base.loc,
+                                            "the beginning of a for loop range must be integers, not '%s'",
+                                            job_type_to_str(jp, for_begin_expr_type));
+                                }
+
+                                if(!TYPE_KIND_IS_INTEGER(for_end_expr_type->kind)) {
+                                    job_error(jp, ast_for->base.loc,
+                                            "the end of a for loop range must be integers, not '%s'",
+                                            job_type_to_str(jp, for_end_expr_type));
+                                }
+
+                                if(jp->state == JOB_STATE_ERROR) {
+                                    job_report_all_messages(jp);
+                                    job_die(jp);
+                                    ++job_queue_pos;
+                                    continue;
+                                }
+
+                                for_elem_type = for_begin_expr_type;
+                            } else {
+                                if(arrlen(jp->expr) == 0) {
+                                    linearize_expr(jp, ast_for->expr);
+                                }
+                                typecheck_expr(jp);
+                                Type *for_expr_type = ((AST_expr_base*)(ast_for->expr))->type_annotation;
+
+                                if(jp->state == JOB_STATE_WAIT) {
+                                    arrpush(job_queue_next, *jp);
+                                    arrlast(job_queue_next).waiting_on_name = NULL;
+                                    arrlast(job_queue_next).state = JOB_STATE_READY;
+                                    ++job_queue_pos;
+                                    continue;
+                                }
+
+                                if(jp->state == JOB_STATE_ERROR) {
+                                    job_report_all_messages(jp);
+                                    job_die(jp);
+                                    ++job_queue_pos;
+                                    continue;
+                                }
+
+                                if(!TYPE_KIND_IS_ARRAY_LIKE(for_expr_type->kind) && for_expr_type->kind != TYPE_KIND_STRING) {
+                                    job_error(jp, ast_for->expr->loc,
+                                            "for loop expression must evaluate to array type not '%s'",
+                                            job_type_to_str(jp, for_expr_type));
+                                }
+
+                                ast_for->expr_type = for_expr_type;
+
+                                arrsetlen(jp->type_stack, 0);
+                                arrsetlen(jp->value_stack, 0);
+                                arrsetlen(jp->expr, 0);
+                                jp->expr_pos = 0;
+
+                                for_elem_type = TYPE_KIND_IS_ARRAY_LIKE(for_expr_type->kind) ? for_expr_type->array.of : builtin_type+TYPE_KIND_CHAR;
+
+                                if(ast_for->by_pointer) {
+                                    //NOTE allocating types inline in this way makes caching a bit more difficult 
+                                    Type *t = job_alloc_type(jp, TYPE_KIND_POINTER);
+                                    t->pointer.to = for_elem_type;
+                                    for_elem_type = t;
+                                }
                             }
-                            typecheck_expr(jp);
-                            Type *for_expr_type = ((AST_expr_base*)(ast_for->expr))->type_annotation;
-
-                            if(!TYPE_KIND_IS_ARRAY_LIKE(for_expr_type->kind) || for_expr_type->kind == TYPE_KIND_STRING) {
-                                job_error(jp, ast_for->expr->loc,
-                                        "for loop expression must evaluate to array type not '%s'",
-                                        job_type_to_str(jp, for_expr_type));
-                            }
-
-                            ast_for->expr_type = for_expr_type;
-
-                            if(jp->state == JOB_STATE_WAIT) {
-                                arrpush(job_queue_next, *jp);
-                                arrlast(job_queue_next).waiting_on_name = NULL;
-                                arrlast(job_queue_next).state = JOB_STATE_READY;
-                                ++job_queue_pos;
-                                continue;
-                            }
-
-                            if(jp->state == JOB_STATE_ERROR) {
-                                job_report_all_messages(jp);
-                                job_die(jp);
-                                ++job_queue_pos;
-                                continue;
-                            }
-
-                            arrsetlen(jp->type_stack, 0);
-                            arrsetlen(jp->value_stack, 0);
-                            arrsetlen(jp->expr, 0);
-                            jp->expr_pos = 0;
 
                             arrpush(jp->scopes, NULL);
+
+                            Sym *symp = NULL;
 
                             if(ast_for->label) {
                                 Sym named_it = {
@@ -12177,33 +12539,35 @@ bool job_runner(char *src, char *src_path) {
                                     .loc = ast_for->base.loc,
                                     .declared_by = jp->id,
                                     .segment = IRSEG_LOCAL,
-                                    .type = TYPE_KIND_IS_ARRAY_LIKE(for_expr_type->kind) ? for_expr_type->array.of : builtin_type+TYPE_KIND_CHAR,
+                                    .type = for_elem_type,
                                 };
-
-                                char suffix[] = "_index";
-                                char *it_index_name = job_alloc_scratch(jp, 1 + strlen(ast_for->label) + STRLEN(suffix));
-                                int i;
-                                for(i = 0; ast_for->label[i]; ++i) it_index_name[i] = ast_for->label[i];
-                                int j;
-                                for(j = 0; suffix[j]; ++j) it_index_name[i++] = suffix[j];
-
-                                Sym named_it_index = {
-                                    .name = it_index_name,
-                                    .loc = ast_for->base.loc,
-                                    .declared_by = jp->id,
-                                    .segment = IRSEG_LOCAL,
-                                    .type = builtin_type+TYPE_KIND_INT,
-                                };
-
-                                Sym *symp = job_alloc_sym(jp);
-                                *symp = named_it_index;
-                                job_scope_enter(jp, symp);
-                                ast_for->named_it_index_symbol = symp;
 
                                 symp = job_alloc_sym(jp);
                                 *symp = named_it;
                                 job_scope_enter(jp, symp);
                                 ast_for->named_it_symbol = symp;
+
+                                if(!ast_for->is_range_for) {
+                                    char suffix[] = "_index";
+                                    char *it_index_name = job_alloc_scratch(jp, 1 + strlen(ast_for->label) + STRLEN(suffix));
+                                    int i;
+                                    for(i = 0; ast_for->label[i]; ++i) it_index_name[i] = ast_for->label[i];
+                                    int j;
+                                    for(j = 0; suffix[j]; ++j) it_index_name[i++] = suffix[j];
+
+                                    Sym named_it_index = {
+                                        .name = it_index_name,
+                                        .loc = ast_for->base.loc,
+                                        .declared_by = jp->id,
+                                        .segment = IRSEG_LOCAL,
+                                        .type = builtin_type+TYPE_KIND_INT,
+                                    };
+
+                                    symp = job_alloc_sym(jp);
+                                    *symp = named_it_index;
+                                    job_scope_enter(jp, symp);
+                                    ast_for->named_it_index_symbol = symp;
+                                }
                             }
 
                             Sym it_sym = {
@@ -12211,26 +12575,28 @@ bool job_runner(char *src, char *src_path) {
                                 .loc = ast_for->base.loc,
                                 .declared_by = jp->id,
                                 .segment = IRSEG_LOCAL,
-                                .type = TYPE_KIND_IS_ARRAY_LIKE(for_expr_type->kind) ? for_expr_type->array.of : builtin_type+TYPE_KIND_CHAR,
+                                .type = for_elem_type,
                             };
-
-                            Sym it_index_sym = {
-                                .name = "it_index",
-                                .loc = ast_for->base.loc,
-                                .declared_by = jp->id,
-                                .segment = IRSEG_LOCAL,
-                                .type = builtin_type+TYPE_KIND_INT,
-                            };
-
-                            Sym *symp = job_alloc_sym(jp);
-                            *symp = it_index_sym;
-                            job_scope_enter(jp, symp);
-                            ast_for->it_index_symbol = symp;
 
                             symp = job_alloc_sym(jp);
                             *symp = it_sym;
                             job_scope_enter(jp, symp);
                             ast_for->it_symbol = symp;
+
+                            if(!ast_for->is_range_for) {
+                                Sym it_index_sym = {
+                                    .name = "it_index",
+                                    .loc = ast_for->base.loc,
+                                    .declared_by = jp->id,
+                                    .segment = IRSEG_LOCAL,
+                                    .type = builtin_type+TYPE_KIND_INT,
+                                };
+
+                                symp = job_alloc_sym(jp);
+                                *symp = it_index_sym;
+                                job_scope_enter(jp, symp);
+                                ast_for->it_index_symbol = symp;
+                            }
 
                             ast_for->visited = true;
 
@@ -12822,11 +13188,15 @@ Value *atom_to_value(Job *jp, AST_atom *atom) {
             break;
         case TOKEN_TRUE:
             vp = job_alloc_value(jp, VALUE_KIND_BOOL);
-            vp->val.boolean = true;;
+            vp->val.boolean = true;
             break;
         case TOKEN_FALSE:
             vp = job_alloc_value(jp, VALUE_KIND_BOOL);
-            vp->val.boolean = false;;
+            vp->val.boolean = false;
+            break;
+        case TOKEN_CHARLIT:
+            vp = job_alloc_value(jp, VALUE_KIND_CHAR);
+            vp->val.character = atom->character;
             break;
         case TOKEN_S8: case TOKEN_S16: case TOKEN_S32: case TOKEN_S64:
         case TOKEN_U8: case TOKEN_U16: case TOKEN_U32: case TOKEN_U64:
@@ -12870,6 +13240,9 @@ Type *atom_to_type(Job *jp, AST_atom *atom) {
         case TOKEN_TRUE:
         case TOKEN_FALSE:
             tp = job_alloc_type(jp, TYPE_KIND_BOOL);
+            break;
+        case TOKEN_CHARLIT:
+            tp = job_alloc_type(jp, TYPE_KIND_CHAR);
             break;
         case TOKEN_VOID:
         case TOKEN_BOOL:
@@ -16385,30 +16758,28 @@ void print_sym(Sym sym) {
 
 //VERSION 1.0
 //
-//TODO simple array for loops
-//TODO range for loops "for i..10 { ... }"
-//TODO c-style for loops
-//
+//TODO finish print()
 //TODO polymorph caching
+//TODO cache all allocated types except records and procedures ([N], [], [..], *, string)
 //TODO typechecking for [N] [..] [] and * is wrong, it allows things like [..][..]int = [][]int
 //TODO refactor type inference for array literals
 //TODO finish globals
 //TODO proc types with argument names
-//TODO finish print()
 //TODO test full C interop (raylib)
 //
-//TODO reduce memory usage (target is under 1MB)
-//TODO debug info (internal and convert to gdb debug format)
 //TODO output assembly
+//TODO debug info (internal and convert to gdb debug format)
+//TODO c-style for loops (use 'while' keyword)
 //TODO procedures for interfacing with the compiler (e.g. add_source_file())
+//
 //TODO parametrized structs
+//TODO proc polymorphism with parametrized structs
 //TODO enums
 //TODO struct literals
 //TODO directives (#import, #assert, etc)
 
-// MOSTLY DONE OR LOW PRIORITY
-//TODO proc polymorphism
-//TODO dynamic array procedures
+// MOSTLY DONE
+//TODO dynamic array procedures (missing some helpers, copy from stb_ds.h)
 
 //VERSION 2.0
 //TODO redesign from scratch

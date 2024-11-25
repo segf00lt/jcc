@@ -1,16 +1,17 @@
 #define TYPEINFODECL                \
     X(void    ,  VOID     ,   0)    \
     X(int     ,  INT      ,   1)    \
-    X(float   ,  FLOAT    ,   2)    \
-    X(bool    ,  BOOL     ,   2)    \
-    X(type    ,  TYPE     ,   4)    \
-    X(pointer ,  POINTER  ,   5)    \
-    X(array   ,  ARRAY    ,   6)    \
-    X(string  ,  STRING   ,   7)    \
-    X(struct  ,  STRUCT   ,   8)    \
-    X(enum    ,  ENUM     ,   9)    \
-    X(proc    ,  PROC     ,  10)    \
-    X(any     ,  ANY      ,  11)    \
+    X(int     ,  CHAR     ,   2)    \
+    X(float   ,  FLOAT    ,   3)    \
+    X(bool    ,  BOOL     ,   4)    \
+    X(type    ,  TYPE     ,   5)    \
+    X(pointer ,  POINTER  ,   6)    \
+    X(array   ,  ARRAY    ,   7)    \
+    X(string  ,  STRING   ,   8)    \
+    X(struct  ,  STRUCT   ,   9)    \
+    X(enum    ,  ENUM     ,  10)    \
+    X(proc    ,  PROC     ,  11)    \
+    X(any     ,  ANY      ,  12)    \
 
 typedef struct Type_info Type_info;
 typedef struct Type_info_struct_member Type_info_struct_member;

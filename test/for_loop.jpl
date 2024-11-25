@@ -35,8 +35,6 @@ proc main() {
         print("arr_dynamic[%] = %\n", i_index, i);
     }
 
-    arr_free(@arr_dynamic);
-
     print("\n===========================================\n\n");
 
     print("2d array for loop\n\n");
@@ -52,4 +50,48 @@ proc main() {
             print("%\n", col);
         }
     }
+
+    print("\n===========================================\n\n");
+
+    print("strings\n\n");
+
+    s := "Hello there!\n";
+    for s print("s[%] = %\n", it_index, it);
+
+    print("\n===========================================\n\n");
+
+    print("reversed iteration\n\n");
+
+    for ! * i: arr print("arr[%] = %\n", i_index, >i);
+    print("\n");
+    for ! arr_view print("arr_view[%] = %\n", it_index, it);
+    print("\n");
+    for ! arr_dynamic print("arr_dynamic[%] = %\n", it_index, it);
+
+    arr_free(@arr_dynamic);
+
+    print("\n===========================================\n\n");
+
+    print("range for loops\n\n");
+
+    print("going in reverse\n");
+    for ! 8..4 {
+        print("% ", it);
+    }
+    print("\n");
+
+    print("\n");
+
+    print("going forward\n");
+    print("arr_view has % elements\nthe indexes are:\n", arr_view.count);
+    for 0..arr_view.count-1 {
+        print("% ", it);
+    }
+    print("\n");
+    print("minus one %\n", -123);
+
+    c := '\xa';
+    print("c = %\n", c);
+    bin := 0b1111;
+    print("bin = %\n", bin);
 }

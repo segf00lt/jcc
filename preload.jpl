@@ -14,16 +14,17 @@ Type_info_tag :: u32;
 //TODO constant struct members also
 TYPE_INFO_TAG_VOID     : Type_info_tag :   0;
 TYPE_INFO_TAG_INT      : Type_info_tag :   1;
-TYPE_INFO_TAG_FLOAT    : Type_info_tag :   2;
-TYPE_INFO_TAG_BOOL     : Type_info_tag :   2;
-TYPE_INFO_TAG_TYPE     : Type_info_tag :   4;
-TYPE_INFO_TAG_POINTER  : Type_info_tag :   5;
-TYPE_INFO_TAG_ARRAY    : Type_info_tag :   6;
-TYPE_INFO_TAG_STRING   : Type_info_tag :   7;
-TYPE_INFO_TAG_STRUCT   : Type_info_tag :   8;
-TYPE_INFO_TAG_ENUM     : Type_info_tag :   9;
-TYPE_INFO_TAG_PROC     : Type_info_tag :  10;
-TYPE_INFO_TAG_ANY      : Type_info_tag :  11;
+TYPE_INFO_TAG_CHAR     : Type_info_tag :   2;
+TYPE_INFO_TAG_FLOAT    : Type_info_tag :   3;
+TYPE_INFO_TAG_BOOL     : Type_info_tag :   4;
+TYPE_INFO_TAG_TYPE     : Type_info_tag :   5;
+TYPE_INFO_TAG_POINTER  : Type_info_tag :   6;
+TYPE_INFO_TAG_ARRAY    : Type_info_tag :   7;
+TYPE_INFO_TAG_STRING   : Type_info_tag :   8;
+TYPE_INFO_TAG_STRUCT   : Type_info_tag :   9;
+TYPE_INFO_TAG_ENUM     : Type_info_tag :  10;
+TYPE_INFO_TAG_PROC     : Type_info_tag :  11;
+TYPE_INFO_TAG_ANY      : Type_info_tag :  12;
 
 struct Type_info {
     tag: Type_info_tag;
