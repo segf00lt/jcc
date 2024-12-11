@@ -1,0 +1,40 @@
+proc main() {
+    array5 := [
+        [1, 2],
+        [3, 4],
+    ];
+
+    for row: array5 {
+        for row {
+            print("%\n", it);
+        }
+    }
+
+    print("\n===================\n\n");
+    
+    array6: [2][2]float = [
+        [1, 2],
+        [3, 4.3],
+    ];
+
+    for row: array6 {
+        for row {
+            print("%\n", it);
+        }
+    }
+
+    print("\n===================\n\n");
+    
+    array7 := [
+        [1, 2, 7],
+        [3, 4.3, 9],
+    ];
+
+    for row: array7 {
+        for row {
+            print("%\n", it);
+        }
+    }
+}
+
+#run main();

@@ -629,6 +629,7 @@ struct Job {
     Arr(Scope)                       scopes;
                                                       
     /* expressions */                                 
+    //TODO remove these stacks
     Arr(Value*)                      value_stack;
     Arr(Type*)                       type_stack;
     Arr(AST*)                        expr;
@@ -774,6 +775,8 @@ struct AST_array_literal {
     int n_elements;
     AST *type;
     AST_expr_list *elements;
+    Arr(AST**) flattened_array_literal;
+    Arr(u64) dimensions;
 };
 
 struct AST_struct_literal {
@@ -1353,6 +1356,10 @@ int job_queue_pos = 0;
 
 
 /* function declarations */
+
+u64 debug_arrlen(void *a) {
+    return ((a) ? (ptrdiff_t) stbds_header(a)->length : 0);
+}
 
 Job job_spawn(Jobid *jobid_alloc, Pipe_stage pipe_stage) {
     *jobid_alloc += 1;
@@ -2550,20 +2557,20 @@ INLINE void print_ir_machine(IRmachine *machine, FILE *f) {
     }
     fprintf(f, "}\n");
 
-    fprintf(f, "  global_segment = { ");
-    for(int i = 0; i < machine->global_segment_size; ++i)
-        fprintf(f, "%X ", machine->global_segment[i]);
-    fprintf(f, "}\n");
+    //fprintf(f, "  global_segment = { ");
+    //for(int i = 0; i < machine->global_segment_size; ++i)
+    //    fprintf(f, "%X ", machine->global_segment[i]);
+    //fprintf(f, "}\n");
 
-    fprintf(f, "  bss_segment = { ");
-    for(int i = 0; i < machine->bss_segment_size; ++i)
-        fprintf(f, "%X ", machine->bss_segment[i]);
-    fprintf(f, "}\n");
+    //fprintf(f, "  bss_segment = { ");
+    //for(int i = 0; i < machine->bss_segment_size; ++i)
+    //    fprintf(f, "%X ", machine->bss_segment[i]);
+    //fprintf(f, "}\n");
 
-    fprintf(f, "  local_segment = { ");
-    for(int i = 0; i < machine->local_segment_size; ++i)
-        fprintf(f, "%X ", machine->local_segment[i]);
-    fprintf(f, "}\n");
+    //fprintf(f, "  local_segment = { ");
+    //for(int i = 0; i < machine->local_segment_size; ++i)
+    //    fprintf(f, "%X ", machine->local_segment[i]);
+    //fprintf(f, "}\n");
 
     fprintf(f, "  iregs = { ");
     for (int i = 0; i < 4; i++) {
@@ -5446,7 +5453,7 @@ void ir_run(Job *jp, int procid) {
         //bool loc_changed = (inst.loc.line != instructions[pc].loc.line && inst.loc.line != 0 && instructions[pc].loc.line != 0);
         inst = instructions[pc];
         imask = 0;
-        
+
 
         u8 *varptr = NULL;
 
@@ -5473,6 +5480,7 @@ void ir_run(Job *jp, int procid) {
                     break;
             }
         }
+
 
         //if(loc_changed) {
         //    fprintf(stderr, "\n");
@@ -5506,7 +5514,7 @@ void ir_run(Job *jp, int procid) {
                     s64 a = SIGN_EXTEND_S64(((s64)interp.iregs[inst.arith.reg[1]]), (inst.arith.operand_bytes[1] << 3lu)); \
                     s64 b = SIGN_EXTEND_S64(((s64)interp.iregs[inst.arith.reg[2]]), (inst.arith.operand_bytes[2] << 3lu)); \
                     if(inst.arith.immediate) \
-                        b = SIGN_EXTEND_S64(((s64)inst.arith.imm.integer), (inst.arith.operand_bytes[2] << 3lu)); \
+                    b = SIGN_EXTEND_S64(((s64)inst.arith.imm.integer), (inst.arith.operand_bytes[2] << 3lu)); \
                     interp.iregs[inst.arith.reg[0]] = \
                     (s64)imask & (s64)(a opsym b); \
                 } else { \
@@ -7198,12 +7206,14 @@ void ir_gen_block(Job *jp, AST *ast) {
                     if(!ast_for->is_range_for) {
                         assert(ast_for->it_index_symbol->type->align == 8 && ast_for->it_index_symbol->type->bytes == 8);
 
-                        it_index_addr = align_up(arrlast(jp->local_offset), 8);
+                        arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), 8);
+                        it_index_addr = arrlast(jp->local_offset);
                         arrlast(jp->local_offset) += 8;
                         ast_for->it_index_symbol->segment_offset = it_index_addr;
                     }
 
-                    u64 it_addr = align_up(arrlast(jp->local_offset), ast_for->it_symbol->type->align);
+                    arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), ast_for->it_symbol->type->align);
+                    u64 it_addr = arrlast(jp->local_offset);
                     Type *it_type = ast_for->it_symbol->type;
                     arrlast(jp->local_offset) += ast_for->it_symbol->type->bytes;
                     ast_for->it_symbol->segment_offset = it_addr;
@@ -7219,7 +7229,8 @@ void ir_gen_block(Job *jp, AST *ast) {
                         u64 end_range_addr = 0;
 
                         /* setup begin and end of range */
-                        end_range_addr = align_up(arrlast(jp->local_offset), ast_for->end_range_type->align);
+                        arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), ast_for->end_range_type->align);
+                        end_range_addr = arrlast(jp->local_offset);
                         arrlast(jp->local_offset) += ast_for->end_range_type->bytes;
 
                         ir_gen_expr(jp, ast_for->end_range_expr);
@@ -7405,7 +7416,8 @@ void ir_gen_block(Job *jp, AST *ast) {
                         assert(jp->reg_alloc == 1);
                         jp->reg_alloc = 0;
 
-                        u64 iterable_addr = align_up(arrlast(jp->local_offset), 8);
+                        arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), 8);
+                        u64 iterable_addr = arrlast(jp->local_offset);
                         arrlast(jp->local_offset) += 8;
 
                         inst =
@@ -12688,11 +12700,20 @@ bool job_runner(char *src, char *src_path) {
                                 continue;
                             }
 
+                            Type *type_left = ((AST_expr_base*)(ast_statement->left))->type_annotation;
+                            assert(type_left);
                             assert(ast_statement->right != NULL);
                             assert(ast_statement->assign_op == '=' ||
                                   (ast_statement->assign_op >= TOKEN_PLUSEQUAL && ast_statement->assign_op <= TOKEN_XOREQUAL));
 
                             if(ast_statement->checked_right == false) {
+                                //TODO should this check be for array views that take an array lit as well?
+        if(type_left->kind == TYPE_KIND_ARRAY && ast_statement->right->kind == AST_KIND_array_literal) {
+            AST_array_literal *array_lit = (AST_array_literal*)(ast_statement->right);
+
+            array_lit->type_annotation = type_left;
+        }
+
                                 if(arrlen(jp->expr) == 0) {
                                     linearize_expr(jp, ast_statement->right);
                                 }
@@ -12724,7 +12745,6 @@ bool job_runner(char *src, char *src_path) {
                                 continue;
                             }
 
-                            Type *type_left = ((AST_expr*)(ast_statement->left))->type_annotation;
                             Type *type_right = NULL;
                             if(ast_statement->right) type_right = ((AST_expr_base*)(ast_statement->right))->type_annotation;
 
@@ -14186,40 +14206,46 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
 
                     if(!checked
                             && a->kind == TYPE_KIND_POINTER && TYPE_KIND_IS_ARRAY_LIKE(b->kind)
-                            && typecheck_operation(jp, a->pointer.to, b->array.of, '=', NULL, NULL)) {
+                            && types_are_same(a->pointer.to, b->array.of)) {
                         checked = true;
                     }
 
                     if(!checked
                             && a->kind == TYPE_KIND_POINTER && b->kind == TYPE_KIND_STRING
-                            && typecheck_operation(jp, a->pointer.to, builtin_type+TYPE_KIND_CHAR, '=', NULL, NULL)) {
+                            && types_are_same(a->pointer.to, builtin_type+TYPE_KIND_CHAR)) {
+                        checked = true;
+                    }
+
+                    if(!checked
+                            && a->kind == TYPE_KIND_ARRAY && b->kind == TYPE_KIND_ARRAY
+                            && (a->array.n >= b->array.n) && types_are_same(a->array.of, b->array.of)) {
                         checked = true;
                     }
 
                     //TODO static array type checking is really horrible
-                    if(!checked && a->kind == TYPE_KIND_ARRAY && b->kind == TYPE_KIND_ARRAY) {
-                        if(right && right[0]->kind == AST_KIND_array_literal) {
-                            AST_array_literal *right_array_lit = (AST_array_literal*)*right;
+                    //if(!checked && a->kind == TYPE_KIND_ARRAY && b->kind == TYPE_KIND_ARRAY) {
+                    //    if(right && right[0]->kind == AST_KIND_array_literal) {
+                    //        AST_array_literal *right_array_lit = (AST_array_literal*)*right;
 
-                            int elements_checked = 0;
-                            for(AST_expr_list *expr_list = right_array_lit->elements; expr_list; expr_list = expr_list->next) {
-                                AST_expr_base *elem_expr = (AST_expr_base*)(expr_list->expr);
-                                if(typecheck_operation(jp, a->array.of, elem_expr->type_annotation, '=', NULL, &(expr_list->expr)))
-                                    elements_checked++;
-                            }
+                    //        int elements_checked = 0;
+                    //        for(AST_expr_list *expr_list = right_array_lit->elements; expr_list; expr_list = expr_list->next) {
+                    //            AST_expr_base *elem_expr = (AST_expr_base*)(expr_list->expr);
+                    //            if(typecheck_operation(jp, a->array.of, elem_expr->type_annotation, '=', NULL, &(expr_list->expr)))
+                    //                elements_checked++;
+                    //        }
 
-                            if(elements_checked == right_array_lit->n_elements)
-                                checked = typecheck_operation(jp, a->array.of, b->array.of, '=', NULL, NULL);
-                            else
-                                checked = false;
-                        } else {
-                            checked = (a->array.n == b->array.n && typecheck_operation(jp, a->array.of, b->array.of, '=', NULL, NULL));
-                        }
-                    }
+                    //        if(elements_checked == right_array_lit->n_elements)
+                    //            checked = typecheck_operation(jp, a->array.of, b->array.of, '=', NULL, NULL);
+                    //        else
+                    //            checked = false;
+                    //    } else {
+                    //        checked = (a->array.n == b->array.n && typecheck_operation(jp, a->array.of, b->array.of, '=', NULL, NULL));
+                    //    }
+                    //}
 
                     if(!checked
                             && a->kind == TYPE_KIND_ARRAY_VIEW && TYPE_KIND_IS_ARRAY_LIKE(b->kind) 
-                            && typecheck_operation(jp, a->array.of, b->array.of, '=', NULL, NULL)) {
+                            && types_are_same(a->array.of, b->array.of)) {
                         checked = true;
                     }
 
@@ -14231,7 +14257,7 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
 
                     if(!checked
                             && a->kind == TYPE_KIND_ARRAY_VIEW && b->kind == TYPE_KIND_STRING 
-                            && typecheck_operation(jp, a->array.of, builtin_type+TYPE_KIND_CHAR, '=', NULL, NULL)) {
+                            && types_are_same(a->array.of, builtin_type+TYPE_KIND_CHAR)) {
                         checked = true;
                     }
 
@@ -14334,8 +14360,10 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                                 if(right_expr_value && a != type_Any) {
                                     if(right_expr_value->kind == VALUE_KIND_INT) {
                                         if(TYPE_KIND_IS_FLOAT32(a->kind)) {
+                                            right_expr_value->kind = VALUE_KIND_FLOAT;
                                             right_expr_value->val.floating = (f32)(right_expr_value->val.integer);
                                         } else if(a->kind == TYPE_KIND_F64) {
+                                            right_expr_value->kind = VALUE_KIND_DFLOAT;
                                             right_expr_value->val.dfloating = (f64)(right_expr_value->val.integer);
                                         } else if(!TYPE_KIND_IS_INTEGER(a->kind)) {
                                             UNREACHABLE;
@@ -14344,6 +14372,7 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                                         cast_expr->value_annotation = right_expr_value;
                                     } else if(right_expr_value->kind == VALUE_KIND_FLOAT) {
                                         if(a->kind == TYPE_KIND_F64) {
+                                            right_expr_value->kind = VALUE_KIND_DFLOAT;
                                             right_expr_value->val.dfloating = (f64)(right_expr_value->val.floating);
                                         } else if(!TYPE_KIND_IS_FLOAT32(a->kind)) {
                                             UNREACHABLE;
@@ -14352,6 +14381,7 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                                         cast_expr->value_annotation = right_expr_value;
                                     } else if(right_expr_value->kind == VALUE_KIND_DFLOAT) {
                                         if(TYPE_KIND_IS_FLOAT32(a->kind)) {
+                                            right_expr_value->kind = VALUE_KIND_FLOAT;
                                             right_expr_value->val.floating = (f32)(right_expr_value->val.dfloating);
                                         } else if(a->kind != TYPE_KIND_F64) {
                                             UNREACHABLE;
@@ -14443,6 +14473,10 @@ Type* typecheck_dot(Job *jp, Type *a, char *field, u64 *offsetp) {
 }
 
 void typecheck_expr(Job *jp) {
+    if(jp->state == JOB_STATE_ERROR) {
+        return;
+    }
+
     assert(jp->expr && arrlen(jp->expr) > 0);
     Arr(Value*) value_stack = jp->value_stack;
     Arr(Type*) type_stack = jp->type_stack;
@@ -14640,69 +14674,250 @@ void typecheck_expr(Job *jp) {
 
         } else if(kind == AST_KIND_array_literal) {
             AST_array_literal *array_lit = (AST_array_literal*)(expr[pos]);
+
             Type *array_elem_type = NULL;
+            bool infer_type = true;
 
-            if(array_lit->type) {
-                Type *t = arrpop(type_stack);
-                Value *t_value = arrpop(value_stack);
-                if(t->kind != TYPE_KIND_TYPE)
-                    job_error(jp, array_lit->type->loc,
-                            "expected type expression before array literal, not '%s'",
-                            job_type_to_str(jp, t));
-                array_elem_type = t_value->val.type;
-            } else if(array_lit->type_annotation) {
-                array_elem_type = array_lit->type_annotation->array.of;
-            } else {
-                AST_expr_base *first_elem = (AST_expr_base*)(array_lit->elements->expr);
-                array_elem_type = first_elem->type_annotation;
-            }
+            Arr(u64) dimensions = NULL;
 
-            Value **elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n_elements);
+            if(array_lit->type_annotation && array_lit->type) {
+                Type *t = ((AST_expr_base*)(array_lit->type))->value_annotation->val.type;
+                Type *result_type = typecheck_operation(jp, array_lit->type_annotation->array.of, t, '=', NULL, NULL);
 
-            u64 j = 0;
-            for(AST_expr_list *array_elem_list = array_lit->elements; array_elem_list; array_elem_list = array_elem_list->next) {
-                AST_expr_base *elem_expr = (AST_expr_base*)(array_elem_list->expr);
-                Type *elem_expr_type = elem_expr->type_annotation;
-
-                Type *t = typecheck_operation(jp, array_elem_type, elem_expr_type, '=', NULL, &(array_elem_list->expr));
-
-                if(!t) {
-                    job_error(jp, array_elem_list->base.loc,
-                            "cannot have element of type '%s' in array literal with element type '%s'",
-                            job_type_to_str(jp, elem_expr_type), job_type_to_str(jp, array_elem_type));
+                if(result_type == NULL) {
+                    job_error(jp, array_lit->base.loc, "cannot assign array of %s to %s",
+                            job_type_to_str(jp, t),
+                            job_type_to_str(jp, array_lit->type_annotation));
                     break;
                 }
 
-                elements[j++] = elem_expr->value_annotation;
+            } else if(array_lit->type) {
+                array_lit->type_annotation = job_alloc_type(jp, TYPE_KIND_ARRAY);
+                array_lit->type_annotation->array.of = ((AST_expr_base*)(array_lit->type))->value_annotation->val.type;
+                array_lit->type_annotation->align = array_lit->type_annotation->array.of->align;
+                array_lit->type_annotation->array.n = array_lit->n_elements;
+                array_lit->type_annotation->array.element_stride = array_lit->type_annotation->array.of->bytes;
+                array_lit->type_annotation->bytes = array_lit->type_annotation->array.element_stride * array_lit->type_annotation->array.n;
             }
-
-            // NOTE
-            // maybe array creation should be given it's own function just so we don't have to repeat ourselves
-            // and risk stupid bugs
-
-            Value *array_val = job_alloc_value(jp, VALUE_KIND_ARRAY);
-            array_val->val.array.n = array_lit->n_elements;
-            array_val->val.array.elements = elements;
-            array_lit->value_annotation = array_val;
-            arrsetlen(value_stack, arrlen(value_stack) - array_lit->n_elements);
-            arrpush(value_stack, array_val);
-
-
-            arrsetlen(type_stack, arrlen(type_stack) - array_lit->n_elements);
 
             if(array_lit->type_annotation) {
-                arrpush(type_stack, array_lit->type_annotation);
+                assert(array_lit->type_annotation->kind == TYPE_KIND_ARRAY);
+                for(Type *t = array_lit->type_annotation; ; t = t->array.of) {
+                    if(t->kind != TYPE_KIND_ARRAY) {
+                        array_elem_type = t;
+                        infer_type = false;
+                        break;
+                    }
+                    arrpush(dimensions, t->array.n);
+                }
             } else {
-                Type *array_type = job_alloc_type(jp, TYPE_KIND_ARRAY);
-                array_type->array.of = array_elem_type;
-                array_type->array.n = array_lit->n_elements;
-                array_type->array.element_stride = array_elem_type->bytes;
-                array_type->bytes = array_type->array.element_stride * array_type->array.n;
-                array_type->align = array_elem_type->align;
-
-                array_lit->type_annotation = array_type;
-                arrpush(type_stack, array_type);
+                array_elem_type = ((AST_expr_base*)(array_lit->flattened_array_literal[0][0]))->type_annotation;
             }
+
+            int second_pass_len = 0;
+
+            bool encountered_error = false;
+
+            for(int i = 0; i < arrlen(array_lit->flattened_array_literal); ++i) {
+                AST **astpp = array_lit->flattened_array_literal[i];
+                Type *t = ((AST_expr_base*)(*astpp))->type_annotation;
+
+                if(infer_type && array_elem_type->kind == TYPE_KIND_INT && TYPE_KIND_IS_FLOAT(t->kind)) {
+                    array_elem_type = t;
+                    second_pass_len = i;
+                } else if(infer_type && array_elem_type->kind == TYPE_KIND_INT && t->kind == TYPE_KIND_CHAR) {
+                    array_elem_type = t;
+                    second_pass_len = i;
+                } else {
+                    Type *result_type = typecheck_operation(jp, array_elem_type, t, '=', NULL, astpp);
+                    if(result_type == NULL) {
+                        job_error(jp, array_lit->base.loc,
+                                "%s and %s cannot both be elements of the same array or sub-array",
+                                job_type_to_str(jp, array_elem_type),
+                                job_type_to_str(jp, t));
+
+                        encountered_error = true;
+                        break;
+                    }
+                }
+            }
+
+            if(encountered_error) break;
+
+            for(int i = 0; i < second_pass_len; ++i) {
+                AST **astpp = array_lit->flattened_array_literal[i];
+                Type *t = ((AST_expr_base*)(*astpp))->type_annotation;
+
+                Type *result_type = typecheck_operation(jp, array_elem_type, t, '=', NULL, astpp);
+                if(result_type == NULL) {
+                    job_error(jp, array_lit->base.loc,
+                            "%s and %s cannot both be elements of the same array or sub-array",
+                            job_type_to_str(jp, array_elem_type),
+                            job_type_to_str(jp, t));
+
+                    encountered_error = true;
+                    break;
+                }
+            }
+
+            if(dimensions) {
+                u64 len_inferred_dims = arrlen(array_lit->dimensions);
+                u64 len_dims = arrlen(dimensions);
+
+                if(len_dims != len_inferred_dims) {
+                    job_error(jp, array_lit->base.loc,
+                            "mismatched dimensions between array literal and %s",
+                            job_type_to_str(jp, array_lit->type_annotation));
+                    break;
+                }
+
+                for(int i = 0; i < arrlen(dimensions); ++i) {
+                    if(dimensions[i] < array_lit->dimensions[i]) {
+                        job_error(jp, array_lit->base.loc,
+                                "mismatched dimensions between array literal and %s",
+                                job_type_to_str(jp, array_lit->type_annotation));
+                        encountered_error = true;
+                        break;
+                    }
+                }
+
+                if(encountered_error) break;
+            } else {
+                Type *t = job_alloc_type(jp, TYPE_KIND_ARRAY);
+                assert(array_elem_type);
+                t->array.of = array_elem_type;
+                t->array.element_stride = array_elem_type->bytes;
+                t->array.n = arrpop(array_lit->dimensions);
+                t->bytes = t->array.element_stride * t->array.n;
+                t->align = array_elem_type->align;
+                array_lit->type_annotation = t;
+                while(arrlen(array_lit->dimensions)) {
+                    t = job_alloc_type(jp, TYPE_KIND_ARRAY);
+                    t->array.element_stride = array_lit->type_annotation->bytes;
+                    t->array.of = array_lit->type_annotation;
+                    t->array.n = arrpop(array_lit->dimensions);
+                    t->bytes = t->array.element_stride * t->array.n;
+                    t->align = array_lit->type_annotation->align;
+                    array_lit->type_annotation = t;
+                }
+            }
+
+            arrpush(type_stack, array_lit->type_annotation);
+
+            bool generate_value = true;
+
+            for(int i = 0; i < arrlen(array_lit->flattened_array_literal) - 1; ++i) {
+                Value *v = ((AST_expr_base*)(array_lit->flattened_array_literal[i][0]))->value_annotation;
+                if(!v || v->kind == VALUE_KIND_NIL) {
+                    generate_value = false;
+                    break;
+                }
+            }
+
+            //TODO propagate the array type through the sub arrays
+            Value *array_val = NULL;
+
+            if(generate_value) {
+                array_val = job_alloc_value(jp, VALUE_KIND_ARRAY);
+
+                Arr(AST_expr_list*) array_elem_list_stack = NULL;
+                Arr(Type*) array_type_stack = NULL;
+                Arr(int) array_val_elems_pos_stack = NULL;
+                Arr(Value**) array_val_elems_stack = NULL;
+
+                arrpush(array_type_stack, array_lit->type_annotation);
+                arrpush(array_elem_list_stack, array_lit->elements);
+                array_val->val.array.elements = job_alloc_scratch(jp, sizeof(Value*) * array_lit->n_elements);
+                array_val->val.array.n = array_lit->n_elements;
+                arrpush(array_val_elems_stack, array_val->val.array.elements);
+                arrpush(array_val_elems_pos_stack, 0);
+
+                while(arrlen(array_elem_list_stack) > 0) {
+                    AST_expr_list *e = arrpop(array_elem_list_stack);
+                    Type *array_type = arrpop(array_type_stack);
+                    Value **array_val_elems = arrpop(array_val_elems_stack);
+                    int array_val_elems_pos = arrpop(array_val_elems_pos_stack);
+
+                    for(; e; e = e->next) {
+                        if(e->expr->kind == AST_KIND_array_literal) {
+                            assert(array_type->array.of->kind == TYPE_KIND_ARRAY);
+
+                            AST_array_literal *a = (AST_array_literal*)(e->expr);
+                            a->type_annotation = array_type->array.of;
+
+                            if(e->next) {
+                                arrpush(array_type_stack, array_type);
+                                arrpush(array_elem_list_stack, e->next);
+                                arrpush(array_val_elems_stack, array_val_elems);
+                                arrpush(array_val_elems_pos_stack, array_val_elems_pos + 1);
+                            }
+
+                            arrpush(array_elem_list_stack, a->elements);
+                            arrpush(array_type_stack, array_type->array.of);
+
+                            array_val_elems[array_val_elems_pos] = job_alloc_value(jp, VALUE_KIND_ARRAY);
+                            array_val_elems[array_val_elems_pos]->val.array.elements =
+                                job_alloc_scratch(jp, sizeof(Value*) * a->n_elements);
+                            array_val_elems[array_val_elems_pos]->val.array.n = a->n_elements;
+
+                            arrpush(array_val_elems_stack, array_val_elems[array_val_elems_pos]->val.array.elements);
+                            arrpush(array_val_elems_pos_stack, 0);
+
+                            break;
+                        } else {
+                            array_val_elems[array_val_elems_pos++] = ((AST_expr_base*)(e->expr))->value_annotation;
+                        }
+                    }
+
+                }
+
+                arrfree(array_type_stack);
+                arrfree(array_val_elems_pos_stack);
+                arrfree(array_val_elems_stack);
+                arrfree(array_elem_list_stack);
+            } else {
+                Arr(AST_expr_list*) array_elem_list_stack = NULL;
+                Arr(Type*) array_type_stack = NULL;
+
+                arrpush(array_type_stack, array_lit->type_annotation);
+                arrpush(array_elem_list_stack, array_lit->elements);
+
+                while(arrlen(array_elem_list_stack) > 0) {
+                    AST_expr_list *e = arrpop(array_elem_list_stack);
+                    Type *array_type = arrpop(array_type_stack);
+
+                    for(; e; e = e->next) {
+                        if(e->expr->kind == AST_KIND_array_literal) {
+                            assert(array_type->array.of->kind == TYPE_KIND_ARRAY);
+
+                            AST_array_literal *a = (AST_array_literal*)(e->expr);
+                            a->type_annotation = array_type->array.of;
+
+                            if(e->next) {
+                                arrpush(array_type_stack, array_type);
+                                arrpush(array_elem_list_stack, e->next);
+                            }
+
+                            arrpush(array_elem_list_stack, a->elements);
+                            arrpush(array_type_stack, array_type->array.of);
+
+                            break;
+                        }
+                    }
+
+                }
+
+                arrfree(array_type_stack);
+                arrfree(array_elem_list_stack);
+            }
+
+            array_lit->value_annotation = array_val;
+
+            arrpush(value_stack, array_val);
+
+            arrfree(array_lit->flattened_array_literal);
+            arrfree(array_lit->dimensions);
+            arrfree(dimensions);
 
         } else if(kind == AST_KIND_param) {
             AST_param *paramp = (AST_param*)expr[pos];
@@ -14723,7 +14938,7 @@ void typecheck_expr(Job *jp) {
                 callp = (AST_call*)expr[pos];
             }
 
-            bool is_call_expr = (callp->n_params == (arrlen(type_stack) - 1) && pos == arrlen(expr) - 1);
+            bool is_call_expr = (pos == arrlen(expr) - 1);
 
             Type *proc_type = ((AST_expr_base*)(callp->callee))->type_annotation;
             assert(callp->callee->kind == AST_KIND_atom);
@@ -14984,8 +15199,6 @@ void typecheck_expr(Job *jp) {
                 }
 
                 if(is_call_expr) { /* if the only thing in the expr is a call */
-                    assert(arrlen(type_stack) == 0);
-
                     callp->n_types_returned = proc_type->proc.ret.n;
 
                     if(callp->n_types_returned > 0) {
@@ -15482,11 +15695,73 @@ void linearize_expr(Job *jp, AST *ast) {
         arrpush(jp->expr, ast);
     } else if(ast->kind == AST_KIND_array_literal) {
         AST_array_literal *array_lit = (AST_array_literal*)ast;
-        for(AST_expr_list *list = array_lit->elements; list; list = list->next) {
-            linearize_expr(jp, list->expr);
+
+        Arr(AST_expr_list*) array_elem_list_stack = NULL;
+        Arr(bool) elems_are_array_literals_stack = NULL;
+
+        arrpush(array_elem_list_stack, array_lit->elements);
+        arrpush(elems_are_array_literals_stack, (array_lit->elements->expr->kind == AST_KIND_array_literal));
+
+        arrpush(array_lit->dimensions, array_lit->n_elements);
+
+        bool encountered_error = false;
+
+        int depth = 1;
+
+        while(arrlen(array_elem_list_stack) > 0) {
+            AST_expr_list *e = arrpop(array_elem_list_stack);
+            bool elems_are_array_literals = arrpop(elems_are_array_literals_stack);
+
+            for(; e; e = e->next) {
+                bool e_is_array_lit = (e->expr->kind == AST_KIND_array_literal);
+
+                //TODO should this be allowed in the case of elements which are themselves arrays?
+                if(elems_are_array_literals != e_is_array_lit) {
+                    job_error(jp, array_lit->base.loc,
+                            "array literals and scalars cannot both be elements of the same array or sub-array");
+                    encountered_error = true;
+                    break;
+                }
+
+                if(e_is_array_lit) {
+                    AST_array_literal *a = (AST_array_literal*)(e->expr);
+
+                    if(e->next) {
+                        arrpush(array_elem_list_stack, e->next);
+                        arrpush(elems_are_array_literals_stack, (e->next->expr->kind == AST_KIND_array_literal));
+                    }
+
+                    arrpush(array_elem_list_stack, a->elements);
+                    arrpush(elems_are_array_literals_stack, (a->elements->expr->kind == AST_KIND_array_literal));
+
+                    if(depth >= arrlen(array_lit->dimensions))
+                        arrpush(array_lit->dimensions, 0);
+
+                    if(a->n_elements > array_lit->dimensions[depth])
+                        array_lit->dimensions[depth] = a->n_elements;
+
+                    depth++;
+
+                    break;
+                } else {
+                    arrpush(array_lit->flattened_array_literal, &(e->expr));
+                    linearize_expr(jp, e->expr);
+                }
+            }
+
+            if(!e) depth--;
+
+            if(encountered_error) break;
+
         }
 
-        linearize_expr(jp, array_lit->type);
+        arrfree(array_elem_list_stack);
+        arrfree(elems_are_array_literals_stack);
+
+        if(encountered_error) return;
+
+        if(array_lit->type)
+            linearize_expr(jp, array_lit->type);
 
         arrpush(jp->expr, ast);
     } else if(ast->kind == AST_KIND_param) {
@@ -16558,19 +16833,11 @@ void typecheck_vardecl(Job *jp) {
 
     if(ast->checked_init == false) {
 
+        //TODO should this check be for array views that take an array lit as well?
         if(bind_type && bind_type->kind == TYPE_KIND_ARRAY && ast->init->kind == AST_KIND_array_literal) {
             AST_array_literal *array_lit = (AST_array_literal*)(ast->init);
 
-            //NOTE we only annotate 2 dimensional arrays, larger than that is kinda stupid
-
             array_lit->type_annotation = bind_type;
-
-            for(AST_expr_list *elements = array_lit->elements; elements; elements = elements->next) {
-                if(elements->expr->kind == AST_KIND_array_literal) {
-                    AST_array_literal *array_lit_elem = (AST_array_literal*)(elements->expr);
-                    array_lit_elem->type_annotation = bind_type->array.of;
-                }
-            }
         }
 
         if(arrlen(jp->expr) == 0) {
@@ -16761,22 +17028,23 @@ void print_sym(Sym sym) {
 //TODO finish print()
 //TODO polymorph caching
 //TODO cache all allocated types except records and procedures ([N], [], [..], *, string)
-//TODO typechecking for [N] [..] [] and * is wrong, it allows things like [..][..]int = [][]int
-//TODO refactor type inference for array literals
 //TODO finish globals
-//TODO proc types with argument names
 //TODO test full C interop (raylib)
 //
 //TODO output assembly
 //TODO debug info (internal and convert to gdb debug format)
-//TODO c-style for loops (use 'while' keyword)
 //TODO procedures for interfacing with the compiler (e.g. add_source_file())
+
+//EXTRA
 //
-//TODO parametrized structs
-//TODO proc polymorphism with parametrized structs
+//TODO proc types with argument names
+//TODO c-style for loops (use 'while' keyword)
 //TODO enums
 //TODO struct literals
 //TODO directives (#import, #assert, etc)
+//TODO local procedures and structs
+//TODO parametrized structs
+//TODO proc polymorphism with parametrized structs
 
 // MOSTLY DONE
 //TODO dynamic array procedures (missing some helpers, copy from stb_ds.h)
@@ -16784,9 +17052,8 @@ void print_sym(Sym sym) {
 //VERSION 2.0
 //TODO redesign from scratch
 //TODO macros
-//TODO for loops and iterator macros
+//TODO iterators
 //TODO compiler intercept and event loop
-//TODO local procedures, macros and structs
 //TODO output x64 machine code
 
 Dynamic_array      _gdb_stupid_1; // because gdb is stupid
