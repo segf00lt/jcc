@@ -48,8 +48,25 @@ proc main() {
     print("%]\n", array_of_int[array_of_int.count-1]);
 
     print("\n===========================================\n\n");
+
+    array_of_int2: [..]int;
+    arr_push(@array_of_int2, 3);
+    arr_push(@array_of_int2, 2);
+    arr_push(@array_of_int2, 1);
+
+    i = 0;
+    print("array_of_int2 = [");
+    while i < array_of_int2.count - 1 {
+        defer i++;
+        print("%, ", array_of_int2[i]);
+    }
+    print("%]\n", array_of_int2[array_of_int2.count-1]);
+
+    print("\n===========================================\n\n");
+    
     
     array_of_float: [..]float;
+    arr_push(@array_of_float, 4);
     arr_push(@array_of_float, 3);
     arr_push(@array_of_float, 2);
     arr_push(@array_of_float, 1);

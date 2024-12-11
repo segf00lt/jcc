@@ -687,6 +687,11 @@ struct Sym {
     AST *initializer;
     AST *polymorphic_proc_ast;
     Jobid being_polymorphed_by_jobid;
+    struct {
+        Arr(Type**) key;
+        Arr(int) procid;
+        u64 n_wildcards;
+    } polymorph_cache;
     bool job_encountered_error : 1;
     bool ir_generated : 1;
     bool ready_to_run : 1;
@@ -1069,10 +1074,6 @@ struct Type {
     u64 align;
     union {
         struct {
-            Type *what;
-        } type;
-
-        struct {
             char *name;
             Type *matched;
         } wildcard;
@@ -1267,22 +1268,23 @@ void        print_ast_expr(AST *expr, int indent);
 /* globals */
 
 Type builtin_type[] = {
-    { .kind = TYPE_KIND_VOID,  .bytes = 0, .align = 0 },
-    { .kind = TYPE_KIND_BOOL,  .bytes = 1, .align = 1 },
-    { .kind = TYPE_KIND_CHAR,  .bytes = 1, .align = 1 },
-    { .kind = TYPE_KIND_S8,    .bytes = 1, .align = 1 },
-    { .kind = TYPE_KIND_U8,    .bytes = 1, .align = 1 },
-    { .kind = TYPE_KIND_S16,   .bytes = 2, .align = 2 },
-    { .kind = TYPE_KIND_U16,   .bytes = 2, .align = 2 },
-    { .kind = TYPE_KIND_S32,   .bytes = 4, .align = 4 },
-    { .kind = TYPE_KIND_U32,   .bytes = 4, .align = 4 },
-    { .kind = TYPE_KIND_S64,   .bytes = 8, .align = 8 },
-    { .kind = TYPE_KIND_U64,   .bytes = 8, .align = 8 },
-    { .kind = TYPE_KIND_INT,   .bytes = 8, .align = 8 },
-    { .kind = TYPE_KIND_FLOAT, .bytes = 4, .align = 4 },
-    { .kind = TYPE_KIND_F32,   .bytes = 4, .align = 4 },
-    { .kind = TYPE_KIND_F64,   .bytes = 8, .align = 8 },
-    { .kind = TYPE_KIND_TYPE,  .bytes = 8, .align = 8 },
+    { .kind = TYPE_KIND_VOID,   .bytes = 0, .align = 0 },
+    { .kind = TYPE_KIND_BOOL,   .bytes = 1, .align = 1 },
+    { .kind = TYPE_KIND_CHAR,   .bytes = 1, .align = 1 },
+    { .kind = TYPE_KIND_S8,     .bytes = 1, .align = 1 },
+    { .kind = TYPE_KIND_U8,     .bytes = 1, .align = 1 },
+    { .kind = TYPE_KIND_S16,    .bytes = 2, .align = 2 },
+    { .kind = TYPE_KIND_U16,    .bytes = 2, .align = 2 },
+    { .kind = TYPE_KIND_S32,    .bytes = 4, .align = 4 },
+    { .kind = TYPE_KIND_U32,    .bytes = 4, .align = 4 },
+    { .kind = TYPE_KIND_S64,    .bytes = 8, .align = 8 },
+    { .kind = TYPE_KIND_U64,    .bytes = 8, .align = 8 },
+    { .kind = TYPE_KIND_INT,    .bytes = 8, .align = 8 },
+    { .kind = TYPE_KIND_FLOAT,  .bytes = 4, .align = 4 },
+    { .kind = TYPE_KIND_F32,    .bytes = 4, .align = 4 },
+    { .kind = TYPE_KIND_F64,    .bytes = 8, .align = 8 },
+    { .kind = TYPE_KIND_TYPE,   .bytes = 8, .align = 8 },
+    { .kind = TYPE_KIND_STRING, .bytes = sizeof(String_view), .align = _Alignof(String_view) },
 };
 Type builtin_wildcard_type = { .kind = TYPE_KIND_WILDCARD };
 
@@ -1410,8 +1412,8 @@ void job_die(Job *jp) {
     arrfree(jp->run_dependencies);
     arrfree(jp->scopes);
     arrfree(jp->tree_pos_stack);
-    //arrfree(jp->value_stack);
-    //arrfree(jp->type_stack);
+    arrfree(jp->value_stack);
+    arrfree(jp->type_stack);
     arrfree(jp->expr);
     arrfree(jp->expr_list);
     arrfree(jp->defer_list_stack);
@@ -1443,15 +1445,15 @@ void job_die(Job *jp) {
 
 }
 
-Value* job_alloc_value(Job *jp, Valuekind kind) {
+INLINE Value* job_alloc_value(Job *jp, Valuekind kind) {
     Value *ptr = pool_alloc(jp->allocator.value);
     ptr->kind = kind;
     return ptr;
 }
 
-//TODO memoize allocation of Type's
-Type* job_alloc_type(Job *jp, Typekind kind) {
-    if(kind >= TYPE_KIND_VOID && kind < TYPE_KIND_TYPE)
+//NOTE it turns out that caching the types does not significantly reduce memory usage
+INLINE Type* job_alloc_type(Job *jp, Typekind kind) {
+    if(kind >= TYPE_KIND_VOID && kind <= TYPE_KIND_STRING)
         return builtin_type + kind;
     Type *ptr = pool_alloc(jp->allocator.type);
     ptr->kind = kind;
@@ -1466,10 +1468,6 @@ Type* job_alloc_type(Job *jp, Typekind kind) {
         case TYPE_KIND_POINTER:
             ptr->bytes = 8;
             ptr->align = 8;
-            break;
-        case TYPE_KIND_STRING:
-            ptr->bytes = sizeof(String_view);
-            ptr->align = _Alignof(String_view);
             break;
         case TYPE_KIND_DYNAMIC_ARRAY:
             ptr->bytes = sizeof(Dynamic_array); // needs to be bigger for allowing an allocator pointer
@@ -13293,56 +13291,25 @@ Value* evaluate_unary(Job *jp, Value *a, AST_expr *op_ast) {
 
     Token op = op_ast->token;
 
-    //TODO yet another reason to unify Sym, Type and Value
-    if(!a) {
-        switch(op) {
-            case TOKEN_SIZEOF:
-                result = job_alloc_value(jp, VALUE_KIND_UINT);
-                result->val.uinteger = ((AST_expr_base*)(op_ast->right))->type_annotation->bytes;
-                break;
-            case TOKEN_ALIGNOF:
-                result = job_alloc_value(jp, VALUE_KIND_UINT);
-                result->val.uinteger = ((AST_expr_base*)(op_ast->right))->type_annotation->align;
-                break;
-            case TOKEN_TYPEOF:
-                result = job_alloc_value(jp, VALUE_KIND_TYPE);
-                result->val.type = ((AST_expr_base*)(op_ast->right))->type_annotation;
-                break;
-            case TOKEN_TYPEINFO:
-                result = job_alloc_value(jp, VALUE_KIND_TYPEINFO);
-                result->val.typeinfo = job_make_type_info(jp, ((AST_expr_base*)(op_ast->right))->type_annotation);
-                break;
-        }
-
-        return result;
-    }
-
-    if(a->kind == VALUE_KIND_NIL) {
-        switch(op) {
-            case TOKEN_SIZEOF:
-                result = job_alloc_value(jp, VALUE_KIND_UINT);
-                result->val.uinteger = ((AST_expr_base*)(op_ast->right))->type_annotation->bytes;
-                break;
-            case TOKEN_ALIGNOF:
-                result = job_alloc_value(jp, VALUE_KIND_UINT);
-                result->val.uinteger = ((AST_expr_base*)(op_ast->right))->type_annotation->align;
-                break;
-            case TOKEN_TYPEOF:
-                result = job_alloc_value(jp, VALUE_KIND_TYPE);
-                result->val.type = ((AST_expr_base*)(op_ast->right))->type_annotation;
-                break;
-            case TOKEN_TYPEINFO:
-                result = job_alloc_value(jp, VALUE_KIND_TYPEINFO);
-                result->val.typeinfo = job_make_type_info(jp, ((AST_expr_base*)(op_ast->right))->type_annotation);
-                break;
-        }
-
-        return result;
-    }
-
     switch(op) {
         default:
             UNREACHABLE;
+        case TOKEN_SIZEOF:
+            result = job_alloc_value(jp, VALUE_KIND_UINT);
+            result->val.uinteger = ((AST_expr_base*)(op_ast->right))->type_annotation->bytes;
+            break;
+        case TOKEN_ALIGNOF:
+            result = job_alloc_value(jp, VALUE_KIND_UINT);
+            result->val.uinteger = ((AST_expr_base*)(op_ast->right))->type_annotation->align;
+            break;
+        case TOKEN_TYPEOF:
+            result = job_alloc_value(jp, VALUE_KIND_TYPE);
+            result->val.type = ((AST_expr_base*)(op_ast->right))->type_annotation;
+            break;
+        case TOKEN_TYPEINFO:
+            result = job_alloc_value(jp, VALUE_KIND_TYPEINFO);
+            result->val.typeinfo = job_make_type_info(jp, ((AST_expr_base*)(op_ast->right))->type_annotation);
+            break;
         case '>': case '@':
             result = builtin_value+VALUE_KIND_NIL;
             break;
@@ -13351,8 +13318,6 @@ Value* evaluate_unary(Job *jp, Value *a, AST_expr *op_ast) {
                 result = job_alloc_value(jp, VALUE_KIND_TYPE);
                 result->val.type = job_alloc_type(jp, TYPE_KIND_ARRAY_VIEW);
                 result->val.type->array.of = a->val.type;
-                assert(op_ast->type_annotation->kind == TYPE_KIND_TYPE);
-                op_ast->type_annotation->type.what = result->val.type;
             } else {
                 UNREACHABLE;
             }
@@ -13360,7 +13325,7 @@ Value* evaluate_unary(Job *jp, Value *a, AST_expr *op_ast) {
         case '+':
             result = a;
             break;
-        //TODO better evaluation
+            //TODO better evaluation
         case '-':
             if(a->kind >= VALUE_KIND_FLOAT) {
                 result = job_alloc_value(jp, VALUE_KIND_FLOAT);
@@ -13383,8 +13348,6 @@ Value* evaluate_unary(Job *jp, Value *a, AST_expr *op_ast) {
                 result = job_alloc_value(jp, VALUE_KIND_TYPE);
                 result->val.type = job_alloc_type(jp, TYPE_KIND_POINTER);
                 result->val.type->pointer.to = a->val.type;
-                assert(op_ast->type_annotation->kind == TYPE_KIND_TYPE);
-                op_ast->type_annotation->type.what = result->val.type;
             } else {
                 UNREACHABLE;
             }
@@ -13408,6 +13371,7 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
         case '[':
             if(a->kind == VALUE_KIND_TYPE) {
                 result = job_alloc_value(jp, VALUE_KIND_TYPE);
+
                 if(b->kind == VALUE_KIND_TOKEN) {
                     assert(b->val.token == TOKEN_TWODOT);
                     result->val.type = job_alloc_type(jp, TYPE_KIND_DYNAMIC_ARRAY);
@@ -13422,8 +13386,7 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
                     if(result->val.type->array.n == 0)
                         job_error(jp, op_ast->base.loc, "static array size expression evaluates to 0");
                 }
-                assert(op_ast->type_annotation->kind == TYPE_KIND_TYPE);
-                op_ast->type_annotation->type.what = result->val.type;
+
             } else {
                 result = builtin_value+VALUE_KIND_NIL;
             }
@@ -13601,7 +13564,7 @@ bool types_are_same(Type *a, Type *b) {
             return true;
     }
 
-    if(b->kind == TYPE_KIND_WILDCARD && b->wildcard.matched) {
+    if(b->kind == TYPE_KIND_WILDCARD) {
         if(b->wildcard.matched)
             b = b->wildcard.matched;
         else
@@ -14473,10 +14436,6 @@ Type* typecheck_dot(Job *jp, Type *a, char *field, u64 *offsetp) {
 }
 
 void typecheck_expr(Job *jp) {
-    if(jp->state == JOB_STATE_ERROR) {
-        return;
-    }
-
     assert(jp->expr && arrlen(jp->expr) > 0);
     Arr(Value*) value_stack = jp->value_stack;
     Arr(Type*) type_stack = jp->type_stack;
@@ -15164,7 +15123,6 @@ void typecheck_expr(Job *jp) {
                             Type **dest = &new_ret_type;
 
                             while(true) {
-
                                 if(ret_type->kind == TYPE_KIND_WILDCARD) {
                                     assert(ret_type->wildcard.matched != NULL);
                                     ret_type = ret_type->wildcard.matched;
@@ -15227,56 +15185,95 @@ void typecheck_expr(Job *jp) {
 
                     assert(proc_sym);
 
-                    proc_sym->procid = procid_alloc++;
+                    bool cached = false;
 
-                    Job new_job = job_spawn(&jobid_alloc, PIPE_STAGE_TYPECHECK);
+                    for(int i = 0; i < arrlen(proc_sym->polymorph_cache.key); ++i) {
+                        Type **key = proc_sym->polymorph_cache.key[i];
+                        int procid = proc_sym->polymorph_cache.procid[i];
+                        Type **wildcards = proc_type->proc.wildcards;
+                        u64 n_wildcards = proc_sym->polymorph_cache.n_wildcards;
 
-                    new_job.global_sym_allocator = jp->global_sym_allocator;
-                    new_job.global_scope = jp->global_scope;
+                        int matched = 0;
 
-                    new_job.allocator.scratch = malloc(sizeof(Arena));
-                    new_job.allocator.value = malloc(sizeof(Pool));
-                    new_job.allocator.sym = malloc(sizeof(Pool));
-                    new_job.allocator.type = malloc(sizeof(Pool));
+                        for(int j = 0; j < n_wildcards; ++j) {
+                            if(types_are_same(wildcards[j]->wildcard.matched, key[j])) {
+                                matched++;
+                            }
+                        }
 
-                    proc_sym->is_being_used_in_polymorph = true;
-                    proc_sym->being_polymorphed_by_jobid = new_job.id;
-                    
-                    arrpush(new_job.tree_pos_stack, proc_sym->polymorphic_proc_ast);
-                    new_job.root = proc_sym->polymorphic_proc_ast;
-                    new_job.handling_name = proc_sym->name;
-                    new_job.parent_job = jp->id;
+                        if(matched == proc_sym->polymorph_cache.n_wildcards) {
+                            for(int j = 0; j < n_wildcards; ++j) {
+                                wildcards[j]->wildcard.matched = NULL;
+                            }
+                            cached = true;
+                            proc_sym->procid = procid;
+                            proc_sym->ir_generated = true;
+                            break;
+                        }
+                    }
 
-                    job_init_allocator_ast(&new_job);
-                    job_init_allocator_scratch(&new_job);
-                    job_init_allocator_value(&new_job);
-                    job_init_allocator_sym(&new_job);
-                    job_init_allocator_type(&new_job);
+                    if(!cached) {
+                        proc_sym->procid = procid_alloc++;
 
-                    //NOTE by forking in this way I think we avoid the case of the procid being overwritten by another instance of the poly
-                    //     except in the case of the polymorphic procedure being recursive
+                        Type **key;
+                        if(proc_sym->is_global) {
+                            key = global_alloc_scratch(sizeof(Type*) * proc_type->proc.n_wildcards);
+                            for(int i = 0; i < proc_type->proc.n_wildcards; ++i) {
+                                key[i] = proc_type->proc.wildcards[i]->wildcard.matched;
+                            }
+                        } else {
+                            UNIMPLEMENTED;
+                        }
 
-                    arrins(job_queue, job_queue_pos + 1, new_job);
+                        arrpush(proc_sym->polymorph_cache.key, key);
+                        arrpush(proc_sym->polymorph_cache.procid, proc_sym->procid);
 
-                    jp->state = JOB_STATE_WAIT;
-                    jp->waiting_on_id = new_job.id;
-                    jp->waiting_on_name = NULL;
+                        Job new_job = job_spawn(&jobid_alloc, PIPE_STAGE_TYPECHECK);
 
-                    break;
+                        new_job.global_sym_allocator = jp->global_sym_allocator;
+                        new_job.global_scope = jp->global_scope;
 
+                        new_job.allocator.scratch = malloc(sizeof(Arena));
+                        new_job.allocator.value = malloc(sizeof(Pool));
+                        new_job.allocator.sym = malloc(sizeof(Pool));
+                        new_job.allocator.type = malloc(sizeof(Pool));
+
+                        proc_sym->is_being_used_in_polymorph = true;
+                        proc_sym->being_polymorphed_by_jobid = new_job.id;
+
+                        arrpush(new_job.tree_pos_stack, proc_sym->polymorphic_proc_ast);
+                        new_job.root = proc_sym->polymorphic_proc_ast;
+                        new_job.handling_name = proc_sym->name;
+                        new_job.parent_job = jp->id;
+
+                        job_init_allocator_ast(&new_job);
+                        job_init_allocator_scratch(&new_job);
+                        job_init_allocator_value(&new_job);
+                        job_init_allocator_sym(&new_job);
+                        job_init_allocator_type(&new_job);
+
+                        arrins(job_queue, job_queue_pos + 1, new_job);
+
+                        jp->state = JOB_STATE_WAIT;
+                        jp->waiting_on_id = new_job.id;
+                        jp->waiting_on_name = NULL;
+
+                        break;
+                    }
                 }
 
             }
 
             if(proc_type->proc.is_polymorphic && jp->cur_proc_type != proc_type) {
 
+                proc_sym->is_being_used_in_polymorph = false;
+                proc_sym->being_polymorphed_by_jobid = -1;
+
                 assert(callp->callee->kind == AST_KIND_atom);
                 AST_atom *callee = (AST_atom*)(callp->callee);
                 callee->symbol_annotation = job_alloc_sym(jp);
                 *(callee->symbol_annotation) = *proc_sym;
 
-                proc_sym->is_being_used_in_polymorph = false;
-                proc_sym->being_polymorphed_by_jobid = -1;
                 proc_sym->ir_generated = false;
 
                 u64 save_i = 0;
@@ -15613,7 +15610,6 @@ void typecheck_expr(Job *jp) {
                 Value *v = arrpop(value_stack);
 
                 assert(t->kind == TYPE_KIND_TYPE);
-                //assert(t->type.what == v->val.type); TODO this isn't working
 
                 proc_type->proc.ret.types[i] = v->val.type;
             }
@@ -15623,13 +15619,11 @@ void typecheck_expr(Job *jp) {
                 Value *v = arrpop(value_stack);
 
                 assert(t->kind == TYPE_KIND_TYPE);
-                //assert(t->type.what == v->val.type);
 
                 proc_type->proc.param.types[i] = v->val.type;
             }
 
             Type *tpush = job_alloc_type(jp, TYPE_KIND_TYPE);
-            tpush->type.what = proc_type;
             Value *vpush = job_alloc_value(jp, VALUE_KIND_TYPE);
             vpush->val.type = proc_type;
 
@@ -16407,6 +16401,7 @@ void typecheck_polymorphic_procdecl(Job *jp) {
         .is_system = ast->is_system,
         .is_polymorphic_procedure = true,
         .type = proc_type,
+        .polymorph_cache.n_wildcards = proc_type->proc.n_wildcards,
     };
 
     Sym *ptr = is_top_level ? global_scope_lookup(jp, ast->name) : job_current_scope_lookup(jp, ast->name);
@@ -17026,8 +17021,6 @@ void print_sym(Sym sym) {
 //VERSION 1.0
 //
 //TODO finish print()
-//TODO polymorph caching
-//TODO cache all allocated types except records and procedures ([N], [], [..], *, string)
 //TODO finish globals
 //TODO test full C interop (raylib)
 //
