@@ -55,7 +55,7 @@ struct Type_info_array {
     using Type_info;
 
     array_of:    *Type_info;
-    array_count:  u64;
+    array_count:  u64; // only populated for STATIC
     array_kind:   u32; // 0 STATIC, 1 DYNAMIC, 2 VIEW
 }
 

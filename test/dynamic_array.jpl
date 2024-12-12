@@ -11,9 +11,6 @@ proc main() {
     arrp: *[..]int = @arr;
     print("arrp[%] = %\narrp.count = %\n", 0, arrp[][0], arrp.count);
 
-    //TODO something wrong with sign extension
-    // for some reason if you implicit cast and int to something else
-    // it breaks the printing
     i: int = 0;
     print("arr = [");
     while i < arr.count - 1 {

@@ -1,0 +1,16 @@
+#run main();
+
+proc main() {
+    a := 34.211;
+    b := 19;
+    c := '^';
+
+    arr := [2, 3, 5, 67];
+
+    print("Hello, I am % % % years old, I know % people\n", a, c, b, arr);
+    print("% + % + % + % biff\n", a, c, b, arr);
+    s := sprint("Hello, I am % % % years old\n", a, c, b);
+    defer memfree(s.data);
+
+    write(STDOUT, s.data, s.len);
+}

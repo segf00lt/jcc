@@ -34,14 +34,398 @@ proc arr_push(arr: *[..]$T, elem: T) {
     arr.count++;
 }
 
+proc arr_addnptr(arr: *[..]$T, n: s64) *T {
+    if arr.count + n >= arr.cap {
+        arr_resize(arr, n + arr.cap);
+    }
+    ptr := arr.data + arr.count;
+    arr.count += n;
+    return ptr;
+}
+
+proc arr_resize(arr: *[..]$T, n: s64) {
+    new_cap := n * cast(s64)sizeof(T);
+
+    allocator: Allocator = ---;
+    allocator_data: *void = ---;
+
+    if cast(*void)arr.allocator == cast(*void)0 {
+        allocator = context.allocator;
+        allocator_data = context.allocator_data;
+    } else {
+        allocator = arr.allocator;
+        allocator_data = arr.allocator_data;
+    }
+
+    arr.data =
+        allocator(
+            ALLOC_MODE_RESIZE,
+            new_cap,
+            arr.cap,
+            arr.data,
+            allocator_data,
+            0
+        );
+
+    arr.cap = new_cap;
+}
+
 proc arr_free(arr: *_Dynamic_array) {
+    if arr.data == cast(*void)0 return;
+
     allocator := context.allocator;
     allocator(ALLOC_MODE_FREE, 0, 0, arr.data, context.allocator_data, 0);
     d: _Dynamic_array;
     >arr = d;
 }
 
+proc str_concat(a: string, b: string) string {
+    w := 0;
+
+    s: string;
+    s.data = memalloc(a.len + b.len);
+    s.len = a.len + b.len;
+
+    for a {
+        s[w] = it;
+        w++;
+    }
+
+    for b {
+        s[w] = it;
+        w++;
+    }
+
+    return s;
+}
+
+proc sprint(fmt: string, args: ..) string {
+    return vsprint(fmt, args);
+}
+
 proc print(fmt: string, args: ..) {
+    s := vsprint(fmt, args);
+    defer memfree(s.data);
+    write(STDOUT, s.data, s.len);
+}
+
+proc vsprint(fmt: string, args: []Any) string {
+    args1: [..]Any;
+    args2: [..]Any;
+
+    fmt1:  [..]char;
+    fmt2:  [..]char;
+
+    percent_indices1: [..]int;
+    percent_indices2: [..]int;
+
+    defer arr_free(@args1);
+    defer arr_free(@args2);
+    defer arr_free(@fmt1);
+    defer arr_free(@fmt2);
+    defer arr_free(@percent_indices1);
+    defer arr_free(@percent_indices2);
+
+    arr_addnptr(@args1, args.count);
+    for args args1[it_index] = it;
+
+    arr_resize(@fmt2, fmt.len);
+    arr_addnptr(@fmt1, fmt.len);
+    arr_addnptr(@percent_indices1, args.count);
+
+    fmt_pos := 0;
+    for argi: 0..args.count-1 {
+        while fmt_pos < fmt.len && fmt[fmt_pos] != '%' {
+            fmt1[fmt_pos] = fmt[fmt_pos];
+            fmt_pos++;
+        }
+
+        if fmt_pos >= fmt.len {
+            percent_indices1.count = argi;
+            break;
+        }
+
+        fmt1[fmt_pos] = fmt[fmt_pos];
+        percent_indices1[argi] = fmt_pos;
+        fmt_pos++;
+    }
+
+    for fmt_pos..fmt.len-1 {
+        fmt1[it] = fmt[it];
+    }
+
+    int_format_buf: [65]char = ---;
+    frac_format_buf: [65]char = ---;
+
+    while args1.count > 0 {
+        last_percent_index := 0;
+
+        for argi: 0..args1.count-1 {
+
+            before_percent_ptr := arr_addnptr(@fmt2, percent_indices1[argi] - last_percent_index);
+            for pos: last_percent_index..percent_indices1[argi]-1 {
+                >before_percent_ptr = fmt1[pos];
+                before_percent_ptr++;
+            }
+
+            last_percent_index = percent_indices1[argi] + 1;
+            
+            t := args1[argi].type;
+            v := args1[argi].data;
+
+            if t.tag == TYPE_INFO_TAG_INT {
+                t_int := cast(*Type_info_int) t;
+                n: u64 = ---;
+                negative: bool;
+
+                if t_int.bits == 64 &&  t_int.sign {
+                    x := >cast(*s64)v;
+                    n = x;
+
+                    if x < 0 {
+                        n = -x;
+                        negative = 1;
+                    }
+                } else if t_int.bits == 64 && !t_int.sign {
+                    n = >cast(*u64)v;
+                } else if t_int.bits == 32 &&  t_int.sign {
+                    x := >cast(*s32)v;
+                    n = x;
+
+                    if x < 0 {
+                        n = -x;
+                        negative = 1;
+                    }
+                } else if t_int.bits == 32 && !t_int.sign {
+                    n = >cast(*u32)v;
+                } else if t_int.bits == 16 &&  t_int.sign {
+                    x := >cast(*s16)v;
+                    n = x;
+
+                    if x < 0 {
+                        n = -x;
+                        negative = 1;
+                    }
+                } else if t_int.bits == 16 && !t_int.sign {
+                    n = >cast(*u16)v;
+                } else if t_int.bits == 8  &&  t_int.sign {
+                    x := >cast(*s8)v;
+                    n = x;
+
+                    if x < 0 {
+                        n = -x;
+                        negative = 1;
+                    }
+                } else if t_int.bits == 8  && !t_int.sign {
+                   n = >cast(*u8)v;
+                }
+
+                if n == 0 {
+                    arr_push(@fmt2, '0');
+                } else {
+                    i := 0;
+
+                    while n > 0 {
+                        int_format_buf[i] = (n % 10) + 48;
+                        n /= 10;
+                        i++;
+                    }
+
+                    if negative {
+                        int_format_buf[i] = '-';
+                        i++;
+                    }
+                    
+                    j := 0;
+                    k := i - 1;
+                    while j < k {
+                        tmp := int_format_buf[j];
+                        int_format_buf[j] = int_format_buf[k];
+                        int_format_buf[k] = tmp;
+
+                        j++;
+                        k--;
+                    }
+
+                    fmt_ptr := arr_addnptr(@fmt2, i);
+                    for 0..i-1 {
+                        fmt_ptr[it] = int_format_buf[it];
+                    }
+                }
+
+            } else if t.tag == TYPE_INFO_TAG_FLOAT {
+                t_float := cast(*Type_info_float) t;
+
+                f: f64;
+
+                if t_float.bits == 8 {
+                    f = >cast(*f64)v;
+                } else {
+                    f = cast(f64)>cast(*f32)v;
+                }
+
+                negative: bool;
+
+                if f < cast(f64)0 {
+                    negative = 1;
+                    f = -f;
+                }
+
+                int_part := cast(int)f;
+                frac_part := f - cast(f64)int_part;
+
+                if int_part == 0 {
+                    arr_push(@fmt2, '0');
+                } else {
+                    i := 0;
+
+                    while int_part > 0 {
+                        int_format_buf[i] = (int_part % 10) + 48;
+                        int_part /= 10;
+                        i++;
+                    }
+
+                    if negative {
+                        int_format_buf[i] = '-';
+                        i++;
+                    }
+                    
+                    j := 0;
+                    k := i - 1;
+                    while j < k {
+                        tmp := int_format_buf[j];
+                        int_format_buf[j] = int_format_buf[k];
+                        int_format_buf[k] = tmp;
+
+                        j++;
+                        k--;
+                    }
+
+                    ptr := arr_addnptr(@fmt2, i);
+                    for 0..i-1 {
+                        ptr[it] = int_format_buf[it];
+                    }
+                }
+
+                frac_format_buf[0] = '.';
+
+                if frac_part == cast(f64)0 {
+                    frac_format_buf[1] = '0';
+                    ptr := arr_addnptr(@fmt2, 2);
+                    ptr[0] = frac_format_buf[0];
+                    ptr[1] = frac_format_buf[1];
+                } else {
+                    i := 1;
+
+                    while frac_part > cast(f64)0 && i < 11 {
+                        frac_part *= 10;
+                        x: int = cast(int)frac_part;
+                        frac_format_buf[i] = x + '0';
+                        frac_part -= cast(f64)x;
+                        i++;
+                    }
+
+                    ptr := arr_addnptr(@fmt2, i);
+                    for 0..i-1 {
+                        ptr[it] = frac_format_buf[it];
+                    }
+                }
+
+            } else if t.tag == TYPE_INFO_TAG_CHAR {
+                c := >cast(*char)v;
+                arr_push(@fmt2, c);
+            } else if t.tag == TYPE_INFO_TAG_STRING {
+                s := >cast(*string)v;
+                ptr := arr_addnptr(@fmt2, s.len);
+                for 0..s.len-1 {
+                    ptr[it] = s[it];
+                }
+            } else if t.tag == TYPE_INFO_TAG_ARRAY {
+                t_array := cast(*Type_info_array) t;
+
+                elem_tinfo := t_array.array_of;
+                stride := t_array.array_of.bytes;
+                n_elements: u64;
+                array_data: *u8;
+
+                if t_array.array_kind == 0 { // static
+                    n_elements = t_array.array_count;
+                    array_data = v;
+                } else if t_array.array_kind == 1 { // dynamic
+                    dynamic_array: *_Dynamic_array = v;
+                    n_elements = dynamic_array.count;
+                    array_data = dynamic_array.data;
+                } else if t_array.array_kind == 2 { // view
+                    array_view: *_Array_view = v;
+                    n_elements = array_view.count;
+                    array_data = array_view.data;
+                }
+                
+                args_ptr := arr_addnptr(@args2, n_elements);
+                percent_indices_ptr := arr_addnptr(@percent_indices2, n_elements);
+                fmt_ptr := arr_addnptr(@fmt2, n_elements*3 + 1);
+                >fmt_ptr = '[';
+                fmt_ptr++;
+
+                for 0..n_elements-1 {
+                    args_ptr[it].data = array_data + it * stride;
+                    args_ptr[it].type = elem_tinfo;
+
+                    percent_indices_ptr[it] = fmt_ptr - fmt2.data;
+
+                    fmt_ptr[0] = '%';
+                    fmt_ptr[1] = ',';
+                    fmt_ptr[2] = ' ';
+                    fmt_ptr += 3;
+                }
+
+                fmt_ptr -= 2;
+                >fmt_ptr = ']';
+                fmt2.count--;
+
+            }
+            //} else if t.tag == TYPE_INFO_TAG_STRUCT {
+            //    x := 0;
+            //} else {
+            //    x := 0;
+            //}
+        }
+
+        n_leftover := fmt1.count - last_percent_index;
+        ptr := arr_addnptr(@fmt2, n_leftover);
+        for last_percent_index..fmt1.count-1 {
+            >ptr = fmt1[it];
+            ptr++;
+        }
+
+        fmt1.count = 0;
+        tmp0 := fmt1;
+        fmt1 = fmt2;
+        fmt2 = tmp0;
+
+        args1.count = 0;
+        tmp1 := args1;
+        args1 = args2;
+        args2 = tmp1;
+
+        percent_indices1.count = 0;
+        tmp2 := percent_indices1;
+        percent_indices1 = percent_indices2;
+        percent_indices2 = tmp2;
+    }
+
+    
+    result: string;
+    result.data = memalloc(sizeof(char) * fmt1.count);
+    result.len = fmt1.count;
+    for fmt1 {
+        result[it_index] = it;
+    }
+
+    return result;
+}
+
+proc DEBUG_PRINT(fmt: string, args: ..) {
 
     if args.count == 0 {
         //s := "here\n";
@@ -243,15 +627,15 @@ proc print(fmt: string, args: ..) {
 
 }
 
-proc alloc(size: s64) *void {
+proc memalloc(size: s64) *void {
     context_allocator := context.allocator;
     return context_allocator(ALLOC_MODE_ALLOCATE, size, 0, cast(*void)0, context.allocator_data, 0);
 }
 
-//proc free(ptr: *void) {
-//    context_allocator := context.allocator;
-//    return context_allocator(ALLOC_MODE_FREE, 0, 0, ptr, context.allocator_data, 0);
-//}
+proc memfree(ptr: *void) {
+    context_allocator := context.allocator;
+    context_allocator(ALLOC_MODE_FREE, 0, 0, ptr, context.allocator_data, 0);
+}
 
 proc temp_alloc(size: s64) *void {
     return __temporary_allocator(ALLOC_MODE_ALLOCATE, size, 0, cast(*void)0, cast(*void)0, 0);
