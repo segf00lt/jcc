@@ -6,28 +6,7 @@ proc arr_push(arr: *[..]$T, elem: T) {
 
         if new_cap == 0  new_cap = _ARRAY_INITIAL_CAP;
 
-        allocator: Allocator = ---;
-        allocator_data: *void = ---;
-
-        if cast(*void)arr.allocator == cast(*void)0 {
-            allocator = context.allocator;
-            allocator_data = context.allocator_data;
-        } else {
-            allocator = arr.allocator;
-            allocator_data = arr.allocator_data;
-        }
-
-        arr.data =
-            allocator(
-                ALLOC_MODE_RESIZE,
-                new_cap * sizeof(elem),
-                arr.cap * sizeof(elem),
-                arr.data,
-                allocator_data,
-                0
-            );
-
-        arr.cap = new_cap;
+        arr_setcap(arr, new_cap);
     }
 
     arr.data[arr.count] = elem;
@@ -36,14 +15,14 @@ proc arr_push(arr: *[..]$T, elem: T) {
 
 proc arr_addnptr(arr: *[..]$T, n: s64) *T {
     if arr.count + n >= arr.cap {
-        arr_resize(arr, n + arr.cap);
+        arr_setcap(arr, n + arr.cap);
     }
     ptr := arr.data + arr.count;
     arr.count += n;
     return ptr;
 }
 
-proc arr_resize(arr: *[..]$T, n: s64) {
+proc arr_setcap(arr: *[..]$T, n: s64) {
     new_cap := n * cast(s64)sizeof(T);
 
     allocator: Allocator = ---;
@@ -99,8 +78,38 @@ proc str_concat(a: string, b: string) string {
     return s;
 }
 
+proc str_tconcat(a: string, b: string) string {
+    w := 0;
+
+    s: string;
+    s.data = temp_alloc(a.len + b.len);
+    s.len = a.len + b.len;
+
+    for a {
+        s[w] = it;
+        w++;
+    }
+
+    for b {
+        s[w] = it;
+        w++;
+    }
+
+    return s;
+}
+
 proc sprint(fmt: string, args: ..) string {
     return vsprint(fmt, args);
+}
+
+proc tprint(fmt: string, args: ..) string {
+    s := vsprint(fmt, args);
+    defer memfree(s.data);
+    temp_s: string;
+    temp_s.len = s.len;
+    temp_s.data = temp_alloc(s.len);
+    for s temp_s[it_index] = it;
+    return temp_s;
 }
 
 proc print(fmt: string, args: ..) {
@@ -129,7 +138,7 @@ proc vsprint(fmt: string, args: []Any) string {
     arr_addnptr(@args1, args.count);
     for args args1[it_index] = it;
 
-    arr_resize(@fmt2, fmt.len);
+    arr_setcap(@fmt2, fmt.len);
     arr_addnptr(@fmt1, fmt.len);
     arr_addnptr(@percent_indices1, args.count);
 
@@ -258,7 +267,7 @@ proc vsprint(fmt: string, args: []Any) string {
 
                 f: f64;
 
-                if t_float.bits == 8 {
+                if t_float.bits == 64 {
                     f = >cast(*f64)v;
                 } else {
                     f = cast(f64)>cast(*f32)v;
@@ -383,9 +392,41 @@ proc vsprint(fmt: string, args: []Any) string {
                 >fmt_ptr = ']';
                 fmt2.count--;
 
+            } else if t.tag == TYPE_INFO_TAG_STRUCT {
+                t_struct := cast(*Type_info_struct) t;
+                struct_data: *u8 = v;
+                
+                fmt_ptr := arr_addnptr(@fmt2, t_struct.name.len + 3);
+                for t_struct.name fmt_ptr[it_index] = it;
+                fmt_ptr += t_struct.name.len;
+                fmt_ptr[0] = ':';
+                fmt_ptr[1] = '{';
+                fmt_ptr[2] = ' ';
+
+                members := t_struct.members;
+                args_ptr := arr_addnptr(@args2, members.count);
+                percent_indices_ptr := arr_addnptr(@percent_indices2, members.count);
+
+                for member: members {
+                    fmt_ptr = arr_addnptr(@fmt2, member.name.len + 6);
+                    for member.name fmt_ptr[it_index] = it;
+                    fmt_ptr += member.name.len;
+
+                    fmt_ptr[0] = ' ';
+                    fmt_ptr[1] = '=';
+                    fmt_ptr[2] = ' ';
+                    fmt_ptr[3] = '%';
+                    fmt_ptr[4] = ',';
+                    fmt_ptr[5] = ' ';
+
+                    percent_indices_ptr[member_index] = fmt_ptr + 3 - fmt2.data;
+                    args_ptr[member_index].data = struct_data + member.offset;
+                    args_ptr[member_index].type = member.type;
+                }
+
+                fmt_ptr[4] = ' ';
+                fmt_ptr[5] = '}';
             }
-            //} else if t.tag == TYPE_INFO_TAG_STRUCT {
-            //    x := 0;
             //} else {
             //    x := 0;
             //}
@@ -425,7 +466,7 @@ proc vsprint(fmt: string, args: []Any) string {
     return result;
 }
 
-proc DEBUG_PRINT(fmt: string, args: ..) {
+proc __DEBUG_PRINT(fmt: string, args: ..) {
 
     if args.count == 0 {
         //s := "here\n";
@@ -541,7 +582,7 @@ proc DEBUG_PRINT(fmt: string, args: ..) {
 
             f: f64;
 
-            if t_float.bits == 8 {
+            if t_float.bits == 64 {
                 f = >cast(*f64)v;
             } else {
                 f = cast(f64)>cast(*f32)v;

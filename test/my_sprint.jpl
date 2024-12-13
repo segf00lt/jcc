@@ -1,16 +1,42 @@
 #run main();
 
+struct Foo {
+    ratio: float = 41.2;
+    index: int = 12;
+    //TODO name: string = "John";
+    name: string;
+    first_initial: char = 'J';
+}
+
+union Num {
+    f: float;
+    df: f64;
+    i: int;
+    b: u8;
+}
+
 proc main() {
-    a := 34.211;
+    a: f64 = 34.211;
     b := 19;
     c := '^';
 
-    arr := [2, 3, 5, 67];
+    arr := [2, 3, 67];
+
+    mat := [[3.4, 1],
+            [5, 4.12],];
 
     print("Hello, I am % % % years old, I know % people\n", a, c, b, arr);
-    print("% + % + % + % biff\n", a, c, b, arr);
+    print("% + % + % + % biff\n", a - 3, c + 1, b * 2, mat);
     s := sprint("Hello, I am % % % years old\n", a, c, b);
     defer memfree(s.data);
+    ts := tprint("this was printed by the temporary allocator:\n\tHello, I am %, I am % % % years old\n", "João", a, c, b);
 
     write(STDOUT, s.data, s.len);
+    write(STDOUT, ts.data, ts.len);
+
+    foo: Foo;
+    n: Num;
+    n.df = 50;
+    foo.name = "John";
+    print("This is a Foo struct: %\nThis is a Num union: %\n", foo, n);
 }

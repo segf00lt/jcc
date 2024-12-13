@@ -1875,10 +1875,10 @@ Type_info* job_make_type_info(Job *jp, Type *t) {
                 tinfo = (Type_info*)tinfo_struct;
             }
             break;
-        case TYPE_KIND_ENUM:
+        case TYPE_KIND_PROC:
             UNIMPLEMENTED;
             break;
-        case TYPE_KIND_PROC:
+        case TYPE_KIND_ENUM:
             UNIMPLEMENTED;
             break;
     }
@@ -2195,7 +2195,17 @@ void add_implicit_casts_to_expr(Job *jp, AST *ast) {
         //    cast_expr->right = expr->right;
         //    expr->left = (AST*)cast_expr;
         }
+    } else if(ast->kind == AST_KIND_call || ast->kind == AST_KIND_run_directive) {
+        AST_call *callp;
+        if(ast->kind == AST_KIND_run_directive) {
+            callp = (AST_call*)(((AST_run_directive*)ast)->call_to_run);
+        } else {
+            callp = (AST_call*)ast;
+        }
 
+        for(AST_param *p = callp->params; p; p = p->next) {
+            add_implicit_casts_to_expr(jp, p->value);
+        }
     } else {
         return;
     }
@@ -4865,6 +4875,8 @@ void ir_gen(Job *jp) {
                 //TODO more structured dependency checking to avoid bugs like not compiling recursive procs
                 Sym *dep = jp->run_dependencies[i];
                 if(dep != sym && dep->ready_to_run == false) {
+                    jp->waiting_on_name = dep->name;
+                    jp->waiting_on_id = dep->declared_by;
                     jp->state = JOB_STATE_WAIT;
                     return;
                 }
@@ -9430,9 +9442,9 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                 .reg_dest = jp->reg_alloc++,
                             },
                         };
-
                     inst.loc = jp->cur_loc;
                     arrpush(jp->instructions, inst);
+
                     arrpush(type_stack, result_type);
                     continue;
                 }
@@ -10001,13 +10013,24 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
                                 inst =
                                     (IRinst) {
+                                        .opcode = IROP_ADDRVAR,
+                                        .addrvar = {
+                                            .segment = IRSEG_TYPE,
+                                            .offset = (u64)(void*)job_make_type_info(jp, operand_type),
+                                            .reg_dest = jp->reg_alloc,
+                                        },
+                                    };
+                                inst.loc = jp->cur_loc;
+                                arrpush(jp->instructions, inst);
+
+                                inst =
+                                    (IRinst) {
                                         .opcode = IROP_SETVAR,
                                         .setvar = {
                                             .segment = IRSEG_LOCAL,
                                             .offset = arrlast(jp->local_offset) + offsetof(Any, type),
-                                            .imm.integer = (u64)(void*)job_make_type_info(jp, operand_type),
+                                            .reg_src = jp->reg_alloc,
                                             .bytes = member_size(Any, type),
-                                            .immediate = true,
                                         },
                                     };
                                 inst.loc = jp->cur_loc;
@@ -10955,13 +10978,24 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
 
             inst =
                 (IRinst) {
+                    .opcode = IROP_ADDRVAR,
+                    .addrvar = {
+                        .segment = IRSEG_TYPE,
+                        .offset = (u64)(void*)job_make_type_info(jp, p->type_annotation),
+                        .reg_dest = jp->reg_alloc,
+                    },
+                };
+            inst.loc = jp->cur_loc;
+            arrpush(jp->instructions, inst);
+
+            inst =
+                (IRinst) {
                     .opcode = IROP_SETVAR,
                     .setvar = {
                         .segment = IRSEG_LOCAL,
                         .offset = cur_varargs_array_offset + offsetof(Any, type),
-                        .imm.integer = (u64)(void*)job_make_type_info(jp, p->type_annotation),
+                        .reg_src = jp->reg_alloc,
                         .bytes = 8,
-                        .immediate = true,
                     },
                 };
             inst.loc = jp->cur_loc;
@@ -13068,6 +13102,7 @@ bool job_runner(char *src, char *src_path) {
         }
 
         //TODO add a job id graph to the dependency tracker
+        //TODO there's something wrong with detection of undeclared identifiers
         if(arrlen(job_queue_next) == arrlen(job_queue)) {
             int waiting_count = 0;
             for(int i = 0; i < arrlen(job_queue_next); ++i) {
