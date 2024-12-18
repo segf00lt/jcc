@@ -547,6 +547,7 @@ struct IRproc {
             u64 n_instructions;
             u64 *jump_table;
             u64 local_segment_size;
+            char *assembly;
         };
         struct {
             IR_foreign_proc foreign_proc;
@@ -1209,6 +1210,8 @@ u64         ir_gen_array_from_value(Job *jp, Type *array_type, Value *v);
 void        ir_gen_entry_point_preamble(Job *jp);
 void        ir_run(Job *jp, int procid);
 void        show_ir_loc(IRinst inst);
+
+void        ir_gen_asm_x64(Job *jp, IRproc *irproc);
 
 Value*      atom_to_value(Job *jp, AST_atom *atom);
 Type*       atom_to_type(Job *jp, AST_atom *atom);
@@ -5282,6 +5285,7 @@ void ir_gen_foreign_proc_x64(Job *jp) {
     assert(proc_sym->is_foreign);
 
     int port_index = 0;
+
     for(int i = 0; i < proc_type->proc.param.n; ++i) {
         char *param_name = proc_type->proc.param.names[i];
         Type *param_type = proc_type->proc.param.types[i];
@@ -5289,6 +5293,8 @@ void ir_gen_foreign_proc_x64(Job *jp) {
         char *param_ctype_str;
         if(TYPE_KIND_IS_RECORD(param_type->kind)) {
             //TODO is it better to not require the C header file and generate it from our code?
+            // yes it is definitely better, but then again, it would be better to generate the wrapper in assembly
+            // so until we do that it will use C
             assert(param_type->record.name);
             param_ctype_str =
                 job_sprint(jp, "%s %s",
@@ -5327,12 +5333,16 @@ void ir_gen_foreign_proc_x64(Job *jp) {
     if(proc_type->proc.ret.n == 0) {
         fprintf(wrapper_file, "%s(", proc_sym->name);
         int i;
-        for(i = 0; i < proc_type->proc.param.n - 1; ++i) {
+        if(proc_type->proc.param.n == 0) {
+            fprintf(wrapper_file, ");\n");
+        } else {
+            for(i = 0; i < proc_type->proc.param.n - 1; ++i) {
+                char *param_name = proc_type->proc.param.names[i];
+                fprintf(wrapper_file, "%s, ", param_name);
+            }
             char *param_name = proc_type->proc.param.names[i];
-            fprintf(wrapper_file, "%s, ", param_name);
+            fprintf(wrapper_file, "%s);\n", param_name);
         }
-        char *param_name = proc_type->proc.param.names[i];
-        fprintf(wrapper_file, "%s);\n", param_name);
     } else {
         Type *ret_type = proc_type->proc.ret.types[0];
 
@@ -5343,24 +5353,32 @@ void ir_gen_foreign_proc_x64(Job *jp) {
                         ret_type->record.name);
             fprintf(wrapper_file, "%s r = %s(", ret_ctype_str, proc_sym->name);
             int i;
-            for(i = 0; i < proc_type->proc.param.n - 1; ++i) {
+            if(proc_type->proc.param.n == 0) {
+                fprintf(wrapper_file, ");\n");
+            } else {
+                for(i = 0; i < proc_type->proc.param.n - 1; ++i) {
+                    char *param_name = proc_type->proc.param.names[i];
+                    fprintf(wrapper_file, "%s, ", param_name);
+                }
                 char *param_name = proc_type->proc.param.names[i];
-                fprintf(wrapper_file, "%s, ", param_name);
+                fprintf(wrapper_file, "%s);\n", param_name);
             }
-            char *param_name = proc_type->proc.param.names[i];
-            fprintf(wrapper_file, "%s);\n", param_name);
 
             fprintf(wrapper_file, "*(%s*)(void*)(interp->ports[0].integer) = r;\n", ret_ctype_str);
         } else {
             char *ret_ctype_str = job_type_to_ctype_str(jp, ret_type);
             fprintf(wrapper_file, "%s r = %s(", ret_ctype_str, proc_sym->name);
             int i;
-            for(i = 0; i < proc_type->proc.param.n - 1; ++i) {
+            if(proc_type->proc.param.n == 0) {
+                fprintf(wrapper_file, ");\n");
+            } else {
+                for(i = 0; i < proc_type->proc.param.n - 1; ++i) {
+                    char *param_name = proc_type->proc.param.names[i];
+                    fprintf(wrapper_file, "%s, ", param_name);
+                }
                 char *param_name = proc_type->proc.param.names[i];
-                fprintf(wrapper_file, "%s, ", param_name);
+                fprintf(wrapper_file, "%s);\n", param_name);
             }
-            char *param_name = proc_type->proc.param.names[i];
-            fprintf(wrapper_file, "%s);\n", param_name);
 
             char *port_field = "integer";
             char *cast_str = "(u64)";
@@ -5446,6 +5464,126 @@ void ir_gen_foreign_proc_x64(Job *jp) {
     proc_sym->ready_to_run = true;
 
     arena_from_save(jp->allocator.scratch, scratch_save);
+}
+
+void ir_gen_asm_x64(Job *jp, IRproc *irproc) {
+    IRinst *instructions = irproc->instructions;
+    u64 n_instructions = irproc->n_instructions;
+
+    for(int i = 0; i < n_instructions; ++i) {
+        IRinst inst = instructions[i];
+        switch(inst.opcode) {
+            default:
+                UNREACHABLE;
+            case IROP_GETCONTEXTARG:
+                break;
+            case IROP_SETCONTEXTARG:
+                break;
+            case IROP_LABEL:
+            case IROP_NOOP:
+                break;
+            case IROP_ADD:
+                break;   
+            case IROP_SUB:
+                break;   
+            case IROP_MUL:
+                break;   
+            case IROP_DIV:
+                break;   
+            case IROP_MOD:
+                break;   
+            case IROP_AND:
+                break;   
+            case IROP_OR:
+                break;    
+            case IROP_XOR:
+                break;   
+            case IROP_LSHIFT:
+                break;
+            case IROP_RSHIFT:
+                break;
+            case IROP_EQ:
+                break;    
+            case IROP_NE:
+                break;    
+            case IROP_LE:
+                break;    
+            case IROP_GT:
+                break;    
+            case IROP_FADD:
+                break;
+            case IROP_FSUB:
+                break;
+            case IROP_FMUL:
+                break;
+            case IROP_FDIV:
+                break;
+            case IROP_FEQ:
+                break;
+            case IROP_FNE:
+                break;
+            case IROP_FLE:
+                break;
+            case IROP_FGT:
+                break;
+            case IROP_FNEG:
+                break;
+            case IROP_IF:
+                break;
+            case IROP_IFZ:
+                break;
+            case IROP_JMP:
+                break;
+            case IROP_CALL:
+                break;
+            case IROP_RET:
+                break;
+            case IROP_LOAD:
+                break;
+            case IROP_STOR:
+                break;
+            case IROP_LOADF:
+                break;
+            case IROP_STORF:
+                break;
+            case IROP_CALCPTROFFSET:
+                break;
+            case IROP_ADDRVAR:
+                break;
+            case IROP_GETVAR:
+                break;
+            case IROP_SETVAR:
+                break;
+            case IROP_SETARG:
+            case IROP_SETRET:
+                break;
+            case IROP_GETARG:
+            case IROP_GETRET:
+                break;
+            case IROP_GETVARF:
+                break;
+            case IROP_SETVARF:
+                break;
+            case IROP_SETARGF:
+            case IROP_SETRETF:
+                break;
+            case IROP_GETARGF:
+            case IROP_GETRETF:
+                break;
+            case IROP_ITOF:
+                break;
+            case IROP_FTOB:
+                break;
+            case IROP_ITOB:
+                break;
+            case IROP_FTOI:
+                break;
+            case IROP_ITOI:
+                break;
+            case IROP_FTOF:
+                break;
+        }
+    }
 }
 
 void ir_run(Job *jp, int procid) {
@@ -5597,17 +5735,13 @@ void ir_run(Job *jp, int procid) {
                 break;
                 IR_FLOAT_CMPOPS;
 #undef X
-#define X(opcode, opsym) \
-            case IROP_##opcode: \
-                                \
-                if(inst.arith.operand_bytes[0] == 8) { \
-                    interp.f64regs[inst.arith.reg[0]] = opsym interp.f64regs[inst.arith.reg[1]]; \
-                } else { \
-                    interp.f32regs[inst.arith.reg[0]] = opsym interp.f32regs[inst.arith.reg[1]]; \
-                } \
+            case IROP_FNEG:
+                if(inst.arith.operand_bytes[0] == 8) {
+                    interp.f64regs[inst.arith.reg[0]] = -interp.f64regs[inst.arith.reg[1]];
+                } else {
+                    interp.f32regs[inst.arith.reg[0]] = -interp.f32regs[inst.arith.reg[1]];
+                }
                 break;
-                IR_FLOAT_UNOPS;
-#undef X
 
             case IROP_IF:
                 if(interp.iregs[inst.branch.cond_reg] != 0) {
@@ -10248,6 +10382,19 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                         };
                                     inst.loc = jp->cur_loc;
                                     arrpush(jp->instructions, inst);
+                                } else if(TYPE_KIND_IS_RECORD(result_type->kind)) {
+                                    inst =
+                                        (IRinst) {
+                                            .opcode = IROP_CALCPTROFFSET,
+                                            .calcptroffset = {
+                                                .reg_dest = *result_regp,
+                                                .reg_src_ptr = a_reg,
+                                                .offset_reg = b_reg,
+                                                .stride = result_type->bytes,
+                                            },
+                                        };
+                                    inst.loc = jp->cur_loc;
+                                    arrpush(jp->instructions, inst);
                                 } else {
                                     UNIMPLEMENTED;
                                 }
@@ -12786,11 +12933,11 @@ bool job_runner(char *src, char *src_path) {
 
                             if(ast_statement->checked_right == false) {
                                 //TODO should this check be for array views that take an array lit as well?
-        if(type_left->kind == TYPE_KIND_ARRAY && ast_statement->right->kind == AST_KIND_array_literal) {
-            AST_array_literal *array_lit = (AST_array_literal*)(ast_statement->right);
+                                if(type_left->kind == TYPE_KIND_ARRAY && ast_statement->right->kind == AST_KIND_array_literal) {
+                                    AST_array_literal *array_lit = (AST_array_literal*)(ast_statement->right);
 
-            array_lit->type_annotation = type_left;
-        }
+                                    array_lit->type_annotation = type_left;
+                                }
 
                                 if(arrlen(jp->expr) == 0) {
                                     linearize_expr(jp, ast_statement->right);
@@ -13372,6 +13519,8 @@ Value* evaluate_unary(Job *jp, Value *a, AST_expr *op_ast) {
 
     Token op = op_ast->token;
 
+    if(a->kind == VALUE_KIND_NIL) return a;
+
     switch(op) {
         default:
             UNREACHABLE;
@@ -13496,6 +13645,9 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
             } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
                 result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
                 result->val.uinteger = a->val.uinteger - b->val.uinteger;
+            } else if(a->kind == VALUE_KIND_FLOAT && b->kind == VALUE_KIND_FLOAT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = a->val.floating - b->val.floating;
             } else {
                 UNREACHABLE;
             }
@@ -13518,6 +13670,12 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
             } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
                 result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
                 result->val.uinteger = a->val.uinteger * b->val.uinteger;
+            } else if(a->kind == VALUE_KIND_FLOAT && b->kind == VALUE_KIND_FLOAT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = a->val.floating * b->val.floating;
+            } else if(a->kind == VALUE_KIND_INT && b->kind == VALUE_KIND_INT) {
+                result = job_alloc_value(jp, VALUE_KIND_INT);
+                result->val.integer = a->val.integer * b->val.integer;
             } else {
                 UNREACHABLE;
             }
@@ -13540,6 +13698,12 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
             } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
                 result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
                 result->val.uinteger = a->val.uinteger / b->val.uinteger;
+            } else if(a->kind == VALUE_KIND_FLOAT && b->kind == VALUE_KIND_FLOAT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = a->val.floating / b->val.floating;
+            } else if(a->kind == VALUE_KIND_INT && b->kind == VALUE_KIND_INT) {
+                result = job_alloc_value(jp, VALUE_KIND_INT);
+                result->val.integer = a->val.integer / b->val.integer;
             } else {
                 UNREACHABLE;
             }
@@ -13562,6 +13726,9 @@ Value* evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast) {
             } else if(a->kind >= VALUE_KIND_BOOL && a->kind <= VALUE_KIND_UINT && b->kind >= VALUE_KIND_BOOL && b->kind <= VALUE_KIND_UINT) {
                 result = job_alloc_value(jp, (a->kind > b->kind) ? a->kind : b->kind);
                 result->val.uinteger = a->val.uinteger + b->val.uinteger;
+            } else if(a->kind == VALUE_KIND_FLOAT && b->kind == VALUE_KIND_FLOAT) {
+                result = job_alloc_value(jp, VALUE_KIND_FLOAT);
+                result->val.floating = a->val.floating + b->val.floating;
             } else {
                 UNREACHABLE;
             }
@@ -14157,9 +14324,9 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                 if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_F32)        return NULL;
                 if(a->kind == TYPE_KIND_U64 && b->kind == TYPE_KIND_F64)        return NULL;
 
-                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_FLOAT)      return NULL;
-                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F32)        return NULL;
-                if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F64)        return NULL;
+                //if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_FLOAT)      return NULL;
+                //if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F32)        return NULL;
+                //if(a->kind == TYPE_KIND_INT && b->kind == TYPE_KIND_F64)        return NULL;
 
                 if(a->kind == TYPE_KIND_FLOAT && b->kind == TYPE_KIND_F64)      return NULL;
 
@@ -17115,7 +17282,6 @@ void print_sym(Sym sym) {
 
 //VERSION 1.0
 //
-//TODO finish print()
 //TODO finish globals
 //TODO test full C interop (raylib)
 //
@@ -17129,13 +17295,10 @@ void print_sym(Sym sym) {
 //TODO c-style for loops (use 'while' keyword)
 //TODO enums
 //TODO struct literals
-//TODO directives (#import, #assert, etc)
 //TODO local procedures and structs
+//TODO directives (#import, #assert, etc)
 //TODO parametrized structs
 //TODO proc polymorphism with parametrized structs
-
-// MOSTLY DONE
-//TODO dynamic array procedures (missing some helpers, copy from stb_ds.h)
 
 //VERSION 2.0
 //TODO redesign from scratch

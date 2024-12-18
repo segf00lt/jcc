@@ -1,0 +1,192 @@
+#run main();
+
+#load "raylib.jpl";
+
+proc temp_c_string(s: string) *char {
+    cstr: *char = temp_alloc(s.len + 1);
+    cstr[s.len] = 0;
+    for s cstr[it_index] = it;
+    return cstr;
+}
+
+proc main() {
+    WINDOW_WIDTH:   int   = 1200;
+    WINDOW_HEIGHT:  int   = 900;
+    BRICK_ROWS:     int   = 20;
+    BRICK_COLS:     int   = 10;
+    BRICK_WIDTH:    int   = 120;
+    BRICK_HEIGHT:   int   = 45;
+    N_BRICKS:       int   = 200;
+    //TODO these expressions aren't working
+    //BRICK_WIDTH:    int   : WINDOW_WIDTH / BRICK_COLS;
+    //BRICK_HEIGHT:   int   : WINDOW_HEIGHT / BRICK_ROWS;
+    //N_BRICKS:       int   : BRICK_ROWS * BRICK_COLS;
+    BRICK_SPACING:  float = 8.0;
+    BALL_RADIUS:    float = 20.0;
+    PADDLE_WIDTH:   float = 80.0;
+    PADDLE_HEIGHT:  float = 10.0;
+    PADDLE_TRACK_Y: float = WINDOW_HEIGHT - 150.0;
+
+    //TODO struct literals so that we can have struct constants
+    YELLOW.r = 253;
+    YELLOW.g = 249;
+    YELLOW.b = 0;
+    YELLOW.a = 255;
+
+    RAYWHITE.r = 245;
+    RAYWHITE.g = 245;
+    RAYWHITE.b = 245;
+    RAYWHITE.a = 255;
+
+    RED.r = 230;
+    RED.g = 41;
+    RED.b = 55;
+    RED.a = 255;
+
+    WHITE.r = 255;
+    WHITE.g = 255;
+    WHITE.b = 255;
+    WHITE.a = 255;
+
+    BLACK.r = 0;
+    BLACK.g = 0;
+    BLACK.b = 0;
+    BLACK.a = 255;
+
+    SetTargetFPS(60);
+    InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, temp_c_string("breakout"));
+    DisableCursor();
+
+    bricks: [200]Rectangle = ---;
+
+    cur_brick: Rectangle = ---;
+    cur_brick.x = 0;
+    cur_brick.y = 0;
+    cur_brick.width = BRICK_WIDTH;
+    cur_brick.height = BRICK_HEIGHT;
+
+    for i: 0..N_BRICKS-1 {
+        bricks[i] = cur_brick;
+
+        bricks[i].x += BRICK_SPACING;
+        bricks[i].y += BRICK_SPACING;
+        bricks[i].width -= BRICK_SPACING * 2;
+        bricks[i].height -= BRICK_SPACING * 2;
+
+        cur_brick.x += BRICK_WIDTH;
+
+        if cur_brick.x >= cast(float)WINDOW_WIDTH  {
+            cur_brick.x = 0;
+            cur_brick.y += BRICK_HEIGHT;
+
+            if cur_brick.y >= WINDOW_HEIGHT - 500.0  {
+                break;
+            }
+        }
+    }
+
+    live_bricks: [200]int = ---;
+    n_live_bricks := N_BRICKS;
+    for live_bricks live_bricks[it_index] = it_index;
+
+    ball: Ball;
+    ball.pos.x = WINDOW_WIDTH / 2;
+    ball.pos.y = WINDOW_HEIGHT - 320;
+    ball.vel.x = 270.23;
+    ball.vel.y = -180.9;
+
+    paddle_pos: float = WINDOW_WIDTH / 2;
+    SetMousePosition(cast(int)paddle_pos, cast(int)PADDLE_TRACK_Y);
+
+    paddle_rec: Rectangle = ---;
+    paddle_rec.x = paddle_pos - PADDLE_WIDTH*0.5;
+    paddle_rec.y = PADDLE_TRACK_Y;
+    paddle_rec.width = PADDLE_WIDTH;
+    paddle_rec.height = PADDLE_HEIGHT;
+
+    //TODO something wrong with !WindowShouldClose()
+    while WindowShouldClose() == 0 {
+        timestep := GetFrameTime();
+
+        paddle_pos = cast(float)GetMouseX();
+
+        BeginDrawing();
+        defer EndDrawing();
+
+        defer temp_storage_reset();
+
+        ClearBackground(BLACK);
+
+        new_pos := Vector2Add(ball.pos, Vector2Scale(ball.vel, timestep));
+
+        if new_pos.x < BALL_RADIUS  {
+            ball.vel.x = -ball.vel.x;
+            new_pos.x = BALL_RADIUS;
+        }
+
+        if new_pos.y < BALL_RADIUS  {
+            ball.vel.y = -ball.vel.y;
+            new_pos.y = BALL_RADIUS;
+        }
+
+        if new_pos.x > WINDOW_WIDTH - BALL_RADIUS  {
+            ball.vel.x = -ball.vel.x;
+            new_pos.x = WINDOW_WIDTH - BALL_RADIUS;
+        }
+
+        if new_pos.y > WINDOW_HEIGHT - BALL_RADIUS  {
+            print("\nGAME OVER!!!\n\n");
+            break;
+        }
+
+        if new_pos.y >= PADDLE_TRACK_Y - BALL_RADIUS && new_pos.x >= (paddle_pos - PADDLE_WIDTH*0.5) && new_pos.x <= (paddle_pos + PADDLE_WIDTH*0.5)  {
+            new_pos.y = PADDLE_TRACK_Y - BALL_RADIUS;
+            ball.vel.y = -ball.vel.y;
+        }
+
+        ball.pos = new_pos;
+
+        collided_with_brick: bool;
+
+        for i: 0..n_live_bricks-1 {
+            rid := live_bricks[i];
+
+            if CheckCollisionCircleRec(ball.pos, BALL_RADIUS, bricks[rid])  {
+                live_bricks[i] = live_bricks[n_live_bricks-1];
+                n_live_bricks--;
+                collided_with_brick = 1;
+            }
+        }
+
+        if collided_with_brick  {
+            ball.vel = Vector2Negate(ball.vel);
+            ball.vel = Vector2Scale(ball.vel, 1.1);
+        }
+
+        for i: 0..n_live_bricks-1 DrawRectangleRec(bricks[live_bricks[i]], RED);
+
+        paddle_rec.x = paddle_pos - PADDLE_WIDTH*0.5;
+
+        DrawRectangleRec(paddle_rec, YELLOW);
+
+        DrawCircleV(ball.pos, BALL_RADIUS, RAYWHITE);
+
+        buf := temp_c_string(tprint("FPS: %\nFRAMETIME: %\n", GetFPS(), timestep));
+
+        DrawText(buf, 10, 10, 20, WHITE);
+    }
+
+}
+
+struct Ball {
+    pos: Vector2;
+    vel: Vector2;
+}
+
+YELLOW:   Color = ---;
+RAYWHITE: Color = ---;
+RED:      Color = ---;
+WHITE:    Color = ---;
+BLACK:    Color = ---;
+
+

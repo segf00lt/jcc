@@ -19,8 +19,8 @@ proc main() f64 {
 #run main();
 
 proc foo(size: u64, f: float) int #foreign "foo";
-proc bar(b: Bob) Bob #foreign "foo";
-proc birth_bob(i: s32) Bob #foreign "foo";
+proc bar(b: Bob) Bob              #foreign "foo";
+proc birth_bob(i: s32) Bob        #foreign "foo";
 
 struct Bob {
     c: char = 4;
