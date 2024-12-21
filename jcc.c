@@ -14578,6 +14578,7 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                                 cast_expr->token = TOKEN_CAST;
                                 cast_expr->right = *right;
                                 cast_expr->type_annotation = a;
+                                cast_expr->value_annotation = job_alloc_value(jp, VALUE_KIND_NIL);
 
                                 AST_expr_base *right_expr = (AST_expr_base*)*right;
                                 Value *right_expr_value = right_expr->value_annotation;
@@ -14585,34 +14586,31 @@ Type* typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST *
                                 if(right_expr_value && a != type_Any) {
                                     if(right_expr_value->kind == VALUE_KIND_INT) {
                                         if(TYPE_KIND_IS_FLOAT32(a->kind)) {
-                                            right_expr_value->kind = VALUE_KIND_FLOAT;
-                                            right_expr_value->val.floating = (f32)(right_expr_value->val.integer);
+                                            cast_expr->value_annotation->kind = VALUE_KIND_FLOAT;
+                                            cast_expr->value_annotation->val.floating = (f32)(right_expr_value->val.integer);
                                         } else if(a->kind == TYPE_KIND_F64) {
-                                            right_expr_value->kind = VALUE_KIND_DFLOAT;
-                                            right_expr_value->val.dfloating = (f64)(right_expr_value->val.integer);
+                                            cast_expr->value_annotation->kind = VALUE_KIND_DFLOAT;
+                                            cast_expr->value_annotation->val.dfloating = (f64)(right_expr_value->val.integer);
                                         } else if(!TYPE_KIND_IS_INTEGER(a->kind)) {
                                             UNREACHABLE;
                                         }
 
-                                        cast_expr->value_annotation = right_expr_value;
-                                    } else if(right_expr_value->kind == VALUE_KIND_FLOAT) {
+                                    } else if(cast_expr->value_annotation->kind == VALUE_KIND_FLOAT) {
                                         if(a->kind == TYPE_KIND_F64) {
-                                            right_expr_value->kind = VALUE_KIND_DFLOAT;
-                                            right_expr_value->val.dfloating = (f64)(right_expr_value->val.floating);
+                                            cast_expr->value_annotation->kind = VALUE_KIND_DFLOAT;
+                                            cast_expr->value_annotation->val.dfloating = (f64)(right_expr_value->val.floating);
                                         } else if(!TYPE_KIND_IS_FLOAT32(a->kind)) {
                                             UNREACHABLE;
                                         }
 
-                                        cast_expr->value_annotation = right_expr_value;
-                                    } else if(right_expr_value->kind == VALUE_KIND_DFLOAT) {
+                                    } else if(cast_expr->value_annotation->kind == VALUE_KIND_DFLOAT) {
                                         if(TYPE_KIND_IS_FLOAT32(a->kind)) {
-                                            right_expr_value->kind = VALUE_KIND_FLOAT;
-                                            right_expr_value->val.floating = (f32)(right_expr_value->val.dfloating);
+                                            cast_expr->value_annotation->kind = VALUE_KIND_FLOAT;
+                                            cast_expr->value_annotation->val.floating = (f32)(right_expr_value->val.dfloating);
                                         } else if(a->kind != TYPE_KIND_F64) {
                                             UNREACHABLE;
                                         }
 
-                                        cast_expr->value_annotation = right_expr_value;
                                     }
                                 }
 

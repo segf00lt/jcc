@@ -10,22 +10,15 @@ proc temp_c_string(s: string) *char {
 }
 
 proc main() {
-    WINDOW_WIDTH:   int   = 1200;
-    WINDOW_HEIGHT:  int   = 900;
-    BRICK_ROWS:     int   = 20;
-    BRICK_COLS:     int   = 10;
-    BRICK_WIDTH:    int   = 120;
-    BRICK_HEIGHT:   int   = 45;
-    N_BRICKS:       int   = 200;
-    //TODO these expressions aren't working
-    //BRICK_WIDTH:    int   : WINDOW_WIDTH / BRICK_COLS;
-    //BRICK_HEIGHT:   int   : WINDOW_HEIGHT / BRICK_ROWS;
-    //N_BRICKS:       int   : BRICK_ROWS * BRICK_COLS;
-    BRICK_SPACING:  float = 8.0;
-    BALL_RADIUS:    float = 20.0;
-    PADDLE_WIDTH:   float = 80.0;
-    PADDLE_HEIGHT:  float = 10.0;
-    PADDLE_TRACK_Y: float = WINDOW_HEIGHT - 150.0;
+    print("BRICK_COLS = %\nBRICK_ROWS = %\n", BRICK_COLS, BRICK_ROWS);
+    print("WINDOW_WIDTH = %\nWINDOW_HEIGHT = %\n", WINDOW_WIDTH, WINDOW_HEIGHT);
+    print("BRICK_WIDTH = %\nBRICK_HEIGHT = %\nN_BRICKS = %\n", BRICK_WIDTH, BRICK_HEIGHT, N_BRICKS);
+    {
+        a := 1200;
+        b := 10;
+        print("a / b = %\n", a / b);
+        print("WINDOW_WIDTH / BRICK_COLS = %\n", WINDOW_WIDTH / BRICK_COLS);
+    }
 
     //TODO struct literals so that we can have struct constants
     YELLOW.r = 253;
@@ -57,7 +50,7 @@ proc main() {
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, temp_c_string("breakout"));
     DisableCursor();
 
-    bricks: [200]Rectangle = ---;
+    bricks: [N_BRICKS]Rectangle = ---;
 
     cur_brick: Rectangle = ---;
     cur_brick.x = 0;
@@ -188,5 +181,18 @@ RAYWHITE: Color = ---;
 RED:      Color = ---;
 WHITE:    Color = ---;
 BLACK:    Color = ---;
+
+WINDOW_WIDTH:   int   : 1200;
+WINDOW_HEIGHT:  int   : 900;
+BRICK_ROWS:     int   : 20;
+BRICK_COLS:     int   : 10;
+BRICK_WIDTH:    int   : WINDOW_WIDTH / BRICK_COLS;
+BRICK_HEIGHT:   int   : WINDOW_HEIGHT / BRICK_ROWS;
+N_BRICKS:       int   : BRICK_ROWS * BRICK_COLS;
+BRICK_SPACING:  float : 8.0;
+BALL_RADIUS:    float : 20.0;
+PADDLE_WIDTH:   float : 80.0;
+PADDLE_HEIGHT:  float : 10.0;
+PADDLE_TRACK_Y: float : WINDOW_HEIGHT - 150.0;
 
 
