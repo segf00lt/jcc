@@ -1,6 +1,20 @@
 #!/bin/sh
 
 OS_NAME=$(uname)
+if [ "$OS_NAME" = "Linux" ]; then
+
+if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get install libasound2-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev libxcursor-dev libxinerama-dev libwayland-dev libxkbcommon-dev;
+elif command -v apt >/dev/null 2>&1; then
+    sudo apt install libasound2-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev libxcursor-dev libxinerama-dev libwayland-dev libxkbcommon-dev;
+elif command -v pacman >/dev/null 2>&1; then
+    sudo pacman -S alsa-lib mesa libx11 libxrandr libxi libxcursor libxinerama;
+else
+    echo "Unknown package manager";
+    exit 1;
+fi
+
+fi
 
 cd ./third_party/raylib && make RAYLIB_LIBTYPE=STATIC && cd ../..;
 
@@ -15,3 +29,4 @@ elif [ "$OS_NAME" = "Darwin" ]; then
 else
     echo "Unkown OS: $OS_NAME";
 fi
+
