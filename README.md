@@ -1,6 +1,9 @@
 # jcc
 
-![Demo](demo.gif)
+<video width="600" controls>
+  <source src="video/breakout.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
 
 _A compiler for a JAI style language._
 
