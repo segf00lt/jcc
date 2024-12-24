@@ -11,4 +11,6 @@ Right now everything is running inside the IR interpreter during compilation whi
 
 ## Build and Run
 
-To build the compiler and all it's dependencies run `sh build.sh`. To run the compiler `./jcc tests/<some_test>`
+To build the compiler and all it's dependencies run `sh build.sh`.
+
+To run the compiler `./jcc tests/<some_test>`
