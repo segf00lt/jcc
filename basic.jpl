@@ -40,13 +40,13 @@ proc arr_setcap(arr: *[..]$T, n: s64) {
         allocator(
             ALLOC_MODE_RESIZE,
             new_cap,
-            arr.cap,
+            arr.cap * sizeof(T),
             arr.data,
             allocator_data,
             0
         );
 
-    arr.cap = new_cap;
+    arr.cap = n;
 }
 
 proc arr_free(arr: *_Dynamic_array) {

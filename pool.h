@@ -13,7 +13,7 @@
  */
 
 #ifndef POOL_INITIAL_CHUNK_COUNT
-#define POOL_INITIAL_CHUNK_COUNT 4
+#define POOL_INITIAL_CHUNK_COUNT 1
 #endif
 
 typedef struct Pool Pool;

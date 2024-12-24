@@ -15913,7 +15913,8 @@ void typecheck_expr(Job *jp) {
                         job_init_allocator_sym(&new_job);
                         job_init_allocator_type(&new_job);
 
-                        arrins(job_queue, job_queue_pos + 1, new_job);
+                        //arrins(job_queue, job_queue_pos + 1, new_job);
+                        arrpush(job_queue_next, new_job);
 
                         jp->state = JOB_STATE_WAIT;
                         jp->waiting_on_id = new_job.id;
