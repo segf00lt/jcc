@@ -11,6 +11,4 @@ Right now everything is running inside the IR interpreter during compilation whi
 
 ## Build and Run
 
-To build just run `make`. To run the compiler `./jcc tests/<some_test>`
-
-Only non-standard dependency you need is [raylib](https://github.com/raysan5/raylib), but this will be removed soon.
+To build the compiler and all it's dependencies run `sh build.sh`. To run the compiler `./jcc tests/<some_test>`
