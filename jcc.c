@@ -169,45 +169,49 @@
 #define IR_FLOAT_UNOPS                  \
     X(FNEG, -)                          \
 
-#define IROPCODES                       \
-    X(NOOP,          _)                 \
-    IR_INT_BINOPS                       \
-    IR_INT_UNOPS                        \
-    IR_FLOAT_BINOPS                     \
-    IR_FLOAT_CMPOPS                     \
-    IR_FLOAT_UNOPS                      \
-    X(IF,            _)                 \
-    X(IFZ,           _)                 \
-    X(JMP,           _)                 \
-    X(CALL,          _)                 \
-    X(RET,           _)                 \
-    X(LABEL,         _)                 \
-    X(LOAD,          _)                 \
-    X(STOR,          _)                 \
-    X(LOADF,         _)                 \
-    X(STORF,         _)                 \
-    X(CALCPTROFFSET, _)                 \
-    X(ADDRVAR,       _)                 \
-    X(GETVAR,        _)                 \
-    X(SETVAR,        _)                 \
-    X(SETARG,        _)                 \
-    X(SETRET,        _)                 \
-    X(GETARG,        _)                 \
-    X(GETRET,        _)                 \
-    X(GETVARF,       _)                 \
-    X(SETVARF,       _)                 \
-    X(SETARGF,       _)                 \
-    X(SETRETF,       _)                 \
-    X(GETARGF,       _)                 \
-    X(GETRETF,       _)                 \
-    X(ITOF,          _)                 \
-    X(FTOB,          _)                 \
-    X(ITOB,          _)                 \
-    X(FTOI,          _)                 \
-    X(ITOI,          _)                 \
-    X(FTOF,          _)                 \
-    X(GETCONTEXTARG, _)                 \
-    X(SETCONTEXTARG, _)                 \
+#define IROPCODES                         \
+    X(NOOP,            _)                 \
+    IR_INT_BINOPS                         \
+    IR_INT_UNOPS                          \
+    IR_FLOAT_BINOPS                       \
+    IR_FLOAT_CMPOPS                       \
+    IR_FLOAT_UNOPS                        \
+    X(IF,              _)                 \
+    X(IFZ,             _)                 \
+    X(JMP,             _)                 \
+    X(CALL,            _)                 \
+    X(RET,             _)                 \
+    X(LABEL,           _)                 \
+    X(LOAD,            _)                 \
+    X(STOR,            _)                 \
+    X(LOADF,           _)                 \
+    X(STORF,           _)                 \
+    X(CALCPTROFFSET,   _)                 \
+    X(ADDRVAR,         _)                 \
+    X(GETVAR,          _)                 \
+    X(SETVAR,          _)                 \
+    X(SETARG,          _)                 \
+    X(SETRET,          _)                 \
+    X(GETARG,          _)                 \
+    X(GETRET,          _)                 \
+    X(GETVARF,         _)                 \
+    X(SETVARF,         _)                 \
+    X(SETARGF,         _)                 \
+    X(SETRETF,         _)                 \
+    X(GETARGF,         _)                 \
+    X(GETRETF,         _)                 \
+    X(ITOF,            _)                 \
+    X(FTOB,            _)                 \
+    X(ITOB,            _)                 \
+    X(FTOI,            _)                 \
+    X(ITOI,            _)                 \
+    X(FTOF,            _)                 \
+    X(GETCONTEXTARG,   _)                 \
+    X(SETCONTEXTARG,   _)                 \
+    X(HINT_BEGIN_FOREIGN_CALL, _)         \
+    X(HINT_END_FOREIGN_CALL,   _)         \
+    X(HINT_BEGIN_PASS_NON_SCALAR, _)      \
+    X(HINT_END_PASS_NON_SCALAR,   _)      \
 
 #define IRSEGMENTS                      \
     X(LOCAL)                            \
@@ -254,6 +258,8 @@
 #define TYPE_IS_VOID_POINTER(t) ((bool)((assert(t), 1) && t->kind == TYPE_KIND_POINTER && (assert(t->pointer.to), 1) && t->pointer.to->kind == TYPE_KIND_VOID))
 
 #define TOKEN_IS_BITWISE_OP(token) ((bool)(token == '|' || token == TOKEN_LSHIFT || token == TOKEN_RSHIFT || token == '&' || token == '^' || token == '~'))
+
+#define IROP_IS_INT_ARITH(op) ((bool)(op >= IROP_ADD && op <= IROP_NEG))
 
 
 typedef struct Scope_entry* Scope;
@@ -530,6 +536,7 @@ struct IRinst {
             u64 to_bytes;
             u64 from_bytes;
         } typeconv;
+
     };
 
     Loc_info loc;
@@ -1105,6 +1112,11 @@ struct Type {
                 u64     i;
                 u64     n;
             } use;
+            struct {
+                Type **types;
+                u64   *offsets;
+                u64    n;
+            } flattened_scalars;
         } record;
 
         struct { /* proc, macro, func */
@@ -1651,7 +1663,7 @@ char* job_sprint(Job *jp, char *fmt, ...) {
     size_t n = 64;
     char *buf = arena_alloc(jp->allocator.scratch, n);
 
-    size_t n_written = stbsp_vsnprintf(buf, n, fmt, args);
+    size_t n_written = 1 + stbsp_vsnprintf(buf, n, fmt, args);
 
     va_end(args);
 
@@ -1660,8 +1672,12 @@ char* job_sprint(Job *jp, char *fmt, ...) {
         n <<= 1;
         buf = arena_alloc(jp->allocator.scratch, n);
         va_start(args, fmt);
-        n_written = stbsp_vsnprintf(buf, n, fmt, args);
+        n_written = 1 + stbsp_vsnprintf(buf, n, fmt, args);
         va_end(args);
+    }
+
+    if(n > n_written) {
+        arena_step_back(jp->allocator.scratch, n - n_written);
     }
 
     return buf;
@@ -2632,7 +2648,11 @@ INLINE void print_ir_inst(IRinst inst, FILE *f) {
             UNREACHABLE;
         case IROP_GETCONTEXTARG:
         case IROP_SETCONTEXTARG:
-		case IROP_NOOP:
+        case IROP_HINT_BEGIN_FOREIGN_CALL:
+        case IROP_HINT_END_FOREIGN_CALL:
+        case IROP_HINT_BEGIN_PASS_NON_SCALAR:
+        case IROP_HINT_END_PASS_NON_SCALAR:
+        case IROP_NOOP:
             fprintf(f, "%s\n", opstr);
             break;
     	case IROP_ADD: case IROP_SUB:
@@ -5466,58 +5486,304 @@ void ir_gen_foreign_proc_x64(Job *jp) {
     arena_from_save(jp->allocator.scratch, scratch_save);
 }
 
+
+/*
+ * %rax
+ * %rbx
+ * %rcx
+ * %rdx
+ * %rsp
+ * %rbp
+ * %rsi
+ * %rdi
+ * %r8
+ * %r9
+ *
+ * %r10 -> used as IR reg0 and as context pointer register
+ * 
+ * %r11
+ * %r12-r15
+ *
+ * %xmm0–%xmm1
+ * %xmm2–%xmm7
+ * %xmm8–%xmm15
+ */
+
+char *IR_asm_x64_ireg_map_8b[] = { "r10",  "r11",  "r12",  "r13",  "r14",  "r15",  };
+char *IR_asm_x64_ireg_map_4b[] = { "r10d", "r11d", "r12d", "r13d", "r14d", "r15d", };
+char *IR_asm_x64_ireg_map_2b[] = { "r10h", "r11h", "r12h", "r13h", "r14h", "r15h", };
+char *IR_asm_x64_ireg_map_1b[] = { "r10b", "r11b", "r12b", "r13b", "r14b", "r15b", };
+char *IR_asm_x64_freg_map[] =    { "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", };
+
+INLINE char* ir_map_reg(int reg, int size, bool is_float) {
+    if(is_float) {
+        return IR_asm_x64_freg_map[reg];
+    } else {
+        switch(size) {
+            case 1:
+                return IR_asm_x64_ireg_map_1b[reg];
+            case 2:
+                return IR_asm_x64_ireg_map_2b[reg];
+            case 4:
+                return IR_asm_x64_ireg_map_4b[reg];
+            case 8:
+                return IR_asm_x64_ireg_map_8b[reg];
+        }
+    }
+
+    UNREACHABLE;
+
+    return NULL;
+}
+
 void ir_gen_asm_x64(Job *jp, IRproc *irproc) {
+
+    if(irproc->is_foreign) {
+        return;
+    }
+
     IRinst *instructions = irproc->instructions;
     u64 n_instructions = irproc->n_instructions;
 
+    char buf[128];
+    u64 asm_buf_cap = 1024;
+    u64 asm_buf_used = 0;
+    char *asm_buf = malloc(asm_buf_cap);
+
+    //TODO we should be setting the types of each register based on the destination register of the arithmetic operation
+
     for(int i = 0; i < n_instructions; ++i) {
+        u64 n_written = 0;
         IRinst inst = instructions[i];
+
         switch(inst.opcode) {
             default:
                 UNREACHABLE;
-            case IROP_GETCONTEXTARG:
+            case IROP_HINT_BEGIN_FOREIGN_CALL:
+            case IROP_HINT_END_FOREIGN_CALL:
+                UNIMPLEMENTED;
                 break;
-            case IROP_SETCONTEXTARG:
-                break;
-            case IROP_LABEL:
             case IROP_NOOP:
                 break;
+            case IROP_GETCONTEXTARG:
+                assert(inst.getcontextarg.reg_dest == 0);
+
+                n_written = stbsp_snprintf(buf, sizeof(buf),
+                        "mov qword ptr [rbp], r10\n");
+                break;
+            case IROP_SETCONTEXTARG:
+                assert(inst.setcontextarg.reg_src == 0);
+                /* no need to generate instruction, context pointer is already in r10 */
+                break;
+            case IROP_LABEL:
+                n_written = stbsp_snprintf(buf, sizeof(buf),
+                        "%s_label_%lx:\n",
+                        irproc->name, inst.label.id);
+                break;
             case IROP_ADD:
-                break;   
             case IROP_SUB:
+            case IROP_AND:
+            case IROP_OR:
+            case IROP_XOR:
+                {
+                    char *asm_opcode = NULL;
+
+                    int dest_bytes = inst.arith.operand_bytes[0];
+                    int a_bytes = inst.arith.operand_bytes[1];
+                    int b_bytes = inst.arith.operand_bytes[2];
+
+                    int dest_reg = inst.arith.reg[0];
+                    int a_reg = inst.arith.reg[1];
+                    int b_reg = inst.arith.reg[2];
+
+                    //TODO figure out if we need to do anything special when upcasting small uints to large ones
+                    if(inst.arith.sign) {
+                        if(dest_bytes > a_bytes) {
+                            char *sign_extend_inst = (a_bytes < 4) ? "movsx" : "movsxd";
+
+                            n_written += stbsp_snprintf(buf, sizeof(buf),
+                                    "%s %s, %s\n",
+                                    sign_extend_inst, ir_map_reg(a_reg, dest_bytes, 0), ir_map_reg(a_reg, a_bytes, 0));
+                        }
+
+                        if(dest_bytes > b_bytes && !inst.arith.immediate) {
+                            char *sign_extend_inst = (b_bytes < 4) ? "movsx" : "movsxd";
+
+                            n_written += stbsp_snprintf(buf, sizeof(buf),
+                                    "%s %s, %s\n",
+                                    sign_extend_inst, ir_map_reg(b_reg, dest_bytes, 0), ir_map_reg(b_reg, b_bytes, 0));
+                        }
+                    }
+
+                    switch(inst.opcode) {
+                        case IROP_ADD:
+                            asm_opcode = "add";
+                            break;
+                        case IROP_SUB:
+                            asm_opcode = "sub";
+                            break;
+                        case IROP_AND:
+                            asm_opcode = "and";
+                            break;
+                        case IROP_OR:
+                            asm_opcode = "or";
+                            break;
+                        case IROP_XOR:
+                            asm_opcode = "xor";
+                            break;
+                    }
+
+                    if(inst.arith.immediate) {
+                        if(inst.arith.reg[0] != inst.arith.reg[1]) {
+                            n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
+                                    "%s %s, 0x%lx\n"
+                                    "mov %s, %s\n",
+                                    asm_opcode,
+                                    IR_asm_x64_ireg_map_8b[a_reg], inst.arith.imm.integer,
+                                    IR_asm_x64_ireg_map_8b[dest_reg], IR_asm_x64_ireg_map_8b[a_reg]);
+                        } else {
+                            n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
+                                    "%s %s, 0x%lx\n",
+                                    asm_opcode,
+                                    IR_asm_x64_ireg_map_8b[a_reg], inst.arith.imm.integer);
+                        }
+                    } else {
+                        if(inst.arith.reg[0] != inst.arith.reg[1]) {
+                            n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
+                                    "%s %s, %s\n"
+                                    "mov %s, %s\n",
+                                    asm_opcode,
+                                    IR_asm_x64_ireg_map_8b[a_reg], IR_asm_x64_ireg_map_8b[b_reg],
+                                    IR_asm_x64_ireg_map_8b[dest_reg], IR_asm_x64_ireg_map_8b[a_reg]);
+                        } else {
+                            n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
+                                    "%s %s, %s\n",
+                                    asm_opcode,
+                                    IR_asm_x64_ireg_map_8b[a_reg], IR_asm_x64_ireg_map_8b[b_reg]);
+                        }
+                    }
+                }
                 break;   
+            case IROP_NEG:
+                {
+                    assert(inst.arith.operand_bytes[0] == inst.arith.operand_bytes[1]);
+
+                    if(inst.arith.immediate) {
+                        n_written += stbsp_snprintf(buf, sizeof(buf),
+                                "neg %s, 0x%lx\n",
+                                ir_map_reg(inst.arith.reg[0], inst.arith.operand_bytes[0], 0),
+                                inst.arith.imm.integer);
+                    } else {
+                        char *r = ir_map_reg(inst.arith.reg[0], inst.arith.operand_bytes[0], 0);
+
+                        n_written += stbsp_snprintf(buf, sizeof(buf),
+                                "neg %s, %s\n",
+                                r, r);
+                    }
+                }
+                break;
+
             case IROP_MUL:
                 break;   
             case IROP_DIV:
                 break;   
             case IROP_MOD:
                 break;   
-            case IROP_AND:
-                break;   
-            case IROP_OR:
-                break;    
-            case IROP_XOR:
-                break;   
             case IROP_LSHIFT:
                 break;
             case IROP_RSHIFT:
                 break;
+
             case IROP_EQ:
-                break;    
             case IROP_NE:
-                break;    
             case IROP_LE:
-                break;    
             case IROP_GT:
+                {
+                    char *condition = NULL;
+
+                    switch(inst.opcode) {
+                        case IROP_EQ:
+                            condition = "e";
+                            break;
+                        case IROP_NE:
+                            condition = "ne";
+                            break;
+                        case IROP_LE:
+                            condition = "le";
+                            break;
+                        case IROP_GT:
+                            condition = "g";
+                            break;
+                    }
+
+                    assert(inst.arith.immediate == false);
+
+                    char *dest = IR_asm_x64_ireg_map_8b[inst.arith.reg[0]];
+                    n_written += stbsp_snprintf(buf, sizeof(buf),
+                            "mov %s, 0x0\n"
+                            "cmp %s, %s\n"
+                            "cmov%s %s, 0x1\n",
+                            dest,
+                            ir_map_reg(inst.arith.reg[1], inst.arith.operand_bytes[1], 0),
+                            ir_map_reg(inst.arith.reg[2], inst.arith.operand_bytes[2], 0),
+                            condition,
+                            dest);
+                }
                 break;    
+
             case IROP_FADD:
-                break;
             case IROP_FSUB:
-                break;
             case IROP_FMUL:
-                break;
             case IROP_FDIV:
+                {
+                    int dest_reg = inst.arith.reg[0];
+                    int a_reg = inst.arith.reg[1];
+                    int b_reg = inst.arith.reg[2];
+
+                    assert(inst.arith.operand_bytes[0] == inst.arith.operand_bytes[1]);
+                    assert(inst.arith.operand_bytes[1] == inst.arith.operand_bytes[2]);
+
+                    char *asm_opcode = NULL;
+                    char *xmm_size = (inst.arith.operand_bytes[0] == 8) ? "sd" : "ss";
+
+                    switch(inst.opcode) {
+                        case IROP_FADD:
+                            asm_opcode = "add";
+                            break;
+                        case IROP_FSUB:
+                            asm_opcode = "sub";
+                            break;
+                        case IROP_FMUL:
+                            asm_opcode = "mul";
+                            break;
+                        case IROP_FDIV:
+                            asm_opcode = "div";
+                            break;
+                    }
+
+                    if(inst.arith.immediate) {
+                        UNIMPLEMENTED;
+                        //TODO store float constants in the .text section like strings
+                        //     so the xmm instructions can read from that memory
+                    } else {
+                        if(inst.arith.reg[0] != inst.arith.reg[1]) {
+                            n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
+                                    "%s%s %s, %s\n"
+                                    "mov%s %s, %s\n",
+                                    asm_opcode, xmm_size,
+                                    IR_asm_x64_freg_map[a_reg], IR_asm_x64_freg_map[b_reg],
+                                    xmm_size,
+                                    IR_asm_x64_freg_map[dest_reg], IR_asm_x64_freg_map[a_reg]);
+                        } else {
+                            n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
+                                    "%s%s %s, %s\n",
+                                    asm_opcode, xmm_size,
+                                    IR_asm_x64_freg_map[a_reg], IR_asm_x64_freg_map[b_reg]);
+                        }
+                    }
+                }
                 break;
+
             case IROP_FEQ:
                 break;
             case IROP_FNE:
@@ -5527,12 +5793,22 @@ void ir_gen_asm_x64(Job *jp, IRproc *irproc) {
             case IROP_FGT:
                 break;
             case IROP_FNEG:
+                UNIMPLEMENTED;
                 break;
+
             case IROP_IF:
-                break;
             case IROP_IFZ:
+                n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
+                        "cmp %s, 0x0\n"
+                        "%s %s_label_%lx\n",
+                        IR_asm_x64_ireg_map_8b[inst.branch.cond_reg],
+                        (inst.opcode == IROP_IFZ) ? "jz" : "jnz",
+                        irproc->name, inst.branch.label_id);
                 break;
             case IROP_JMP:
+                n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
+                        "jmp %s_label_%lx\n",
+                        irproc->name, inst.branch.label_id);
                 break;
             case IROP_CALL:
                 break;
@@ -5579,10 +5855,21 @@ void ir_gen_asm_x64(Job *jp, IRproc *irproc) {
             case IROP_FTOI:
                 break;
             case IROP_ITOI:
+                UNIMPLEMENTED;
                 break;
             case IROP_FTOF:
                 break;
         }
+
+        assert(n_written < sizeof(buf));
+
+        if(n_written + asm_buf_used >= asm_buf_cap) {
+            while(n_written + asm_buf_used >= asm_buf_cap) asm_buf_cap <<= 1;
+            asm_buf = realloc(asm_buf, asm_buf_cap);
+        }
+
+        for(u64 i = 0; i < n_written;) asm_buf[asm_buf_used++] = buf[i++];
+
     }
 }
 
@@ -5663,6 +5950,10 @@ void ir_run(Job *jp, int procid) {
                 break;
             case IROP_LABEL:
             case IROP_NOOP:
+            case IROP_HINT_BEGIN_FOREIGN_CALL:
+            case IROP_HINT_END_FOREIGN_CALL:
+            case IROP_HINT_BEGIN_PASS_NON_SCALAR:
+            case IROP_HINT_END_PASS_NON_SCALAR:
                 break;
 #define X(opcode, opsym) \
             case IROP_##opcode: \
@@ -10956,6 +11247,12 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         }
     }
 
+    if(callee_type->proc.is_foreign) {
+        inst = (IRinst) { .opcode = IROP_HINT_BEGIN_FOREIGN_CALL, };
+        inst.loc = jp->cur_loc;
+        arrpush(jp->instructions, inst);
+    }
+
     //TODO this is error prone, need a better way of saving the registers
     //
     // The problem here is that it is expected that any registers being used
@@ -11246,6 +11543,10 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 inst.loc = jp->cur_loc;
                 arrpush(jp->instructions, inst);
 
+                inst = (IRinst) { .opcode = IROP_HINT_BEGIN_PASS_NON_SCALAR, };
+                inst.loc = jp->cur_loc;
+                arrpush(jp->instructions, inst);
+
                 inst =
                     (IRinst) {
                         .opcode = IROP_SETARG,
@@ -11255,6 +11556,10 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                             .bytes = 8,
                         },
                     };
+                inst.loc = jp->cur_loc;
+                arrpush(jp->instructions, inst);
+
+                inst = (IRinst) { .opcode = IROP_HINT_END_PASS_NON_SCALAR, };
                 inst.loc = jp->cur_loc;
                 arrpush(jp->instructions, inst);
 
@@ -11296,6 +11601,13 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
             }
         } else {
             if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
+
+                //TODO a note on passing structs by const pointer
+                //
+                // it would be better in future for us to just pass the pointer
+                // to the structs, and in the callee allocate local space and
+                // copy the contents of the struct inside the callee body
+
                 ir_gen_expr(jp, p->value);
                 assert(jp->reg_alloc == 1);
 
@@ -11313,6 +11625,10 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 inst.loc = jp->cur_loc;
                 arrpush(jp->instructions, inst);
 
+                inst = (IRinst) { .opcode = IROP_HINT_BEGIN_PASS_NON_SCALAR, };
+                inst.loc = jp->cur_loc;
+                arrpush(jp->instructions, inst);
+
                 arrlast(jp->local_offset) += p->type_annotation->bytes;
                 ir_gen_memorycopy(jp, p->type_annotation->bytes, p->type_annotation->align, jp->reg_alloc, jp->reg_alloc - 1);
 
@@ -11325,6 +11641,10 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                             .bytes = 8,
                         },
                     };
+                inst.loc = jp->cur_loc;
+                arrpush(jp->instructions, inst);
+
+                inst = (IRinst) { .opcode = IROP_HINT_END_PASS_NON_SCALAR, };
                 inst.loc = jp->cur_loc;
                 arrpush(jp->instructions, inst);
 
@@ -11393,26 +11713,28 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
     }
 
     /* pass context pointer */
-    inst =
-        (IRinst) {
-            .opcode = IROP_GETVAR,
-            .getvar = {
-                .segment = IRSEG_LOCAL,
-                .offset = 0,
-                .reg_dest = jp->reg_alloc,
-                .bytes = 8,
-            },
-        };
-    inst.loc = jp->cur_loc;
-    arrpush(jp->instructions, inst);
+    if(!callee_type->proc.is_foreign) {
+        inst =
+            (IRinst) {
+                .opcode = IROP_GETVAR,
+                .getvar = {
+                    .segment = IRSEG_LOCAL,
+                    .offset = 0,
+                    .reg_dest = jp->reg_alloc,
+                    .bytes = 8,
+                },
+            };
+        inst.loc = jp->cur_loc;
+        arrpush(jp->instructions, inst);
 
-    inst =
-        (IRinst) {
-            .opcode = IROP_SETCONTEXTARG,
-            .setcontextarg = { .reg_src = jp->reg_alloc },
-        };
-    inst.loc = jp->cur_loc;
-    arrpush(jp->instructions, inst);
+        inst =
+            (IRinst) {
+                .opcode = IROP_SETCONTEXTARG,
+                .setcontextarg = { .reg_src = jp->reg_alloc },
+            };
+        inst.loc = jp->cur_loc;
+        arrpush(jp->instructions, inst);
+    }
 
     if(callee_symbol->constant == false) {
         inst =
@@ -11501,7 +11823,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                     .reg_dest = jp->reg_alloc++,
                     .bytes = 8,
                     .port = 0,
-                    .c_call = false, //TODO c_call
+                    .c_call = c_call,
                 },
             };
         inst.loc = jp->cur_loc;
@@ -11526,9 +11848,15 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                     .reg_dest = reg_dest,
                     .bytes = return_type->bytes,
                     .port = 0,
-                    .c_call = false, //TODO c_call
+                    .c_call = c_call,
                 },
             };
+        inst.loc = jp->cur_loc;
+        arrpush(jp->instructions, inst);
+    }
+
+    if(callee_type->proc.is_foreign) {
+        inst = (IRinst) { .opcode = IROP_HINT_END_FOREIGN_CALL, };
         inst.loc = jp->cur_loc;
         arrpush(jp->instructions, inst);
     }
@@ -12079,9 +12407,9 @@ bool job_runner(char *src, char *src_path) {
                             //TODO structs and unions
                             AST_structdecl *ast_struct = (AST_structdecl*)ast;
 
-                            //if(ast_struct->n_params > 0) {
-                            //    UNIMPLEMENTED; //TODO parametrized structs
-                            //}
+                            if(ast_struct->n_params > 0) {
+                                UNIMPLEMENTED; //TODO parametrized structs
+                            }
 
                             if(ast_struct->visited) {
                                 Type *record_type = ast_struct->record_type;
@@ -12150,6 +12478,74 @@ bool job_runner(char *src, char *src_path) {
                                         }
                                     }
 
+                                }
+
+                                /* flatten struct */
+                                Arr(Type*) flattened_types = NULL;
+                                Arr(u64) flattened_offsets = NULL;
+                                u64 offset = 0;
+                                int i_member = 0;
+                                int i_using = 0;
+
+                                while(true) {
+
+                                    while(i_using < record_type->record.use.n && record_type->record.member.offsets[i_member] > offset) {
+                                        Type *t = record_type->record.use.types[i_using];
+
+                                        offset = record_type->record.use.offsets[i_using];
+
+                                        assert(TYPE_KIND_IS_RECORD(t->kind));
+
+                                        for(u64 i = 0; i < t->record.flattened_scalars.n; ++i) {
+                                            arrpush(flattened_types, t->record.flattened_scalars.types[i]);
+                                            arrpush(flattened_offsets, t->record.flattened_scalars.offsets[i] + offset);
+                                        }
+
+                                        i_using++;
+                                    }
+
+                                    offset = record_type->record.member.offsets[i_member];
+
+                                    Type *t = record_type->record.member.types[i_member];
+
+                                    if(TYPE_KIND_IS_RECORD(t->kind)) {
+                                        for(u64 i = 0; i < t->record.flattened_scalars.n; ++i) {
+                                            arrpush(flattened_types, t->record.flattened_scalars.types[i]);
+                                            arrpush(flattened_offsets, t->record.flattened_scalars.offsets[i] + offset);
+                                        }
+                                    } else {
+                                        arrpush(flattened_types, t);
+                                        arrpush(flattened_offsets, record_type->record.member.offsets[i_member]);
+                                    }
+
+                                    i_member++;
+
+                                    if(i_member >= record_type->record.member.n) break;
+
+                                    offset = record_type->record.member.offsets[i_member];
+                                }
+
+                                assert(arrlen(flattened_offsets) == arrlen(flattened_types));
+
+                                record_type->record.flattened_scalars.n = arrlen(flattened_types);
+
+                                record_type->record.flattened_scalars.types = job_alloc_scratch(jp, arrlen(flattened_types) * sizeof(Type*));
+                                record_type->record.flattened_scalars.offsets = job_alloc_scratch(jp, arrlen(flattened_offsets) * sizeof(u64));
+
+                                memcpy(record_type->record.flattened_scalars.types, flattened_types, arrlen(flattened_types) * sizeof(Type*));
+                                memcpy(record_type->record.flattened_scalars.offsets, flattened_offsets, arrlen(flattened_types) * sizeof(u64));
+
+                                arrfree(flattened_types);
+                                arrfree(flattened_offsets);
+
+                                {
+                                    fprintf(stderr, "\nFLATTENED %s\n", record_type->record.name);
+                                    for(u64 i = 0; i < record_type->record.flattened_scalars.n; ++i) {
+                                        fprintf(stderr, "%s\t\toffset %lu\n",
+                                                job_type_to_str(jp, record_type->record.flattened_scalars.types[i]),
+                                                record_type->record.flattened_scalars.offsets[i]);
+                                    }
+                                    fprintf(stderr, "\n");
                                 }
 
                                 if(jp->state == JOB_STATE_ERROR) {
@@ -13514,16 +13910,13 @@ Type *atom_to_type(Job *jp, AST_atom *atom) {
     return tp;
 }
 
+//TODO evaluate_unary and evaluate_binary are horrible
 Value* evaluate_unary(Job *jp, Value *a, AST_expr *op_ast) {
     Value *result = NULL;
 
     Token op = op_ast->token;
 
-    if(a->kind == VALUE_KIND_NIL) return a;
-
     switch(op) {
-        default:
-            UNREACHABLE;
         case TOKEN_SIZEOF:
             result = job_alloc_value(jp, VALUE_KIND_UINT);
             if(a->kind == VALUE_KIND_TYPE)
@@ -13546,6 +13939,14 @@ Value* evaluate_unary(Job *jp, Value *a, AST_expr *op_ast) {
             result = job_alloc_value(jp, VALUE_KIND_TYPEINFO);
             result->val.typeinfo = job_make_type_info(jp, ((AST_expr_base*)(op_ast->right))->type_annotation);
             break;
+    }
+    if(result) return result;
+
+    if(a->kind == VALUE_KIND_NIL) return a;
+
+    switch(op) {
+        default:
+            UNREACHABLE;
         case '>': case '@':
             result = builtin_value+VALUE_KIND_NIL;
             break;
@@ -15909,6 +16310,7 @@ void typecheck_expr(Job *jp) {
                 new_job.global_sym_allocator = jp->global_sym_allocator;
                 new_job.global_scope = jp->global_scope;
                 new_job.dont_free_allocators = true;
+                new_job.dont_free_ast_allocators = true;
 
                 new_job.root = expr[pos];
                 arrpush(new_job.tree_pos_stack, expr[pos]);
@@ -17281,8 +17683,9 @@ void print_sym(Sym sym) {
 //VERSION 1.0
 //
 //TODO finish globals
+//TODO struct literals
 //TODO test full C interop (raylib)
-//
+//TODO flatten structs for foreign calls
 //TODO output assembly
 //TODO debug info (internal and convert to gdb debug format)
 //TODO procedures for interfacing with the compiler (e.g. add_source_file())
@@ -17292,7 +17695,6 @@ void print_sym(Sym sym) {
 //TODO proc types with argument names
 //TODO c-style for loops (use 'while' keyword)
 //TODO enums
-//TODO struct literals
 //TODO local procedures and structs
 //TODO directives (#import, #assert, etc)
 //TODO parametrized structs
