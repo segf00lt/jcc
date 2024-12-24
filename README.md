@@ -2,8 +2,6 @@
 
 ![Demo](breakout.gif)
 
-_A compiler for a JAI style language._
-
 This is an exercise in writing a compiler for a language heavily inspired by Jonathan Blow's
 [JAI](https://www.youtube.com/watch?v=uZgbKrDEzAs). While this will probably never be a production compiler
 I do want to make it as good as I can, and use it to write some non-trivial programs.
