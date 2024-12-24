@@ -1,10 +1,10 @@
 struct Bob {
     i: int = 11;
-    c: char = 27;
+    c: char = 'a';
 }
 
 struct Alice {
-    id: u16 = 255;
+    id: u16 = 4010;
 }
 
 struct Another_Alice {
@@ -18,14 +18,19 @@ struct Jane {
     q: struct {
         r: f64;
         i: f64;
-    }
+    };
     f: float;
 }
+
+#run main();
+
 proc main() {
     jane: Jane;
     c := jane.c;
     qi := jane.q.i;
-    alice_id := cast(*Alice) @jane;
+    alice_id := (cast(*Alice) @jane).id;
+
+    print("c = %\nqi = %\nalice_id = %\n", c, qi, alice_id);
 
     test: Type_info_struct;
 }

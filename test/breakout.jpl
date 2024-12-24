@@ -1,7 +1,5 @@
 #run main();
 
-#load "raylib.jpl";
-
 proc temp_c_string(s: string) *char {
     cstr: *char = temp_alloc(s.len + 1);
     cstr[s.len] = 0;
@@ -10,11 +8,15 @@ proc temp_c_string(s: string) *char {
 }
 
 proc main() {
+    print("test_arr = %\n", test_arr);
     print("BRICK_COLS = %\nBRICK_ROWS = %\n", BRICK_COLS, BRICK_ROWS);
     print("WINDOW_WIDTH = %\nWINDOW_HEIGHT = %\n", WINDOW_WIDTH, WINDOW_HEIGHT);
     print("BRICK_WIDTH = %\nBRICK_HEIGHT = %\nN_BRICKS = %\n", BRICK_WIDTH, BRICK_HEIGHT, N_BRICKS);
+    a: string = "hubba hubba";
+    print("a = %\n", a);
     {
         a := 1200;
+    print("a = %\n", a);
         b := 10;
         print("a / b = %\n", a / b);
         print("WINDOW_WIDTH / BRICK_COLS = %\n", WINDOW_WIDTH / BRICK_COLS);
@@ -48,6 +50,8 @@ proc main() {
 
     SetTargetFPS(60);
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, temp_c_string("breakout"));
+    defer CloseWindow();
+
     DisableCursor();
 
     bricks: [N_BRICKS]Rectangle = ---;
@@ -78,7 +82,7 @@ proc main() {
         }
     }
 
-    live_bricks: [200]int = ---;
+    live_bricks: [N_BRICKS]int = ---;
     n_live_bricks := N_BRICKS;
     for live_bricks live_bricks[it_index] = it_index;
 
@@ -97,8 +101,9 @@ proc main() {
     paddle_rec.width = PADDLE_WIDTH;
     paddle_rec.height = PADDLE_HEIGHT;
 
-    //TODO something wrong with !WindowShouldClose()
-    while WindowShouldClose() == 0 {
+    SetRandomSeed(42);
+
+    while !WindowShouldClose() {
         timestep := GetFrameTime();
 
         paddle_pos = cast(float)GetMouseX();
@@ -132,7 +137,7 @@ proc main() {
             break;
         }
 
-        if new_pos.y >= PADDLE_TRACK_Y - BALL_RADIUS && new_pos.x >= (paddle_pos - PADDLE_WIDTH*0.5) && new_pos.x <= (paddle_pos + PADDLE_WIDTH*0.5)  {
+        if new_pos.y >= PADDLE_TRACK_Y - BALL_RADIUS && new_pos.y <= PADDLE_TRACK_Y + PADDLE_HEIGHT && new_pos.x >= (paddle_pos - PADDLE_WIDTH*0.5) && new_pos.x <= (paddle_pos + PADDLE_WIDTH*0.5)  {
             new_pos.y = PADDLE_TRACK_Y - BALL_RADIUS;
             ball.vel.y = -ball.vel.y;
         }
@@ -141,19 +146,24 @@ proc main() {
 
         collided_with_brick: bool;
 
-        for i: 0..n_live_bricks-1 {
-            rid := live_bricks[i];
+        if ball.pos.y > BRICK_HEIGHT + BALL_RADIUS + bricks[bricks.count-1].y {
+            for i: 0..n_live_bricks-1 {
+                rid := live_bricks[i];
 
-            if CheckCollisionCircleRec(ball.pos, BALL_RADIUS, bricks[rid])  {
-                live_bricks[i] = live_bricks[n_live_bricks-1];
-                n_live_bricks--;
-                collided_with_brick = 1;
+                if CheckCollisionCircleRec(ball.pos, BALL_RADIUS, bricks[rid])  {
+                    live_bricks[i] = live_bricks[n_live_bricks-1];
+                    n_live_bricks--;
+                    collided_with_brick = 1;
+                }
             }
-        }
 
-        if collided_with_brick  {
-            ball.vel = Vector2Negate(ball.vel);
-            ball.vel = Vector2Scale(ball.vel, 1.1);
+            if collided_with_brick  {
+                ball.vel = Vector2Negate(ball.vel);
+                ball.vel = Vector2Scale(ball.vel, 1.04);
+                r := cast(float)GetRandomValue(0, 100);
+                angle := Lerp(-PI*0.25, PI*0.25, 1/r);
+                ball.vel = Vector2Rotate(ball.vel, angle);
+            }
         }
 
         for i: 0..n_live_bricks-1 DrawRectangleRec(bricks[live_bricks[i]], RED);
@@ -171,10 +181,16 @@ proc main() {
 
 }
 
+PI : float : 3.141593;
+
 struct Ball {
     pos: Vector2;
     vel: Vector2;
 }
+
+test_arr: [12]int = [
+1, 2, 3, 4, 5, 6,
+];
 
 YELLOW:   Color = ---;
 RAYWHITE: Color = ---;
@@ -195,4 +211,6 @@ PADDLE_WIDTH:   float : 80.0;
 PADDLE_HEIGHT:  float : 10.0;
 PADDLE_TRACK_Y: float : WINDOW_HEIGHT - 150.0;
 
+
+#load "raylib.jpl";
 

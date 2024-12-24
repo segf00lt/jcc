@@ -1,4 +1,5 @@
 Cint :: s32;
+Cuint :: u32;
 
 struct Color {
     r: u8;
@@ -21,6 +22,7 @@ struct Rectangle {
 
 proc SetTargetFPS(fps: Cint)                             #foreign "raylib";
 proc InitWindow(width: Cint, height: Cint, title: *char) #foreign "raylib";
+proc CloseWindow()                                       #foreign "raylib";
 proc DisableCursor()                                     #foreign "raylib";
 proc WindowShouldClose() bool                            #foreign "raylib";
 proc GetFrameTime() float                                #foreign "raylib";
@@ -30,15 +32,20 @@ proc GetMouseX() Cint                                    #foreign "raylib";
 proc ClearBackground(color: Color)                       #foreign "raylib";
 proc SetMousePosition(x: Cint, y: Cint)                  #foreign "raylib";
 proc GetFPS() Cint                                       #foreign "raylib";
+proc SetRandomSeed(seed: Cuint)                          #foreign "raylib";
+proc GetRandomValue(min: Cint, max: Cint) Cint           #foreign "raylib";
 
 proc DrawRectangleRec(rec: Rectangle, color: Color)                              #foreign "raylib";
 proc DrawCircleV(center: Vector2, radius: float, color: Color)                   #foreign "raylib";
 proc DrawText(text: *char, posX: Cint, posY: Cint, fontSize: Cint, color: Color) #foreign "raylib";
 
+proc Lerp(start: float, end: float, amount: float) float #foreign "raylib";
+
 proc Vector2Add(v1: Vector2, v2: Vector2) Vector2    #foreign "raylib";
 proc Vector2Scale(v: Vector2, scale: float) Vector2  #foreign "raylib";
 proc Vector2Negate(v: Vector2) Vector2               #foreign "raylib";
 proc Vector2AddValue(v: Vector2, add: float) Vector2 #foreign "raylib";
+proc Vector2Rotate(v: Vector2, angle: float) Vector2 #foreign "raylib";
 
 proc CheckCollisionCircleRec(center: Vector2, radius: float, rec: Rectangle) bool #foreign "raylib";
 
