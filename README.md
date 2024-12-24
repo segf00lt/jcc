@@ -7,8 +7,8 @@ This is an exercise in writing a compiler for a language heavily inspired by Jon
 I do want to make it as good as I can, and use it to write some non-trivial programs.
 
 As you can see from the demo, the language can actually run programs (and call C, see `raylib.jpl`).
-Right now everything is running inside the IR interpreter during compilation.
-As of writing this I'm still making the assembly backend.
+Right now everything is running inside the IR interpreter during compilation
+(I'm still making the assembly backend).
 
 ## Build and Run
 
