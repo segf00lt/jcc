@@ -8,7 +8,7 @@ I do want to make it as good as I can, and use it to write some non-trivial prog
 
 As you can see from the demo, the language can actually run programs (and call C, see `raylib.jpl`).
 Right now everything is running inside the IR interpreter during compilation
-(I'm still making the assembly backend).
+(I'm still making the C backend).
 
 ## Build and Run
 

@@ -29,8 +29,10 @@ proc main() {
     c := jane.c;
     qi := jane.q.i;
     alice_id := (cast(*Alice) @jane).id;
+    alice := >cast(*Alice)@jane;
 
-    print("c = %\nqi = %\nalice_id = %\n", c, qi, alice_id);
+    print("c = %\nqi = %\nalice_id = %\nalice = %\n", c, qi, alice_id, alice);
+    print("jane = %\n", jane);
 
     test: Type_info_struct;
 }

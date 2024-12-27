@@ -213,13 +213,13 @@
     X(HINT_BEGIN_PASS_NON_SCALAR, _)      \
     X(HINT_END_PASS_NON_SCALAR,   _)      \
 
-#define IRSEGMENTS                      \
-    X(LOCAL)                            \
-    X(GLOBAL)                           \
-    X(BSS)                              \
-    X(TYPE)                             \
-    X(STRING)                           \
-    X(CODE)                             \
+#define IRSEGMENTS                    \
+    X(LOCAL,    "local_segment")      \
+    X(GLOBAL,   "global_segment")     \
+    X(BSS,      "bss_segment")        \
+    X(TYPE,     "type_segment")       \
+    X(STRING,   "string_segment")     \
+    X(CODE,     "code_segment")       \
 
 #define PLATFORMS    \
     X(X64)           \
@@ -348,7 +348,7 @@ typedef enum IRop {
 
 typedef enum IRsegment {
     IRSEG_INVALID = -1,
-#define X(x) IRSEG_##x,
+#define X(x,_) IRSEG_##x,
     IRSEGMENTS
 #undef X
 } IRsegment;
@@ -367,7 +367,7 @@ char *IRop_debug[] = {
 };
 
 char *IRsegment_debug[] = {
-#define X(x) #x,
+#define X(x,_) #x,
     IRSEGMENTS
 #undef X
 };
@@ -535,6 +535,7 @@ struct IRinst {
             u64 from_reg;
             u64 to_bytes;
             u64 from_bytes;
+            bool sign;
         } typeconv;
 
     };
@@ -1223,7 +1224,7 @@ void        ir_gen_entry_point_preamble(Job *jp);
 void        ir_run(Job *jp, int procid);
 void        show_ir_loc(IRinst inst);
 
-void        ir_gen_asm_x64(Job *jp, IRproc *irproc);
+void        ir_gen_C(Job *jp, IRproc irproc);
 
 Value*      atom_to_value(Job *jp, AST_atom *atom);
 Type*       atom_to_type(Job *jp, AST_atom *atom);
@@ -1276,6 +1277,7 @@ Sym*        global_scope_lookup(Job *jp, char *name);
 void        global_scope_enter(Job *jp, Sym *sym);
 
 void        print_sym(Sym sym);
+void        sprint_ir_inst(IRinst inst, FILE *f);
 void        print_ir_inst(IRinst inst, FILE *f);
 void        print_ir_machine(IRmachine *machine, FILE *f);
 void        print_ast_expr(AST *expr, int indent);
@@ -1844,10 +1846,12 @@ Type_info* job_make_type_info(Job *jp, Type *t) {
                 written_to_table = true;
                 arrpush(type_info_table, tinfo);
 
-                String_view s;
+                String_view s = {0};
 
-                s.len = strlen(t->record.name);
-                s.data = memcpy(arena_alloc(&string_arena, s.len), t->record.name, s.len);
+                if(t->record.name) {
+                    s.len = strlen(t->record.name);
+                    s.data = memcpy(arena_alloc(&string_arena, s.len), t->record.name, s.len);
+                }
                 tinfo_struct->name = s;
 
                 u64 members_count = t->record.member.n;
@@ -5486,71 +5490,24 @@ void ir_gen_foreign_proc_x64(Job *jp) {
     arena_from_save(jp->allocator.scratch, scratch_save);
 }
 
+void ir_gen_C(Job *jp, IRproc irproc) {
+    char *IR_C_ireg_map[] = { "reg0",  "reg1",  "reg2",  "reg3",  "reg4",  "reg5",  };
+    char *IR_C_f32reg_map[] = { "f32reg0",  "f32reg1",  "f32reg2",  "f32reg3",  "f32reg4",  "f32reg5",  };
+    char *IR_C_f64reg_map[] = { "f64reg0",  "f64reg1",  "f64reg2",  "f64reg3",  "f64reg4",  "f64reg5",  };
 
-/*
- * %rax
- * %rbx
- * %rcx
- * %rdx
- * %rsp
- * %rbp
- * %rsi
- * %rdi
- * %r8
- * %r9
- *
- * %r10 -> used as IR reg0 and as context pointer register
- * 
- * %r11
- * %r12-r15
- *
- * %xmm0–%xmm1
- * %xmm2–%xmm7
- * %xmm8–%xmm15
- */
+    fprintf(stderr, "\ngenerating C code for %s procid %i\n\n", irproc.name, irproc.procid);
 
-char *IR_asm_x64_ireg_map_8b[] = { "r10",  "r11",  "r12",  "r13",  "r14",  "r15",  };
-char *IR_asm_x64_ireg_map_4b[] = { "r10d", "r11d", "r12d", "r13d", "r14d", "r15d", };
-char *IR_asm_x64_ireg_map_2b[] = { "r10h", "r11h", "r12h", "r13h", "r14h", "r15h", };
-char *IR_asm_x64_ireg_map_1b[] = { "r10b", "r11b", "r12b", "r13b", "r14b", "r15b", };
-char *IR_asm_x64_freg_map[] =    { "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", };
-
-INLINE char* ir_map_reg(int reg, int size, bool is_float) {
-    if(is_float) {
-        return IR_asm_x64_freg_map[reg];
-    } else {
-        switch(size) {
-            case 1:
-                return IR_asm_x64_ireg_map_1b[reg];
-            case 2:
-                return IR_asm_x64_ireg_map_2b[reg];
-            case 4:
-                return IR_asm_x64_ireg_map_4b[reg];
-            case 8:
-                return IR_asm_x64_ireg_map_8b[reg];
-        }
-    }
-
-    UNREACHABLE;
-
-    return NULL;
-}
-
-void ir_gen_asm_x64(Job *jp, IRproc *irproc) {
-
-    if(irproc->is_foreign) {
+    if(irproc.is_foreign) {
         return;
     }
 
-    IRinst *instructions = irproc->instructions;
-    u64 n_instructions = irproc->n_instructions;
+    IRinst *instructions = irproc.instructions;
+    u64 n_instructions = irproc.n_instructions;
 
-    char buf[128];
-    u64 asm_buf_cap = 1024;
-    u64 asm_buf_used = 0;
-    char *asm_buf = malloc(asm_buf_cap);
-
-    //TODO we should be setting the types of each register based on the destination register of the arithmetic operation
+    char line_buf[128];
+    u64 code_buf_cap = 4096;
+    u64 code_buf_used = 0;
+    char *code_buf = malloc(code_buf_cap);
 
     for(int i = 0; i < n_instructions; ++i) {
         u64 n_written = 0;
@@ -5559,34 +5516,24 @@ void ir_gen_asm_x64(Job *jp, IRproc *irproc) {
         switch(inst.opcode) {
             default:
                 UNREACHABLE;
-            case IROP_HINT_BEGIN_FOREIGN_CALL:
-            case IROP_HINT_END_FOREIGN_CALL:
-                UNIMPLEMENTED;
-                break;
             case IROP_NOOP:
                 break;
-            case IROP_GETCONTEXTARG:
-                assert(inst.getcontextarg.reg_dest == 0);
-
-                n_written = stbsp_snprintf(buf, sizeof(buf),
-                        "mov qword ptr [rbp], r10\n");
-                break;
-            case IROP_SETCONTEXTARG:
-                assert(inst.setcontextarg.reg_src == 0);
-                /* no need to generate instruction, context pointer is already in r10 */
-                break;
-            case IROP_LABEL:
-                n_written = stbsp_snprintf(buf, sizeof(buf),
-                        "%s_label_%lx:\n",
-                        irproc->name, inst.label.id);
-                break;
+            case IROP_MUL:
+            case IROP_DIV:
+            case IROP_MOD:
+            case IROP_LSHIFT:
+            case IROP_RSHIFT:
+            case IROP_EQ:
+            case IROP_NE:
+            case IROP_LE:
+            case IROP_GT:
             case IROP_ADD:
             case IROP_SUB:
             case IROP_AND:
             case IROP_OR:
             case IROP_XOR:
                 {
-                    char *asm_opcode = NULL;
+                    char *operator = NULL;
 
                     int dest_bytes = inst.arith.operand_bytes[0];
                     int a_bytes = inst.arith.operand_bytes[1];
@@ -5596,281 +5543,602 @@ void ir_gen_asm_x64(Job *jp, IRproc *irproc) {
                     int a_reg = inst.arith.reg[1];
                     int b_reg = inst.arith.reg[2];
 
-                    //TODO figure out if we need to do anything special when upcasting small uints to large ones
-                    if(inst.arith.sign) {
-                        if(dest_bytes > a_bytes) {
-                            char *sign_extend_inst = (a_bytes < 4) ? "movsx" : "movsxd";
-
-                            n_written += stbsp_snprintf(buf, sizeof(buf),
-                                    "%s %s, %s\n",
-                                    sign_extend_inst, ir_map_reg(a_reg, dest_bytes, 0), ir_map_reg(a_reg, a_bytes, 0));
-                        }
-
-                        if(dest_bytes > b_bytes && !inst.arith.immediate) {
-                            char *sign_extend_inst = (b_bytes < 4) ? "movsx" : "movsxd";
-
-                            n_written += stbsp_snprintf(buf, sizeof(buf),
-                                    "%s %s, %s\n",
-                                    sign_extend_inst, ir_map_reg(b_reg, dest_bytes, 0), ir_map_reg(b_reg, b_bytes, 0));
-                        }
-                    }
-
                     switch(inst.opcode) {
-                        case IROP_ADD:
-                            asm_opcode = "add";
-                            break;
-                        case IROP_SUB:
-                            asm_opcode = "sub";
-                            break;
-                        case IROP_AND:
-                            asm_opcode = "and";
-                            break;
-                        case IROP_OR:
-                            asm_opcode = "or";
-                            break;
-                        case IROP_XOR:
-                            asm_opcode = "xor";
-                            break;
+#define X(x, op) case IROP_##x: \
+                        operator = #op;
+                        break;
+                        IR_INT_BINOPS;
+#undef X
                     }
 
+                    char sign = (inst.arith.sign) ? 's' : 'u';
                     if(inst.arith.immediate) {
-                        if(inst.arith.reg[0] != inst.arith.reg[1]) {
-                            n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
-                                    "%s %s, 0x%lx\n"
-                                    "mov %s, %s\n",
-                                    asm_opcode,
-                                    IR_asm_x64_ireg_map_8b[a_reg], inst.arith.imm.integer,
-                                    IR_asm_x64_ireg_map_8b[dest_reg], IR_asm_x64_ireg_map_8b[a_reg]);
-                        } else {
-                            n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
-                                    "%s %s, 0x%lx\n",
-                                    asm_opcode,
-                                    IR_asm_x64_ireg_map_8b[a_reg], inst.arith.imm.integer);
-                        }
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "%s = (%c%i)((%c%i)%s %s (%c%i)(0x%lx));\n",
+                                IR_C_ireg_map[dest_reg],
+                                sign, dest_bytes << 3l,
+                                sign, a_bytes << 3l,
+                                IR_C_ireg_map[a_reg],
+                                operator,
+                                sign, b_bytes << 3l,
+                                inst.arith.imm.integer);
                     } else {
-                        if(inst.arith.reg[0] != inst.arith.reg[1]) {
-                            n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
-                                    "%s %s, %s\n"
-                                    "mov %s, %s\n",
-                                    asm_opcode,
-                                    IR_asm_x64_ireg_map_8b[a_reg], IR_asm_x64_ireg_map_8b[b_reg],
-                                    IR_asm_x64_ireg_map_8b[dest_reg], IR_asm_x64_ireg_map_8b[a_reg]);
-                        } else {
-                            n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
-                                    "%s %s, %s\n",
-                                    asm_opcode,
-                                    IR_asm_x64_ireg_map_8b[a_reg], IR_asm_x64_ireg_map_8b[b_reg]);
-                        }
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "%s = (%c%i)((%c%i)%s %s (%c%i)(%s));\n",
+                                IR_C_ireg_map[dest_reg],
+                                sign, dest_bytes << 3l,
+                                sign, a_bytes << 3l,
+                                IR_C_ireg_map[a_reg],
+                                operator,
+                                sign, b_bytes << 3l,
+                                IR_C_ireg_map[b_reg]);
                     }
                 }
                 break;   
             case IROP_NEG:
+            case IROP_NOT:
                 {
                     assert(inst.arith.operand_bytes[0] == inst.arith.operand_bytes[1]);
 
+                    int reg = inst.arith.reg[0];
+                    int bytes = inst.arith.operand_bytes[0];
+                    char op = (inst.opcode == IROP_NOT) ? '~' : '-';
+
+                    char sign = (inst.arith.sign) ? 's' : 'u';
+
                     if(inst.arith.immediate) {
-                        n_written += stbsp_snprintf(buf, sizeof(buf),
-                                "neg %s, 0x%lx\n",
-                                ir_map_reg(inst.arith.reg[0], inst.arith.operand_bytes[0], 0),
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "%s = %c(%c%i)0x%lx;\n",
+                                IR_C_ireg_map[reg],
+                                op,
+                                sign, bytes << 3l,
                                 inst.arith.imm.integer);
                     } else {
-                        char *r = ir_map_reg(inst.arith.reg[0], inst.arith.operand_bytes[0], 0);
-
-                        n_written += stbsp_snprintf(buf, sizeof(buf),
-                                "neg %s, %s\n",
-                                r, r);
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "%s = %c(%c%i)%s;\n",
+                                IR_C_ireg_map[reg],
+                                op,
+                                sign, bytes << 3l,
+                                IR_C_ireg_map[reg]);
                     }
                 }
                 break;
-
-            case IROP_MUL:
-                break;   
-            case IROP_DIV:
-                break;   
-            case IROP_MOD:
-                break;   
-            case IROP_LSHIFT:
-                break;
-            case IROP_RSHIFT:
-                break;
-
-            case IROP_EQ:
-            case IROP_NE:
-            case IROP_LE:
-            case IROP_GT:
-                {
-                    char *condition = NULL;
-
-                    switch(inst.opcode) {
-                        case IROP_EQ:
-                            condition = "e";
-                            break;
-                        case IROP_NE:
-                            condition = "ne";
-                            break;
-                        case IROP_LE:
-                            condition = "le";
-                            break;
-                        case IROP_GT:
-                            condition = "g";
-                            break;
-                    }
-
-                    assert(inst.arith.immediate == false);
-
-                    char *dest = IR_asm_x64_ireg_map_8b[inst.arith.reg[0]];
-                    n_written += stbsp_snprintf(buf, sizeof(buf),
-                            "mov %s, 0x0\n"
-                            "cmp %s, %s\n"
-                            "cmov%s %s, 0x1\n",
-                            dest,
-                            ir_map_reg(inst.arith.reg[1], inst.arith.operand_bytes[1], 0),
-                            ir_map_reg(inst.arith.reg[2], inst.arith.operand_bytes[2], 0),
-                            condition,
-                            dest);
-                }
-                break;    
 
             case IROP_FADD:
             case IROP_FSUB:
             case IROP_FMUL:
             case IROP_FDIV:
                 {
+                    char *operator = NULL;
+
+                    int dest_bytes = inst.arith.operand_bytes[0];
+                    int a_bytes = inst.arith.operand_bytes[1];
+                    int b_bytes = inst.arith.operand_bytes[2];
+
                     int dest_reg = inst.arith.reg[0];
                     int a_reg = inst.arith.reg[1];
                     int b_reg = inst.arith.reg[2];
 
-                    assert(inst.arith.operand_bytes[0] == inst.arith.operand_bytes[1]);
-                    assert(inst.arith.operand_bytes[1] == inst.arith.operand_bytes[2]);
-
-                    char *asm_opcode = NULL;
-                    char *xmm_size = (inst.arith.operand_bytes[0] == 8) ? "sd" : "ss";
+                    char **freg_map = (dest_bytes == 8) ? IR_C_f64reg_map : IR_C_f32reg_map;
 
                     switch(inst.opcode) {
-                        case IROP_FADD:
-                            asm_opcode = "add";
-                            break;
-                        case IROP_FSUB:
-                            asm_opcode = "sub";
-                            break;
-                        case IROP_FMUL:
-                            asm_opcode = "mul";
-                            break;
-                        case IROP_FDIV:
-                            asm_opcode = "div";
-                            break;
+#define X(x, op) case IROP_##x: \
+                        operator = #op;
+                        break;
+                        IR_FLOAT_BINOPS;
+#undef X
                     }
 
                     if(inst.arith.immediate) {
-                        UNIMPLEMENTED;
-                        //TODO store float constants in the .text section like strings
-                        //     so the xmm instructions can read from that memory
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "immediate_value.integer = (u64)0x%lx;\n"
+                                "%s = (f%i)((f%i)%s %s immediate_value.floating%i);\n",
+                                inst.arith.imm.integer,
+                                freg_map[dest_reg],
+                                dest_bytes << 3l,
+                                a_bytes << 3l,
+                                freg_map[a_reg],
+                                operator,
+                                b_bytes << 3l);
                     } else {
-                        if(inst.arith.reg[0] != inst.arith.reg[1]) {
-                            n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
-                                    "%s%s %s, %s\n"
-                                    "mov%s %s, %s\n",
-                                    asm_opcode, xmm_size,
-                                    IR_asm_x64_freg_map[a_reg], IR_asm_x64_freg_map[b_reg],
-                                    xmm_size,
-                                    IR_asm_x64_freg_map[dest_reg], IR_asm_x64_freg_map[a_reg]);
-                        } else {
-                            n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
-                                    "%s%s %s, %s\n",
-                                    asm_opcode, xmm_size,
-                                    IR_asm_x64_freg_map[a_reg], IR_asm_x64_freg_map[b_reg]);
-                        }
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "%s = (f%i)((f%i)%s %s (f%i)(%s));\n",
+                                freg_map[dest_reg],
+                                dest_bytes << 3l,
+                                a_bytes << 3l,
+                                freg_map[a_reg],
+                                operator,
+                                b_bytes << 3l,
+                                freg_map[b_reg]);
+                    }
+                }
+                break;
+
+            case IROP_FNEG:
+                {
+                    assert(inst.arith.operand_bytes[0] == inst.arith.operand_bytes[1]);
+
+                    int reg = inst.arith.reg[0];
+                    int bytes = inst.arith.operand_bytes[0];
+
+                    char **freg_map = (bytes == 8) ? IR_C_f64reg_map : IR_C_f32reg_map;
+
+                    if(inst.arith.immediate) {
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "immediate_value.integer = (u64)0x%lx;\n"
+                                "%s = -immediate_value.floating%i;\n",
+                                inst.arith.imm.integer,
+                                IR_C_ireg_map[reg],
+                                bytes << 3l);
+                    } else {
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "%s = -(f%i)%s;\n",
+                                freg_map[reg],
+                                bytes << 3l,
+                                freg_map[reg]);
                     }
                 }
                 break;
 
             case IROP_FEQ:
-                break;
             case IROP_FNE:
-                break;
             case IROP_FLE:
-                break;
             case IROP_FGT:
-                break;
-            case IROP_FNEG:
-                UNIMPLEMENTED;
+                {
+                    char *operator = NULL;
+
+                    int dest_bytes = inst.arith.operand_bytes[0];
+                    assert(dest_bytes == 1);
+                    int a_bytes = inst.arith.operand_bytes[1];
+                    int b_bytes = inst.arith.operand_bytes[2];
+
+                    int dest_reg = inst.arith.reg[0];
+                    int a_reg = inst.arith.reg[1];
+                    int b_reg = inst.arith.reg[2];
+
+                    char **freg_map = (dest_bytes == 8) ? IR_C_f64reg_map : IR_C_f32reg_map;
+
+                    switch(inst.opcode) {
+#define X(x, op) case IROP_##x: \
+                        operator = #op;
+                        break;
+                        IR_FLOAT_CMPOPS;
+#undef X
+                    }
+
+                    if(inst.arith.immediate) {
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "immediate_value.integer = (u64)0x%lx;\n"
+                                "%s = (bool)((f%i)%s %s immediate_value.floating%i);\n",
+                                inst.arith.imm.integer,
+                                IR_C_ireg_map[dest_reg],
+                                a_bytes << 3l,
+                                freg_map[a_reg],
+                                operator,
+                                b_bytes << 3l);
+                    } else {
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "%s = (bool)((f%i)%s %s (f%i)(%s));\n",
+                                IR_C_ireg_map[dest_reg],
+                                a_bytes << 3l,
+                                freg_map[a_reg],
+                                operator,
+                                b_bytes << 3l,
+                                freg_map[b_reg]);
+                    }
+                }
                 break;
 
+            case IROP_LABEL:
+                n_written = stbsp_snprintf(line_buf, sizeof(line_buf),
+                        "%s_label_%lx:\n",
+                        irproc.name, inst.label.id);
+                break;
             case IROP_IF:
             case IROP_IFZ:
-                n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
-                        "cmp %s, 0x0\n"
-                        "%s %s_label_%lx\n",
-                        IR_asm_x64_ireg_map_8b[inst.branch.cond_reg],
-                        (inst.opcode == IROP_IFZ) ? "jz" : "jnz",
-                        irproc->name, inst.branch.label_id);
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "if((bool)%s == (bool)%i) goto %s_label_%lx;\n",
+                        IR_C_ireg_map[inst.branch.cond_reg],
+                        (inst.opcode == IROP_IF) ? true : false,
+                        irproc.name, inst.branch.label_id);
                 break;
             case IROP_JMP:
-                n_written += stbsp_snprintf(buf+n_written, sizeof(buf),
-                        "jmp %s_label_%lx\n",
-                        irproc->name, inst.branch.label_id);
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "goto %s_label_%lx;\n",
+                        irproc.name, inst.branch.label_id);
+                break;
+
+            case IROP_GETCONTEXTARG:
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "%s = context_pointer;\n",
+                        IR_C_ireg_map[inst.getcontextarg.reg_dest]);
+                break;
+            case IROP_SETCONTEXTARG:
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "context_pointer = %s;\n",
+                        IR_C_ireg_map[inst.setcontextarg.reg_src]);
+                break;
+            case IROP_HINT_BEGIN_FOREIGN_CALL:
+            case IROP_HINT_END_FOREIGN_CALL:
+            case IROP_HINT_BEGIN_PASS_NON_SCALAR:
+            case IROP_HINT_END_PASS_NON_SCALAR:
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "/* %s */\n",
+                        IRop_debug[inst.opcode]);
                 break;
             case IROP_CALL:
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "/* %s */\n",
+                        IRop_debug[inst.opcode]);
                 break;
             case IROP_RET:
-                break;
-            case IROP_LOAD:
-                break;
-            case IROP_STOR:
-                break;
-            case IROP_LOADF:
-                break;
-            case IROP_STORF:
-                break;
-            case IROP_CALCPTROFFSET:
-                break;
-            case IROP_ADDRVAR:
-                break;
-            case IROP_GETVAR:
-                break;
-            case IROP_SETVAR:
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "/* %s */\n",
+                        IRop_debug[inst.opcode]);
                 break;
             case IROP_SETARG:
             case IROP_SETRET:
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "/* %s */\n",
+                        IRop_debug[inst.opcode]);
                 break;
             case IROP_GETARG:
             case IROP_GETRET:
-                break;
-            case IROP_GETVARF:
-                break;
-            case IROP_SETVARF:
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "/* %s */\n",
+                        IRop_debug[inst.opcode]);
                 break;
             case IROP_SETARGF:
             case IROP_SETRETF:
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "/* %s */\n",
+                        IRop_debug[inst.opcode]);
                 break;
             case IROP_GETARGF:
             case IROP_GETRETF:
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "/* %s */\n",
+                        IRop_debug[inst.opcode]);
                 break;
+
+
+            case IROP_ADDRVAR:
+                {
+                    char *segment_name = NULL;
+                    switch(inst.addrvar.segment) {
+#define X(segment,name) case IRSEG_##segment: \
+                        segment_name = name;  \
+                        break;
+                        IRSEGMENTS;
+#undef X
+                    }
+
+                    if(inst.addrvar.segment == IRSEG_TYPE) {
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "%s = (u64)(void*)_type_info_%lx;\n",
+                                IR_C_ireg_map[inst.addrvar.reg_dest],
+                                inst.addrvar.offset);
+                    } else if(inst.addrvar.segment == IRSEG_CODE) {
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "/* %s */\n",
+                                IRop_debug[inst.opcode]);
+                    } else {
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "%s = (u64)(((u8*)%s)+0x%lx);\n",
+                                IR_C_ireg_map[inst.addrvar.reg_dest],
+                                segment_name,
+                                inst.addrvar.offset);
+                    }
+                }
+                break;
+            case IROP_GETVAR:
+                {
+                    char *segment_name = NULL;
+                    switch(inst.getvar.segment) {
+#define X(segment,name) case IRSEG_##segment: \
+                        segment_name = name;  \
+                        break;
+                        IRSEGMENTS;
+#undef X
+                    }
+
+                    if(inst.getvar.segment == IRSEG_TYPE) {
+                        UNREACHABLE;
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "/* %s */\n",
+                                IRop_debug[inst.opcode]);
+                        //UNIMPLEMENTED;
+                    } else if(inst.getvar.segment == IRSEG_CODE) {
+                        UNREACHABLE;
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "/* %s */\n",
+                                IRop_debug[inst.opcode]);
+                        //UNIMPLEMENTED;
+                    } else {
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "%s = *(u%lu*)(((u8*)%s)+0x%lx);\n",
+                                IR_C_ireg_map[inst.getvar.reg_dest],
+                                inst.getvar.bytes << 3lu,
+                                segment_name,
+                                inst.getvar.offset);
+                    }
+                }
+                break;
+            case IROP_SETVAR:
+                {
+                    char *segment_name = NULL;
+                    switch(inst.setvar.segment) {
+#define X(segment,name) case IRSEG_##segment: \
+                        segment_name = name;  \
+                        break;
+                        IRSEGMENTS;
+#undef X
+                    }
+
+                    if(inst.setvar.segment == IRSEG_TYPE) {
+                        UNREACHABLE;
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "/* %s */\n",
+                                IRop_debug[inst.opcode]);
+                        //UNIMPLEMENTED;
+                    } else if(inst.setvar.segment == IRSEG_CODE) {
+                        UNREACHABLE;
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "/* %s */\n",
+                                IRop_debug[inst.opcode]);
+                        //UNIMPLEMENTED;
+                    } else {
+                        if(inst.setvar.immediate) {
+                            n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                    "*(u%lu*)(((u8*)%s)+0x%lx) = (u%lu)0x%lx;\n",
+                                    inst.setvar.bytes << 3lu,
+                                    segment_name,
+                                    inst.setvar.offset,
+                                    inst.setvar.bytes << 3lu,
+                                    inst.setvar.imm.integer);
+                        } else {
+                            n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                    "*(u%lu*)(((u8*)%s)+%lu) = (u%lu)%s;\n",
+                                    inst.setvar.bytes << 3lu,
+                                    segment_name,
+                                    inst.setvar.offset,
+                                    inst.setvar.bytes << 3lu,
+                                    IR_C_ireg_map[inst.setvar.reg_src]);
+                        }
+                    }
+                }
+                break;
+            case IROP_GETVARF:
+                {
+                    char *segment_name = NULL;
+                    switch(inst.getvar.segment) {
+#define X(segment,name) case IRSEG_##segment: \
+                        segment_name = name;  \
+                        break;
+                        IRSEGMENTS;
+#undef X
+                    }
+
+                    n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                            "%s = *(f%lu*)(((u8*)%s)+0x%lx);\n",
+                            (inst.getvar.bytes == 8) ?
+                            IR_C_f64reg_map[inst.getvar.reg_dest] :
+                            IR_C_f32reg_map[inst.getvar.reg_dest],
+                            inst.getvar.bytes << 3lu,
+                            segment_name,
+                            inst.getvar.offset);
+                }
+                break;
+            case IROP_SETVARF:
+                {
+                    char *segment_name = NULL;
+                    switch(inst.setvar.segment) {
+#define X(segment,name) case IRSEG_##segment: \
+                        segment_name = name;  \
+                        break;
+                        IRSEGMENTS;
+#undef X
+                    }
+
+                    if(inst.setvar.immediate) {
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "immediate_value.integer = (u64)0x%lx;\n"
+                                "*(f%lu*)(((u8*)%s)+0x%lx) = immediate_value.floating%lu;\n",
+                                inst.setvar.imm.integer,
+                                inst.setvar.bytes << 3lu,
+                                segment_name,
+                                inst.setvar.offset,
+                                inst.setvar.bytes << 3lu);
+                    } else {
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "*(f%lu*)(((u8*)%s)+0x%lx) = (f%lu)%s;\n",
+                                inst.setvar.bytes << 3lu,
+                                segment_name,
+                                inst.setvar.offset,
+                                inst.setvar.bytes << 3lu,
+                                IR_C_ireg_map[inst.setvar.reg_src]);
+                    }
+                }
+                break;
+
+            case IROP_LOAD:
+            case IROP_LOADF:
+                {
+                    char **reg_map = IR_C_ireg_map;
+                    bool is_float_op = false;
+
+                    if(inst.opcode == IROP_LOADF) {
+                        is_float_op = true;
+                        reg_map = (inst.load.bytes == 8) ? IR_C_f64reg_map : IR_C_f32reg_map;
+                    }
+
+                    if(inst.load.immediate) {
+                        if(is_float_op) {
+                            n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                    "immediate_value.integer = (u64)0x%lx;\n"
+                                    "%s = immediate_value.floating%lu;\n",
+                                    inst.load.imm.integer,
+                                    reg_map[inst.load.reg_dest],
+                                    inst.load.bytes << 3lu);
+                        } else {
+                            n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                    "%s = (u%lu)0x%lx;\n",
+                                    reg_map[inst.load.reg_dest],
+                                    inst.load.bytes << 3lu,
+                                    inst.load.imm.integer);
+                        }
+                    } else {
+                        if(inst.load.has_indirect_offset) {
+                            n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                    "%s = *(%c%lu*)((u8*)%s + 0x%lx);\n",
+                                    reg_map[inst.load.reg_dest],
+                                    is_float_op ? 'f' : 'u',
+                                    inst.load.bytes << 3lu,
+                                    reg_map[inst.load.reg_src_ptr],
+                                    inst.load.byte_offset_imm);
+                        } else if(inst.load.has_indirect_offset) {
+                            n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                    "%s = ((%c%lu*)%s)[%s];\n",
+                                    reg_map[inst.load.reg_dest],
+                                    is_float_op ? 'f' : 'u',
+                                    inst.load.bytes << 3lu,
+                                    reg_map[inst.load.reg_src_ptr],
+                                    reg_map[inst.load.offset_reg]);
+                        } else {
+                            n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                    "%s = *(%c%lu*)%s;\n",
+                                    reg_map[inst.load.reg_dest],
+                                    is_float_op ? 'f' : 'u',
+                                    inst.load.bytes << 3lu,
+                                    reg_map[inst.load.reg_src_ptr]);
+                        }
+                    }
+                }
+                break;
+            case IROP_STOR:
+            case IROP_STORF:
+                {
+                    char **reg_map = IR_C_ireg_map;
+                    bool is_float_op = false;
+
+                    if(inst.opcode == IROP_LOADF) {
+                        is_float_op = true;
+                        reg_map = (inst.stor.bytes == 8) ? IR_C_f64reg_map : IR_C_f32reg_map;
+                    }
+
+                    if(inst.stor.has_indirect_offset) {
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "*(%c%lu*)((u8*)%s + 0x%lx) = %s;\n",
+                                is_float_op ? 'f' : 'u',
+                                inst.stor.bytes << 3lu,
+                                IR_C_ireg_map[inst.stor.reg_dest_ptr],
+                                inst.stor.byte_offset_imm,
+                                reg_map[inst.stor.reg_src]);
+                    } else if(inst.stor.has_indirect_offset) {
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "((%c%lu*)%s)[%s] = %s;\n",
+                                is_float_op ? 'f' : 'u',
+                                inst.stor.bytes << 3lu,
+                                IR_C_ireg_map[inst.stor.reg_dest_ptr],
+                                reg_map[inst.stor.offset_reg],
+                                reg_map[inst.stor.reg_src]);
+                    } else {
+                        n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                                "*(%c%lu*)%s = %s;\n",
+                                is_float_op ? 'f' : 'u',
+                                inst.stor.bytes << 3lu,
+                                IR_C_ireg_map[inst.stor.reg_dest_ptr],
+                                reg_map[inst.stor.reg_src]);
+                    }
+                }
+                break;
+            case IROP_CALCPTROFFSET:
+                {
+                    n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                            "%s = (u64)( ((u8*)%s) + %s * %lu );\n",
+                            IR_C_ireg_map[inst.calcptroffset.reg_dest],
+                            IR_C_ireg_map[inst.calcptroffset.reg_src_ptr],
+                            IR_C_ireg_map[inst.calcptroffset.offset_reg],
+                            inst.calcptroffset.stride);
+                }
+                break;
+
             case IROP_ITOF:
+                {
+                    char **to_reg_map = (inst.typeconv.to_bytes == 8) ? IR_C_f64reg_map : IR_C_f32reg_map;
+                    n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                            "%s = (f%lu)(%c%lu)%s;\n",
+                            to_reg_map[inst.typeconv.to_reg],
+                            inst.typeconv.to_bytes << 3lu,
+                            inst.typeconv.sign ? 's' : 'u',
+                            inst.typeconv.from_bytes << 3lu,
+                            IR_C_ireg_map[inst.typeconv.from_reg]);
+                }
                 break;
             case IROP_FTOB:
+                {
+                    char **from_reg_map = (inst.typeconv.from_bytes == 8) ? IR_C_f64reg_map : IR_C_f32reg_map;
+                    n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                            "%s = (bool)(%s != (f%lu)0.0);\n",
+                            IR_C_ireg_map[inst.typeconv.to_reg],
+                            from_reg_map[inst.typeconv.from_reg],
+                            inst.typeconv.from_bytes << 3lu);
+                }
                 break;
             case IROP_ITOB:
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "%s = (bool)%s;\n",
+                        IR_C_ireg_map[inst.typeconv.to_reg],
+                        IR_C_ireg_map[inst.typeconv.from_reg]);
                 break;
             case IROP_FTOI:
+                {
+                    char **from_reg_map = (inst.typeconv.from_bytes == 8) ? IR_C_f64reg_map : IR_C_f32reg_map;
+                    n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                            "%s = (%c%lu)%s;\n",
+                            IR_C_ireg_map[inst.typeconv.to_reg],
+                            inst.typeconv.sign ? 's' : 'u',
+                            inst.typeconv.to_bytes << 3lu,
+                            from_reg_map[inst.typeconv.from_reg]);
+                }
                 break;
             case IROP_ITOI:
-                UNIMPLEMENTED;
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "%s = (%c%lu)(u%lu)%s;\n",
+                        IR_C_ireg_map[inst.typeconv.to_reg],
+                        inst.typeconv.sign ? 's' : 'u',
+                        inst.typeconv.to_bytes << 3lu,
+                        inst.typeconv.from_bytes << 3lu,
+                        IR_C_ireg_map[inst.typeconv.from_reg]);
                 break;
             case IROP_FTOF:
+                {
+                    char **to_reg_map = (inst.typeconv.to_bytes == 8) ? IR_C_f64reg_map : IR_C_f32reg_map;
+                    char **from_reg_map = (inst.typeconv.from_bytes == 8) ? IR_C_f64reg_map : IR_C_f32reg_map;
+                    n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                            "%s = (f%lu)%s;\n",
+                            to_reg_map[inst.typeconv.to_reg],
+                            inst.typeconv.to_bytes << 3lu,
+                            from_reg_map[inst.typeconv.from_reg]);
+                }
                 break;
         }
 
-        assert(n_written < sizeof(buf));
+        assert(n_written < sizeof(line_buf));
 
-        if(n_written + asm_buf_used >= asm_buf_cap) {
-            while(n_written + asm_buf_used >= asm_buf_cap) asm_buf_cap <<= 1;
-            asm_buf = realloc(asm_buf, asm_buf_cap);
+        if(n_written + code_buf_used >= code_buf_cap) {
+            while(n_written + code_buf_used >= code_buf_cap) code_buf_cap <<= 1;
+            code_buf = realloc(code_buf, code_buf_cap);
         }
 
-        for(u64 i = 0; i < n_written;) asm_buf[asm_buf_used++] = buf[i++];
+        for(u64 i = 0; i < n_written;) code_buf[code_buf_used++] = line_buf[i++];
 
     }
+
+    code_buf[code_buf_used] = 0;
+
+    fprintf(stderr, "%s\n\n", code_buf);
+    free(code_buf);
 }
 
 void ir_run(Job *jp, int procid) {
@@ -5923,6 +6191,7 @@ void ir_run(Job *jp, int procid) {
                     varptr = interp.bss_segment + inst.addrvar.offset;
                     break;
                 case IRSEG_TYPE:
+                case IRSEG_STRING:
                     varptr = (u8*)(inst.addrvar.offset);
                     break;
             }
@@ -6384,15 +6653,69 @@ void ir_run(Job *jp, int procid) {
                 break;
             case IROP_ITOF:
                 if(inst.typeconv.to_bytes == 8) {
-                    imask = (inst.typeconv.from_bytes < 8)
-                        ? ((1LU << (inst.typeconv.from_bytes << 3LU)) - 1LU)
-                        : (u64)(-1);
-                    interp.f64regs[inst.typeconv.to_reg] = (f64)(imask & interp.iregs[inst.typeconv.from_reg]);
+                    if(inst.typeconv.sign) {
+                        switch(inst.typeconv.from_bytes) {
+                            case 1:
+                                interp.f64regs[inst.typeconv.to_reg] = (f64)(s8)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                            case 2:
+                                interp.f64regs[inst.typeconv.to_reg] = (f64)(s16)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                            case 4:
+                                interp.f64regs[inst.typeconv.to_reg] = (f64)(s32)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                            case 8:
+                                interp.f64regs[inst.typeconv.to_reg] = (f64)(s64)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                        }
+                    } else {
+                        switch(inst.typeconv.from_bytes) {
+                            case 1:
+                                interp.f64regs[inst.typeconv.to_reg] = (f64)(u8)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                            case 2:
+                                interp.f64regs[inst.typeconv.to_reg] = (f64)(u16)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                            case 4:
+                                interp.f64regs[inst.typeconv.to_reg] = (f64)(u32)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                            case 8:
+                                interp.f64regs[inst.typeconv.to_reg] = (f64)(u64)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                        }
+                    }
                 } else {
-                    imask = (inst.typeconv.from_bytes < 8)
-                        ? ((1LU << (inst.typeconv.from_bytes << 3LU)) - 1LU)
-                        : (u64)(-1);
-                    interp.f32regs[inst.typeconv.to_reg] = (f32)(imask & interp.iregs[inst.typeconv.from_reg]);
+                    if(inst.typeconv.sign) {
+                        switch(inst.typeconv.from_bytes) {
+                            case 1:
+                                interp.f32regs[inst.typeconv.to_reg] = (f32)(s8)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                            case 2:
+                                interp.f32regs[inst.typeconv.to_reg] = (f32)(s16)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                            case 4:
+                                interp.f32regs[inst.typeconv.to_reg] = (f32)(s32)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                            case 8:
+                                interp.f32regs[inst.typeconv.to_reg] = (f32)(s64)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                        }
+                    } else {
+                        switch(inst.typeconv.from_bytes) {
+                            case 1:
+                                interp.f32regs[inst.typeconv.to_reg] = (f32)(u8)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                            case 2:
+                                interp.f32regs[inst.typeconv.to_reg] = (f32)(u16)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                            case 4:
+                                interp.f32regs[inst.typeconv.to_reg] = (f32)(u32)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                            case 8:
+                                interp.f32regs[inst.typeconv.to_reg] = (f32)(u64)(interp.iregs[inst.typeconv.from_reg]);
+                                break;
+                        }
+                    }
                 }
                 break;
             case IROP_FTOB:
@@ -6422,7 +6745,11 @@ void ir_run(Job *jp, int procid) {
                     imask = (inst.typeconv.to_bytes < 8)
                         ? ((1LU << (inst.typeconv.to_bytes << 3LU)) - 1LU)
                         : (u64)(-1);
-                    interp.iregs[inst.typeconv.to_reg] = imask & interp.iregs[inst.typeconv.from_reg];
+                    u64 masked = imask & interp.iregs[inst.typeconv.from_reg];
+                    interp.iregs[inst.typeconv.to_reg] = masked;
+                        //inst.typeconv.sign
+                        //? SIGN_EXTEND_S64(masked, (inst.typeconv.to_bytes << 3lu))
+                        //: masked;
                 }
                 break;
             case IROP_FTOF:
@@ -6790,6 +7117,7 @@ INLINE void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
         } else if(TYPE_KIND_IS_RECORD(left_type->kind)) {
             ir_gen_expr(jp, ast_statement->right);
             ir_gen_expr(jp, ast_statement->left);
+            //TODO this wastes a register
             assert(jp->reg_alloc == 2);
             ir_gen_memorycopy(jp, left_type->bytes, left_type->align, jp->reg_alloc - 1, jp->reg_alloc - 2);
             jp->reg_alloc -= 2;
@@ -9770,13 +10098,24 @@ void ir_gen_expr(Job *jp, AST *ast) {
 
                         inst =
                             (IRinst) {
+                                .opcode = IROP_ADDRVAR,
+                                .addrvar = {
+                                    .segment = IRSEG_STRING,
+                                    .offset = (u64)(void*)s,
+                                    .reg_dest = jp->reg_alloc,
+                                },
+                            };
+                        inst.loc = jp->cur_loc;
+                        arrpush(jp->instructions, inst);
+
+                        inst =
+                            (IRinst) {
                                 .opcode = IROP_SETVAR,
                                 .setvar = {
                                     .segment = IRSEG_LOCAL,
                                     .offset = arrlast(jp->local_offset) + offsetof(String_view, data),
-                                    .imm.integer = (u64)(void*)s,
+                                    .reg_src = jp->reg_alloc,
                                     .bytes = 8,
-                                    .immediate = true,
                                 },
                             };
                         inst.loc = jp->cur_loc;
@@ -10490,6 +10829,7 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                 if(TYPE_KIND_IS_FLOAT(result_type->kind) && TYPE_KIND_IS_INTEGER(operand_type->kind)) {
                                     inst.opcode = IROP_ITOF;
                                     inst.loc = jp->cur_loc;
+                                    inst.typeconv.sign = TYPE_KIND_IS_SIGNED_INT(operand_type->kind);
                                     arrpush(jp->instructions, inst);
                                 } else if(TYPE_KIND_IS_FLOAT(result_type->kind) && TYPE_KIND_IS_FLOAT(operand_type->kind)) {
                                     inst.opcode = IROP_FTOF;
@@ -10498,6 +10838,12 @@ void ir_gen_expr(Job *jp, AST *ast) {
                                 } else if(TYPE_KIND_IS_FLOAT(operand_type->kind) && TYPE_KIND_IS_INTEGER(result_type->kind)) {
                                     inst.opcode = IROP_FTOI;
                                     inst.loc = jp->cur_loc;
+                                    inst.typeconv.sign = TYPE_KIND_IS_SIGNED_INT(result_type->kind); // this is ignored by the interpreter
+                                    arrpush(jp->instructions, inst);
+                                } else if(TYPE_KIND_IS_INTEGER(operand_type->kind) && TYPE_KIND_IS_INTEGER(result_type->kind)) {
+                                    inst.opcode = IROP_ITOI;
+                                    inst.loc = jp->cur_loc;
+                                    inst.typeconv.sign = TYPE_KIND_IS_SIGNED_INT(result_type->kind);
                                     arrpush(jp->instructions, inst);
                                 }
                             } else {
@@ -10541,7 +10887,10 @@ void ir_gen_expr(Job *jp, AST *ast) {
                         break;
                     case '>':
                         //TODO remove float_reg_alloc
-                        if(TYPE_KIND_IS_FLOAT(node->type_annotation->kind)) {
+                        if(TYPE_KIND_IS_NOT_SCALAR(node->type_annotation->kind)) {
+                            //TODO this wastes a register
+                            jp->reg_alloc++;
+                        } else if(TYPE_KIND_IS_FLOAT(node->type_annotation->kind)) {
                             inst =
                                 (IRinst) {
                                     .opcode = IROP_LOADF,
@@ -11247,7 +11596,9 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         }
     }
 
-    if(callee_type->proc.is_foreign) {
+    bool is_foreign = callee_type->proc.is_foreign;
+
+    if(is_foreign) {
         inst = (IRinst) { .opcode = IROP_HINT_BEGIN_FOREIGN_CALL, };
         inst.loc = jp->cur_loc;
         arrpush(jp->instructions, inst);
@@ -11543,9 +11894,11 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 inst.loc = jp->cur_loc;
                 arrpush(jp->instructions, inst);
 
-                inst = (IRinst) { .opcode = IROP_HINT_BEGIN_PASS_NON_SCALAR, };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
+                if(is_foreign) {
+                    inst = (IRinst) { .opcode = IROP_HINT_BEGIN_PASS_NON_SCALAR, };
+                    inst.loc = jp->cur_loc;
+                    arrpush(jp->instructions, inst);
+                }
 
                 inst =
                     (IRinst) {
@@ -11559,9 +11912,11 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 inst.loc = jp->cur_loc;
                 arrpush(jp->instructions, inst);
 
-                inst = (IRinst) { .opcode = IROP_HINT_END_PASS_NON_SCALAR, };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
+                if(is_foreign) {
+                    inst = (IRinst) { .opcode = IROP_HINT_END_PASS_NON_SCALAR, };
+                    inst.loc = jp->cur_loc;
+                    arrpush(jp->instructions, inst);
+                }
 
             } else {
                 IRop opcode1 = IROP_GETVAR;
@@ -11625,9 +11980,11 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 inst.loc = jp->cur_loc;
                 arrpush(jp->instructions, inst);
 
-                inst = (IRinst) { .opcode = IROP_HINT_BEGIN_PASS_NON_SCALAR, };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
+                if(is_foreign) {
+                    inst = (IRinst) { .opcode = IROP_HINT_BEGIN_PASS_NON_SCALAR, };
+                    inst.loc = jp->cur_loc;
+                    arrpush(jp->instructions, inst);
+                }
 
                 arrlast(jp->local_offset) += p->type_annotation->bytes;
                 ir_gen_memorycopy(jp, p->type_annotation->bytes, p->type_annotation->align, jp->reg_alloc, jp->reg_alloc - 1);
@@ -11644,9 +12001,11 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
                 inst.loc = jp->cur_loc;
                 arrpush(jp->instructions, inst);
 
-                inst = (IRinst) { .opcode = IROP_HINT_END_PASS_NON_SCALAR, };
-                inst.loc = jp->cur_loc;
-                arrpush(jp->instructions, inst);
+                if(is_foreign) {
+                    inst = (IRinst) { .opcode = IROP_HINT_END_PASS_NON_SCALAR, };
+                    inst.loc = jp->cur_loc;
+                    arrpush(jp->instructions, inst);
+                }
 
                 jp->reg_alloc--;
             } else {
@@ -13624,6 +13983,11 @@ bool job_runner(char *src, char *src_path) {
                             arrlast(job_queue_next).state = JOB_STATE_READY;
                             ++job_queue_pos;
                             continue;
+                        }
+
+                        if(handling_sym->type->kind == TYPE_KIND_PROC && !handling_sym->is_foreign) {
+                            IRproc procedure = hmget(proc_table, handling_sym->procid);
+                            ir_gen_C(jp, procedure);
                         }
 
                         job_die(jp);
@@ -15913,6 +16277,8 @@ void typecheck_expr(Job *jp) {
                         job_init_allocator_sym(&new_job);
                         job_init_allocator_type(&new_job);
 
+                        //NOTE arrins causes jp to become invalid when the job_queue is resized
+                        //     leaving this here just because
                         //arrins(job_queue, job_queue_pos + 1, new_job);
                         arrpush(job_queue_next, new_job);
 

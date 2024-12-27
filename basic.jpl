@@ -397,17 +397,22 @@ proc vsprint(fmt: string, args: []Any) string {
                 struct_data: *u8 = v;
                 
                 fmt_ptr := arr_addnptr(@fmt2, t_struct.name.len + 3);
-                for t_struct.name fmt_ptr[it_index] = it;
-                fmt_ptr += t_struct.name.len;
-                fmt_ptr[0] = ':';
-                fmt_ptr[1] = '{';
-                fmt_ptr[2] = ' ';
+                if t_struct.name.len {
+                    for t_struct.name fmt_ptr[it_index] = it;
+                    fmt_ptr += t_struct.name.len;
+                    fmt_ptr[0] = ':';
+                    fmt_ptr[1] = '{';
+                    fmt_ptr[2] = ' ';
+                } else {
+                    fmt_ptr[0] = '{';
+                    fmt_ptr[1] = ' ';
+                }
 
                 members := t_struct.members;
                 args_ptr := arr_addnptr(@args2, members.count);
                 percent_indices_ptr := arr_addnptr(@percent_indices2, members.count);
 
-                //TODO print usings
+                //TODO optionally print usings explicitly?
                 for member: members {
                     fmt_ptr = arr_addnptr(@fmt2, member.name.len + 6);
                     for member.name fmt_ptr[it_index] = it;
