@@ -210,6 +210,8 @@
     X(SETCONTEXTARG,   _)                 \
     X(HINT_BEGIN_FOREIGN_CALL, _)         \
     X(HINT_END_FOREIGN_CALL,   _)         \
+    X(HINT_BEGIN_CALL, _)                 \
+    X(HINT_END_CALL,   _)                 \
     X(HINT_BEGIN_PASS_NON_SCALAR, _)      \
     X(HINT_END_PASS_NON_SCALAR,   _)      \
 
@@ -2654,6 +2656,8 @@ INLINE void print_ir_inst(IRinst inst, FILE *f) {
         case IROP_SETCONTEXTARG:
         case IROP_HINT_BEGIN_FOREIGN_CALL:
         case IROP_HINT_END_FOREIGN_CALL:
+        case IROP_HINT_BEGIN_CALL:
+        case IROP_HINT_END_CALL:
         case IROP_HINT_BEGIN_PASS_NON_SCALAR:
         case IROP_HINT_END_PASS_NON_SCALAR:
         case IROP_NOOP:
@@ -5759,6 +5763,8 @@ void ir_gen_C(Job *jp, IRproc irproc) {
                 break;
             case IROP_HINT_BEGIN_FOREIGN_CALL:
             case IROP_HINT_END_FOREIGN_CALL:
+            case IROP_HINT_BEGIN_CALL:
+            case IROP_HINT_END_CALL:
             case IROP_HINT_BEGIN_PASS_NON_SCALAR:
             case IROP_HINT_END_PASS_NON_SCALAR:
                 n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
@@ -6222,6 +6228,8 @@ void ir_run(Job *jp, int procid) {
             case IROP_NOOP:
             case IROP_HINT_BEGIN_FOREIGN_CALL:
             case IROP_HINT_END_FOREIGN_CALL:
+            case IROP_HINT_BEGIN_CALL:
+            case IROP_HINT_END_CALL:
             case IROP_HINT_BEGIN_PASS_NON_SCALAR:
             case IROP_HINT_END_PASS_NON_SCALAR:
                 break;
@@ -11599,11 +11607,12 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
 
     bool is_foreign = callee_type->proc.is_foreign;
 
-    if(is_foreign) {
-        inst = (IRinst) { .opcode = IROP_HINT_BEGIN_FOREIGN_CALL, };
-        inst.loc = jp->cur_loc;
-        arrpush(jp->instructions, inst);
-    }
+    inst =
+        (IRinst) {
+            .opcode = is_foreign ? IROP_HINT_BEGIN_FOREIGN_CALL : IROP_HINT_BEGIN_CALL,
+        };
+    inst.loc = jp->cur_loc;
+    arrpush(jp->instructions, inst);
 
     //TODO this is error prone, need a better way of saving the registers
     //
@@ -12172,8 +12181,15 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
     arrfree(fregs_saved);
     arrfree(iregs_saved);
 
-    if(callee_type->proc.ret.n == 0)
+    if(callee_type->proc.ret.n == 0) {
+        inst =
+            (IRinst) {
+                .opcode = callee_type->proc.is_foreign ? IROP_HINT_END_FOREIGN_CALL : IROP_HINT_END_CALL,
+            };
+        inst.loc = jp->cur_loc;
+        arrpush(jp->instructions, inst);
         return type_stack;
+    }
 
     if(TYPE_KIND_IS_NOT_SCALAR(return_type->kind)) {
         inst =
@@ -12215,11 +12231,12 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         arrpush(jp->instructions, inst);
     }
 
-    if(callee_type->proc.is_foreign) {
-        inst = (IRinst) { .opcode = IROP_HINT_END_FOREIGN_CALL, };
-        inst.loc = jp->cur_loc;
-        arrpush(jp->instructions, inst);
-    }
+    inst =
+        (IRinst) {
+            .opcode = callee_type->proc.is_foreign ? IROP_HINT_END_FOREIGN_CALL : IROP_HINT_END_CALL,
+        };
+    inst.loc = jp->cur_loc;
+    arrpush(jp->instructions, inst);
 
     arrpush(type_stack, return_type);
 
