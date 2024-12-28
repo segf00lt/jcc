@@ -5467,7 +5467,6 @@ void ir_gen_foreign_proc_x64(Job *jp) {
     void *wrapper_module = dlopen(full_wrapper_dl_path, RTLD_NOW);
     printf("%s\n", dlerror());
     assert(wrapper_module);
-    //arrpush(loaded_wrapper_dlls, wrapper_module);
     IR_foreign_proc foreign_proc = (IR_foreign_proc)dlsym(wrapper_module, wrapper_name);
 
     if(!foreign_proc) {
@@ -5483,7 +5482,6 @@ void ir_gen_foreign_proc_x64(Job *jp) {
     };
 
     proc_table_add(proc_sym->procid, proc_data);
-    //foreign_procedure_table_add(foreign_proc, proc_sym->procid, wrapper_name);
 
     proc_sym->ready_to_run = true;
 
@@ -5748,6 +5746,7 @@ void ir_gen_C(Job *jp, IRproc irproc) {
                         irproc.name, inst.branch.label_id);
                 break;
 
+                //TODO generate calls
             case IROP_GETCONTEXTARG:
                 n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
                         "%s = context_pointer;\n",
@@ -6124,6 +6123,8 @@ void ir_gen_C(Job *jp, IRproc irproc) {
                 break;
         }
 
+        n_written += 1;
+
         assert(n_written < sizeof(line_buf));
 
         if(n_written + code_buf_used >= code_buf_cap) {
@@ -6131,7 +6132,7 @@ void ir_gen_C(Job *jp, IRproc irproc) {
             code_buf = realloc(code_buf, code_buf_cap);
         }
 
-        for(u64 i = 0; i < n_written;) code_buf[code_buf_used++] = line_buf[i++];
+        for(u64 i = 0; i < n_written - 1;) code_buf[code_buf_used++] = line_buf[i++];
 
     }
 
@@ -6746,10 +6747,10 @@ void ir_run(Job *jp, int procid) {
                         ? ((1LU << (inst.typeconv.to_bytes << 3LU)) - 1LU)
                         : (u64)(-1);
                     u64 masked = imask & interp.iregs[inst.typeconv.from_reg];
-                    interp.iregs[inst.typeconv.to_reg] = masked;
-                        //inst.typeconv.sign
-                        //? SIGN_EXTEND_S64(masked, (inst.typeconv.to_bytes << 3lu))
-                        //: masked;
+                    interp.iregs[inst.typeconv.to_reg] = 
+                        inst.typeconv.sign
+                        ? SIGN_EXTEND_S64(masked, (inst.typeconv.to_bytes << 3lu))
+                        : masked;
                 }
                 break;
             case IROP_FTOF:
@@ -15947,17 +15948,12 @@ void typecheck_expr(Job *jp) {
             }
 
             if(!callp->checked_call) {
-                //proc_type = arrpop(type_stack);
                 arrsetlen(type_stack, arrlen(type_stack) - 1);
                 arrsetlen(value_stack, arrlen(value_stack) - 1);
 
-                //if(proc_type->proc.is_polymorphic) {
-                //    assert(callp->callee->kind == AST_KIND_atom);
-                //    proc_sym = ((AST_atom*)(callp->callee))->symbol_annotation;
-                //}
-
                 u8 params_passed[proc_type->proc.param.n];
-                //memset(params_passed, 0, proc_type->proc.param.n);
+                for(int i = 0; i < proc_type->proc.first_default_param; ++i)
+                    params_passed[i] = 0;
                 for(int i = proc_type->proc.first_default_param; i < proc_type->proc.param.n; ++i)
                     params_passed[i] = 2;
 
@@ -18053,7 +18049,7 @@ void print_sym(Sym sym) {
 //TODO struct literals
 //TODO test full C interop (raylib)
 //TODO flatten structs for foreign calls
-//TODO output assembly
+//TODO output C
 //TODO debug info (internal and convert to gdb debug format)
 //TODO procedures for interfacing with the compiler (e.g. add_source_file())
 
