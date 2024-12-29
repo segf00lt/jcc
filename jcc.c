@@ -425,6 +425,10 @@ const u64 IR_LOCAL_SEGMENT_BYTES = 1<<16;
 struct IRinst {
     IRop opcode;
     union {
+        union {
+            Type *proc_type;
+        } hint;
+
         struct {
             u64 operand_bytes[3];
             u64 reg[3];
@@ -1128,6 +1132,7 @@ struct Type {
             Type **wildcards;
             u64 ith_wildcard;
             u64 n_wildcards;
+            u64 non_scalar_return_count;
             struct {
                 char   *vararg_name;
                 Type  **types;
@@ -5321,6 +5326,10 @@ void ir_gen_foreign_proc_x64(Job *jp) {
         char *param_ctype_str;
         if(TYPE_KIND_IS_RECORD(param_type->kind)) {
             //TODO is it better to not require the C header file and generate it from our code?
+            // 
+            // its better to generate the necessary headers from our own code, headers take time
+            // to compile
+            //
             // yes it is definitely better, but then again, it would be better to generate the wrapper in assembly
             // so until we do that it will use C
             assert(param_type->record.name);
@@ -5510,6 +5519,10 @@ void ir_gen_C(Job *jp, IRproc irproc) {
     u64 code_buf_cap = 4096;
     u64 code_buf_used = 0;
     char *code_buf = malloc(code_buf_cap);
+
+    bool is_foreign = false;
+    bool generating_call = false;
+    Type *proc_type_of_generated_call = NULL;
 
     for(int i = 0; i < n_instructions; ++i) {
         u64 n_written = 0;
@@ -5761,49 +5774,114 @@ void ir_gen_C(Job *jp, IRproc irproc) {
                         "context_pointer = %s;\n",
                         IR_C_ireg_map[inst.setcontextarg.reg_src]);
                 break;
+
             case IROP_HINT_BEGIN_FOREIGN_CALL:
-            case IROP_HINT_END_FOREIGN_CALL:
             case IROP_HINT_BEGIN_CALL:
+                assert(!generating_call);
+                is_foreign = (inst.opcode == IROP_HINT_BEGIN_FOREIGN_CALL);
+                generating_call = true;
+                proc_type_of_generated_call = inst.hint.proc_type;
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "/* %s */\n",
+                        IRop_debug[inst.opcode]);
+                break;
+
+            case IROP_HINT_END_FOREIGN_CALL:
             case IROP_HINT_END_CALL:
+                assert(generating_call);
+                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                        "/* %s */\n",
+                        IRop_debug[inst.opcode]);
+                generating_call = false;
+                is_foreign = false;
+                proc_type_of_generated_call = NULL;
+                {
+                    printf("cowabunga %p\n",
+                            generating_call + is_foreign + proc_type_of_generated_call);
+                }
+                break;
+
             case IROP_HINT_BEGIN_PASS_NON_SCALAR:
             case IROP_HINT_END_PASS_NON_SCALAR:
                 n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
                         "/* %s */\n",
                         IRop_debug[inst.opcode]);
                 break;
+
             case IROP_CALL:
+                assert(generating_call);
+
                 n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
                         "/* %s */\n",
                         IRop_debug[inst.opcode]);
+
+                if(is_foreign) {
+                } else {
+                    //TODO refactor the way #c_call and #foreign work
+                    //
+                    // procedures marked with a #c_call directive are considered of
+                    // a different type to native procedures, and cannot be assigned to
+                    // a function pointer for a native procedure, and vice versa.
+                    //
+                    // if your gonna pass a function pointer to a C function it has
+                    // to have the #c_call conv anyway.
+                }
                 break;
             case IROP_RET:
                 n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
-                        "/* %s */\n",
-                        IRop_debug[inst.opcode]);
+                        "return;\n");
                 break;
+
             case IROP_SETARG:
             case IROP_SETRET:
-                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
-                        "/* %s */\n",
-                        IRop_debug[inst.opcode]);
-                break;
-            case IROP_GETARG:
-            case IROP_GETRET:
-                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
-                        "/* %s */\n",
-                        IRop_debug[inst.opcode]);
+                {
+                    char *dest = (inst.opcode == IROP_SETRET) ? "ret" : "arg";
+                    n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                            "%s%lu.integer = (u%lu)reg%lu;\n",
+                            dest,
+                            inst.setport.port,
+                            inst.setport.bytes << 3lu,
+                            inst.setport.reg_src);
+                }
                 break;
             case IROP_SETARGF:
             case IROP_SETRETF:
-                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
-                        "/* %s */\n",
-                        IRop_debug[inst.opcode]);
+                {
+                    char *dest = (inst.opcode == IROP_SETRETF) ? "ret" : "arg";
+                    n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                            "%s%lu.floating%lu = (f%lu)f%lureg%lu;\n",
+                            dest,
+                            inst.setport.port,
+                            inst.setport.bytes << 3lu,
+                            inst.setport.bytes << 3lu,
+                            inst.setport.bytes << 3lu,
+                            inst.setport.reg_src);
+                }
+                break;
+            case IROP_GETARG:
+            case IROP_GETRET:
+                {
+                    char *src = (inst.opcode == IROP_GETRET) ? "ret" : "arg";
+                    n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                            "reg%lu = (u%lu)(%s%lu.integer);\n",
+                            inst.getport.reg_dest,
+                            inst.getport.bytes << 3lu,
+                            src,
+                            inst.getport.port);
+                }
                 break;
             case IROP_GETARGF:
             case IROP_GETRETF:
-                n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
-                        "/* %s */\n",
-                        IRop_debug[inst.opcode]);
+                {
+                    char *src = (inst.opcode == IROP_GETRETF) ? "ret" : "arg";
+                    n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                            "f%lureg%lu = (u%lu)(%s%lu.integer);\n",
+                            inst.getport.bytes << 3lu,
+                            inst.getport.reg_dest,
+                            inst.getport.bytes << 3lu,
+                            src,
+                            inst.getport.port);
+                }
                 break;
 
 
@@ -6133,11 +6211,15 @@ void ir_gen_C(Job *jp, IRproc irproc) {
 
         assert(n_written < sizeof(line_buf));
 
-        if(n_written + code_buf_used >= code_buf_cap) {
-            while(n_written + code_buf_used >= code_buf_cap) code_buf_cap <<= 1;
+        char inst_number_buf[70];
+        int n_digits = stbsp_sprintf(inst_number_buf, "%d:    ", i);
+
+        if(n_written + n_digits + code_buf_used >= code_buf_cap) {
+            while(n_written + n_digits + code_buf_used >= code_buf_cap) code_buf_cap <<= 1;
             code_buf = realloc(code_buf, code_buf_cap);
         }
 
+        for(u64 i = 0; i < n_digits;) code_buf[code_buf_used++] = inst_number_buf[i++];
         for(u64 i = 0; i < n_written - 1;) code_buf[code_buf_used++] = line_buf[i++];
 
     }
@@ -11554,6 +11636,8 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         }
     }
 
+    callee_type->proc.non_scalar_return_count = non_scalar_return_count;
+
     if(callee_type->proc.param.names == NULL) {
         for(AST_param *p = ast_call->params; p; p = p->next) {
             p->has_nested_call = has_nested_call(p->value);
@@ -11604,15 +11688,6 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
             params_passed[i] = true;
         }
     }
-
-    bool is_foreign = callee_type->proc.is_foreign;
-
-    inst =
-        (IRinst) {
-            .opcode = is_foreign ? IROP_HINT_BEGIN_FOREIGN_CALL : IROP_HINT_BEGIN_CALL,
-        };
-    inst.loc = jp->cur_loc;
-    arrpush(jp->instructions, inst);
 
     //TODO this is error prone, need a better way of saving the registers
     //
@@ -11741,6 +11816,15 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         }
     }
 
+    bool is_foreign = callee_type->proc.is_foreign;
+
+    inst =
+        (IRinst) {
+            .opcode = is_foreign ? IROP_HINT_BEGIN_FOREIGN_CALL : IROP_HINT_BEGIN_CALL,
+        };
+    inst.loc = jp->cur_loc;
+    arrpush(jp->instructions, inst);
+
     if(varargs) {
         arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), _Alignof(Any));
 
@@ -11813,6 +11897,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         //UNREACHABLE;
         assert(cur_varargs_array_offset == arrlast(jp->local_offset) - ((n_varargs + 1) * sizeof(Any)));
 
+        //TODO is this really necessary if we don't pass any arguments in the varargs list?
         inst =
             (IRinst) {
                 .opcode = IROP_ADDRVAR,
@@ -12184,7 +12269,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
     if(callee_type->proc.ret.n == 0) {
         inst =
             (IRinst) {
-                .opcode = callee_type->proc.is_foreign ? IROP_HINT_END_FOREIGN_CALL : IROP_HINT_END_CALL,
+                .opcode = is_foreign ? IROP_HINT_END_FOREIGN_CALL : IROP_HINT_END_CALL,
             };
         inst.loc = jp->cur_loc;
         arrpush(jp->instructions, inst);
@@ -12233,7 +12318,7 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
 
     inst =
         (IRinst) {
-            .opcode = callee_type->proc.is_foreign ? IROP_HINT_END_FOREIGN_CALL : IROP_HINT_END_CALL,
+            .opcode = is_foreign ? IROP_HINT_END_FOREIGN_CALL : IROP_HINT_END_CALL,
         };
     inst.loc = jp->cur_loc;
     arrpush(jp->instructions, inst);
