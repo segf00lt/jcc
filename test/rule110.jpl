@@ -11,6 +11,9 @@ proc rule110(N: int) void {
     //tape := cast(*bool)buf1;
     test: []bool = buf1;
     tape := cast(*bool)test;
+    print("buf1.data = %\n", cast(u64)cast(*void)buf1.data);
+    print("test.data = %\n", cast(u64)cast(*void)test.data);
+    print("tape = %\n", cast(u64)cast(*void)tape);
     next_tape := buf2.data;
 
     rules: [8]int = ---;
