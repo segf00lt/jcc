@@ -11,6 +11,7 @@ proc main() {
     print("%\n", twopi * uninitialized_global);
     print("arr[0] = %\n", arr[0]);
     print("arr[1] = %\n", arr[1]);
+    print("foo = %\n", foo);
 }
 
 initialized_arr: [4][4]float =
@@ -19,6 +20,8 @@ initialized_arr: [4][4]float =
      [3, 4, 20.2, 5],
      [1, 4.21, 2, 0.5], ];
 
+abba := 41;
+//abba_addr := @abba;
 arr: [20]float = [3.5, 1.2 ];
 foo: Foo;
 uninitialized_global: float;

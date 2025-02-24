@@ -1,5 +1,5 @@
 CC = clang
-FLAGS = -g -O0 -Wall -Wpedantic -Werror -Wno-switch -Wno-comment -Wno-format-pedantic -D'_UNITY_BUILD_' -L'./third_party/raylib/' -I'./third_party/raylib/'
+FLAGS = -g -O0 -Wall -Wpedantic -Werror -Wno-switch -Wno-comment -Wno-format-pedantic -Wno-extra-semi -L'./third_party/raylib/' -I'./third_party/raylib/'
 TARGET = jcc.c
 LDFLAGS = -lraylib -lm
 
@@ -11,8 +11,9 @@ ifeq ($(UNAME_S),Darwin)
 endif
 
 all:
-	ctags -w *.c *.h
+	ctags -w --language-force=C --c-kinds=+zfx --extras=+q --fields=+n --recurse .
 	$(CC) $(FLAGS) $(TARGET) -o jcc $(LDFLAGS)
+#	ctags -w --language-force=C --c-kinds=+z --extras=+q --fields=+n *.c *.h
 
 #test: all
 #	cd test/; ./unittest; cd ..;

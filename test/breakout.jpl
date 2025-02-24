@@ -103,7 +103,7 @@ proc main() {
     paddle_rec.width = PADDLE_WIDTH;
     paddle_rec.height = PADDLE_HEIGHT;
 
-    SetRandomSeed(42);
+    //SetRandomSeed(42);
 
     while game_loop: !WindowShouldClose() {
 
@@ -164,7 +164,7 @@ proc main() {
                 ball.vel = Vector2Negate(ball.vel);
                 ball.vel = Vector2Scale(ball.vel, 1.04);
                 r := cast(float)GetRandomValue(0, 100);
-                angle := Lerp(-PI*0.25, PI*0.25, 1/r);
+                angle := Lerp(-PI*0.15, PI*0.15, 1/r);
                 ball.vel = Vector2Rotate(ball.vel, angle);
             }
         }
