@@ -1,24 +1,24 @@
 struct Foo {
-    i: int;
-    c: char;
-    arr: [4]float;
+  i: int;
+  c: char;
+  arr: [4]float;
 }
 
 proc main() {
-    PI *= 2;
-    twopi := PI;
-    uninitialized_global = 12;
-    print("%\n", twopi * uninitialized_global);
-    print("arr[0] = %\n", arr[0]);
-    print("arr[1] = %\n", arr[1]);
-    print("foo = %\n", foo);
+  PI *= 2;
+  twopi := PI;
+  uninitialized_global = 12;
+  print("%\n", twopi * uninitialized_global);
+  print("arr[0] = %\n", arr[0]);
+  print("arr[1] = %\n", arr[1]);
+  print("foo = %\n", foo);
 }
 
 initialized_arr: [4][4]float =
-    [[3, 4, 2, 5],
-     [7, 4.24, 291.2, 5],
-     [3, 4, 20.2, 5],
-     [1, 4.21, 2, 0.5], ];
+  [[3, 4, 2, 5],
+   [7, 4.24, 291.2, 5],
+   [3, 4, 20.2, 5],
+   [1, 4.21, 2, 0.5], ];
 
 abba := 41;
 //abba_addr := @abba;
