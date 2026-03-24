@@ -10,7 +10,7 @@
 *       When choosing an OpenGL backend different than OpenGL 1.1, some internal buffer are
 *       initialized on rlglInit() to accumulate vertex data
 *
-*       When an internal state change is required all the stored vertex data is renderer in batch,
+*       When an internal state change is required all the stored vertex data is rendered in batch,
 *       additionally, rlDrawRenderBatchActive() could be called to force flushing of the batch
 *
 *       Some resources are also loaded for convenience, here the complete list:
@@ -56,8 +56,8 @@
 *
 *       #define RL_MAX_MATRIX_STACK_SIZE             32    // Maximum size of internal Matrix stack
 *       #define RL_MAX_SHADER_LOCATIONS              32    // Maximum number of shader locations supported
-*       #define RL_CULL_DISTANCE_NEAR              0.01    // Default projection matrix near cull distance
-*       #define RL_CULL_DISTANCE_FAR             1000.0    // Default projection matrix far cull distance
+*       #define RL_CULL_DISTANCE_NEAR             0.001    // Default projection matrix near cull distance
+*       #define RL_CULL_DISTANCE_FAR            10000.0    // Default projection matrix far cull distance
 *
 *       When loading a shader, the following vertex attributes and uniform
 *       location names are tried to be set automatically:
@@ -88,7 +88,7 @@
 *
 *   LICENSE: zlib/libpng
 *
-*   Copyright (c) 2014-2024 Ramon Santamaria (@raysan5)
+*   Copyright (c) 2014-2025 Ramon Santamaria (@raysan5)
 *
 *   This software is provided "as-is", without any express or implied warranty. In no event
 *   will the authors be held liable for any damages arising from the use of this software.
@@ -234,10 +234,10 @@
 
 // Projection matrix culling
 #ifndef RL_CULL_DISTANCE_NEAR
-    #define RL_CULL_DISTANCE_NEAR                 0.01      // Default near cull distance
+    #define RL_CULL_DISTANCE_NEAR                0.001      // Default near cull distance
 #endif
 #ifndef RL_CULL_DISTANCE_FAR
-    #define RL_CULL_DISTANCE_FAR                1000.0      // Default far cull distance
+    #define RL_CULL_DISTANCE_FAR               10000.0      // Default far cull distance
 #endif
 
 // Texture parameters (equivalent to OpenGL defines)
@@ -684,9 +684,10 @@ RLAPI void rlSetCullFace(int mode);                     // Set face culling mode
 RLAPI void rlEnableScissorTest(void);                   // Enable scissor test
 RLAPI void rlDisableScissorTest(void);                  // Disable scissor test
 RLAPI void rlScissor(int x, int y, int width, int height); // Scissor test
-RLAPI void rlEnableWireMode(void);                      // Enable wire mode
 RLAPI void rlEnablePointMode(void);                     // Enable point mode
-RLAPI void rlDisableWireMode(void);                     // Disable wire (and point) mode
+RLAPI void rlDisablePointMode(void);                    // Disable point mode
+RLAPI void rlEnableWireMode(void);                      // Enable wire mode
+RLAPI void rlDisableWireMode(void);                     // Disable wire mode
 RLAPI void rlSetLineWidth(float width);                 // Set the line drawing width
 RLAPI float rlGetLineWidth(void);                       // Get the line drawing width
 RLAPI void rlEnableSmoothLines(void);                   // Enable line aliasing
@@ -1967,6 +1968,15 @@ void rlEnableWireMode(void)
 #endif
 }
 
+// Disable wire mode
+void rlDisableWireMode(void)
+{
+#if defined(GRAPHICS_API_OPENGL_11) || defined(GRAPHICS_API_OPENGL_33)
+    // NOTE: glPolygonMode() not available on OpenGL ES
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+#endif
+}
+
 // Enable point mode
 void rlEnablePointMode(void)
 {
@@ -1977,8 +1987,8 @@ void rlEnablePointMode(void)
 #endif
 }
 
-// Disable wire mode
-void rlDisableWireMode(void)
+// Disable point mode
+void rlDisablePointMode(void)
 {
 #if defined(GRAPHICS_API_OPENGL_11) || defined(GRAPHICS_API_OPENGL_33)
     // NOTE: glPolygonMode() not available on OpenGL ES
@@ -2516,11 +2526,11 @@ void rlLoadExtensions(void *loader)
 
         // Check depth texture support
         if (strcmp(extList[i], (const char *)"GL_OES_depth_texture") == 0) RLGL.ExtSupported.texDepth = true;
-        if (strcmp(extList[i], (const char *)"GL_WEBGL_depth_texture") == 0) RLGL.ExtSupported.texDepthWebGL = true;    // WebGL requires unsized internal format
+        if (strcmp(extList[i], (const char *)"GL_WEBGL_depth_texture") == 0) RLGL.ExtSupported.texDepthWebGL = true; // WebGL requires unsized internal format
         if (RLGL.ExtSupported.texDepthWebGL) RLGL.ExtSupported.texDepth = true;
 
-        if (strcmp(extList[i], (const char *)"GL_OES_depth24") == 0) RLGL.ExtSupported.maxDepthBits = 24;   // Not available on WebGL
-        if (strcmp(extList[i], (const char *)"GL_OES_depth32") == 0) RLGL.ExtSupported.maxDepthBits = 32;   // Not available on WebGL
+        if (strcmp(extList[i], (const char *)"GL_OES_depth24") == 0) RLGL.ExtSupported.maxDepthBits = 24; // Not available on WebGL
+        if (strcmp(extList[i], (const char *)"GL_OES_depth32") == 0) RLGL.ExtSupported.maxDepthBits = 32; // Not available on WebGL
 
         // Check texture compression support: DXT
         if ((strcmp(extList[i], (const char *)"GL_EXT_texture_compression_s3tc") == 0) ||
@@ -3045,7 +3055,7 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
 
             for (int i = 0, vertexOffset = 0; i < batch->drawCounter; i++)
             {
-                // Bind current draw call texture, activated as GL_TEXTURE0 and Bound to sampler2D texture0 by default
+                // Bind current draw call texture, activated as GL_TEXTURE0 and bound to sampler2D texture0 by default
                 glBindTexture(GL_TEXTURE_2D, batch->draws[i].textureId);
 
                 if ((batch->draws[i].mode == RL_LINES) || (batch->draws[i].mode == RL_TRIANGLES)) glDrawArrays(batch->draws[i].mode, vertexOffset, batch->draws[i].vertexCount);
@@ -3301,7 +3311,7 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
         // Activate Trilinear filtering if mipmaps are available
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, mipmapCount);      //  user defined mip count would break without this.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, mipmapCount); // Required for user-defined mip count
     }
 #endif
 
@@ -3666,28 +3676,36 @@ void *rlReadTexturePixels(unsigned int id, int width, int height, int format)
 // Read screen pixel data (color buffer)
 unsigned char *rlReadScreenPixels(int width, int height)
 {
-    unsigned char *screenData = (unsigned char *)RL_CALLOC(width*height*4, sizeof(unsigned char));
+    unsigned char *imgData = (unsigned char *)RL_CALLOC(width*height*4, sizeof(unsigned char));
 
     // NOTE 1: glReadPixels returns image flipped vertically -> (0,0) is the bottom left corner of the framebuffer
     // NOTE 2: We are getting alpha channel! Be careful, it can be transparent if not cleared properly!
-    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, screenData);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, imgData);
 
     // Flip image vertically!
-    unsigned char *imgData = (unsigned char *)RL_MALLOC(width*height*4*sizeof(unsigned char));
-
-    for (int y = height - 1; y >= 0; y--)
+    // NOTE: Alpha value has already been applied to RGB in framebuffer, we don't need it!
+    for (int y = height - 1; y >= height/2; y--)
     {
-        for (int x = 0; x < (width*4); x++)
+        for (int x = 0; x < (width*4); x += 4)
         {
-            imgData[((height - 1) - y)*width*4 + x] = screenData[(y*width*4) + x];  // Flip line
+            unsigned int s = ((height - 1) - y)*width*4 + x;
+            unsigned int e = y*width*4 + x;
 
-            // Set alpha component value to 255 (no trasparent image retrieval)
-            // NOTE: Alpha value has already been applied to RGB in framebuffer, we don't need it!
-            if (((x + 1)%4) == 0) imgData[((height - 1) - y)*width*4 + x] = 255;
+            unsigned char r = imgData[s];
+            unsigned char g = imgData[s+1];
+            unsigned char b = imgData[s+2];
+
+            imgData[s] = imgData[e];
+            imgData[s+1] = imgData[e+1];
+            imgData[s+2] = imgData[e+2];
+            imgData[s+3] = 255; // Set alpha component value to 255 (no trasparent image retrieval)
+
+            imgData[e] = r;
+            imgData[e+1] = g;
+            imgData[e+2] = b;
+            imgData[e+3] = 255; // Ditto
         }
     }
-
-    RL_FREE(screenData);
 
     return imgData;     // NOTE: image data should be freed
 }

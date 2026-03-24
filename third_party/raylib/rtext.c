@@ -34,7 +34,7 @@
 *
 *   LICENSE: zlib/libpng
 *
-*   Copyright (c) 2013-2024 Ramon Santamaria (@raysan5)
+*   Copyright (c) 2013-2025 Ramon Santamaria (@raysan5)
 *
 *   This software is provided "as-is", without any express or implied warranty. In no event
 *   will the authors be held liable for any damages arising from the use of this software.
@@ -247,8 +247,8 @@ extern void LoadFontDefault(void)
                 // we must consider data as little-endian order (alpha + gray)
                 ((unsigned short *)imFont.data)[i + j] = 0xffff;
             }
-            else 
-            { 
+            else
+            {
                 ((unsigned char *)imFont.data)[(i + j)*sizeof(short)] = 0xFF;
                 ((unsigned char *)imFont.data)[(i + j)*sizeof(short) + 1] = 0x00;
             }
@@ -989,7 +989,7 @@ bool ExportFontAsCode(Font font, const char *fileName)
     byteCount += sprintf(txtData + byteCount, "// more info and bugs-report:  github.com/raysan5/raylib                              //\n");
     byteCount += sprintf(txtData + byteCount, "// feedback and support:       ray[at]raylib.com                                      //\n");
     byteCount += sprintf(txtData + byteCount, "//                                                                                    //\n");
-    byteCount += sprintf(txtData + byteCount, "// Copyright (c) 2018-2024 Ramon Santamaria (@raysan5)                                //\n");
+    byteCount += sprintf(txtData + byteCount, "// Copyright (c) 2018-2025 Ramon Santamaria (@raysan5)                                //\n");
     byteCount += sprintf(txtData + byteCount, "//                                                                                    //\n");
     byteCount += sprintf(txtData + byteCount, "// ---------------------------------------------------------------------------------- //\n");
     byteCount += sprintf(txtData + byteCount, "//                                                                                    //\n");
@@ -1075,7 +1075,7 @@ bool ExportFontAsCode(Font font, const char *fileName)
     byteCount += sprintf(txtData + byteCount, "    Image imFont = { fontImageData_%s, %i, %i, 1, %i };\n\n", styleName, image.width, image.height, image.format);
 #endif
     byteCount += sprintf(txtData + byteCount, "    // Load texture from image\n");
-    byteCount += sprintf(txtData + byteCount, "    if (isGpuReady) font.texture = LoadTextureFromImage(imFont);\n");
+    byteCount += sprintf(txtData + byteCount, "    font.texture = LoadTextureFromImage(imFont);\n");
 #if defined(SUPPORT_COMPRESSED_FONT_ATLAS)
     byteCount += sprintf(txtData + byteCount, "    UnloadImage(imFont);  // Uncompressed data can be unloaded from memory\n\n");
 #endif
@@ -1338,6 +1338,61 @@ Vector2 MeasureTextEx(Font font, const char *text, float fontSize, float spacing
     return textSize;
 }
 
+Vector2 MeasureTextPro(Font font, const char *text, int size, float fontSize, float spacing)
+{
+    Vector2 textSize = { 0 };
+
+    if ((isGpuReady && (font.texture.id == 0)) ||
+        (text == NULL) || (text[0] == '\0')) return textSize; // Security check
+
+    int tempByteCounter = 0;        // Used to count longer text line num chars
+    int byteCounter = 0;
+
+    float textWidth = 0.0f;
+    float tempTextWidth = 0.0f;     // Used to count longer text line width
+
+    float textHeight = fontSize;
+    float scaleFactor = fontSize/(float)font.baseSize;
+
+    int letter = 0;                 // Current character
+    int index = 0;                  // Index position in sprite font
+
+    for (int i = 0; i < size;)
+    {
+        byteCounter++;
+
+        int codepointByteCount = 0;
+        letter = GetCodepointNext(&text[i], &codepointByteCount);
+        index = GetGlyphIndex(font, letter);
+
+        i += codepointByteCount;
+
+        if (letter != '\n')
+        {
+            if (font.glyphs[index].advanceX > 0) textWidth += font.glyphs[index].advanceX;
+            else textWidth += (font.recs[index].width + font.glyphs[index].offsetX);
+        }
+        else
+        {
+            if (tempTextWidth < textWidth) tempTextWidth = textWidth;
+            byteCounter = 0;
+            textWidth = 0;
+
+            // NOTE: Line spacing is a global variable, use SetTextLineSpacing() to setup
+            textHeight += (fontSize + textLineSpacing);
+        }
+
+        if (tempByteCounter < byteCounter) tempByteCounter = byteCounter;
+    }
+
+    if (tempTextWidth < textWidth) tempTextWidth = textWidth;
+
+    textSize.x = tempTextWidth*scaleFactor + (float)((tempByteCounter - 1)*spacing);
+    textSize.y = textHeight;
+
+    return textSize;
+}
+
 // Get index position for a unicode character on font
 // NOTE: If codepoint is not found in the font it fallbacks to '?'
 int GetGlyphIndex(Font font, int codepoint)
@@ -1540,21 +1595,21 @@ const char *TextSubtext(const char *text, int position, int length)
 
     if (position >= textLength)
     {
-        position = textLength - 1;
-        length = 0;
+        return buffer; //First char is already '\0' by memset
     }
 
-    if (length >= textLength) length = textLength;
+    int maxLength = textLength - position;
+    if (length > maxLength) length = maxLength;
+    if (length >= MAX_TEXT_BUFFER_LENGTH) length = MAX_TEXT_BUFFER_LENGTH - 1;
 
     // NOTE: Alternative: memcpy(buffer, text + position, length)
 
     for (int c = 0 ; c < length ; c++)
     {
-        *(buffer + c) = *(text + position);
-        text++;
+        buffer[c] = text[position + c];
     }
 
-    *(buffer + length) = '\0';
+    buffer[length] = '\0';
 
     return buffer;
 }
@@ -1629,7 +1684,7 @@ char *TextInsert(const char *text, const char *insert, int position)
 
 // Join text strings with delimiter
 // REQUIRES: memset(), memcpy()
-const char *TextJoin(const char **textList, int count, const char *delimiter)
+char *TextJoin(char **textList, int count, const char *delimiter)
 {
     static char buffer[MAX_TEXT_BUFFER_LENGTH] = { 0 };
     memset(buffer, 0, MAX_TEXT_BUFFER_LENGTH);
@@ -1663,7 +1718,7 @@ const char *TextJoin(const char **textList, int count, const char *delimiter)
 
 // Split string into multiple strings
 // REQUIRES: memset()
-const char **TextSplit(const char *text, char delimiter, int *count)
+char **TextSplit(const char *text, char delimiter, int *count)
 {
     // NOTE: Current implementation returns a copy of the provided string with '\0' (string end delimiter)
     // inserted between strings defined by "delimiter" parameter. No memory is dynamically allocated,
@@ -1671,7 +1726,7 @@ const char **TextSplit(const char *text, char delimiter, int *count)
     //      1. Maximum number of possible split strings is set by MAX_TEXTSPLIT_COUNT
     //      2. Maximum size of text to split is MAX_TEXT_BUFFER_LENGTH
 
-    static const char *result[MAX_TEXTSPLIT_COUNT] = { NULL };
+    static char *result[MAX_TEXTSPLIT_COUNT] = { NULL };
     static char buffer[MAX_TEXT_BUFFER_LENGTH] = { 0 };
     memset(buffer, 0, MAX_TEXT_BUFFER_LENGTH);
 
@@ -1727,7 +1782,7 @@ int TextFindIndex(const char *text, const char *find)
 // Get upper case version of provided string
 // WARNING: Limited functionality, only basic characters set
 // TODO: Support UTF-8 diacritics to upper-case, check codepoints
-const char *TextToUpper(const char *text)
+char *TextToUpper(const char *text)
 {
     static char buffer[MAX_TEXT_BUFFER_LENGTH] = { 0 };
     memset(buffer, 0, MAX_TEXT_BUFFER_LENGTH);
@@ -1746,7 +1801,7 @@ const char *TextToUpper(const char *text)
 
 // Get lower case version of provided string
 // WARNING: Limited functionality, only basic characters set
-const char *TextToLower(const char *text)
+char *TextToLower(const char *text)
 {
     static char buffer[MAX_TEXT_BUFFER_LENGTH] = { 0 };
     memset(buffer, 0, MAX_TEXT_BUFFER_LENGTH);
@@ -1765,7 +1820,7 @@ const char *TextToLower(const char *text)
 
 // Get Pascal case notation version of provided string
 // WARNING: Limited functionality, only basic characters set
-const char *TextToPascal(const char *text)
+char *TextToPascal(const char *text)
 {
     static char buffer[MAX_TEXT_BUFFER_LENGTH] = { 0 };
     memset(buffer, 0, MAX_TEXT_BUFFER_LENGTH);
@@ -1793,7 +1848,7 @@ const char *TextToPascal(const char *text)
 
 // Get snake case notation version of provided string
 // WARNING: Limited functionality, only basic characters set
-const char *TextToSnake(const char *text)
+char *TextToSnake(const char *text)
 {
     static char buffer[MAX_TEXT_BUFFER_LENGTH] = {0};
     memset(buffer, 0, MAX_TEXT_BUFFER_LENGTH);
@@ -1821,7 +1876,7 @@ const char *TextToSnake(const char *text)
 
 // Get Camel case notation version of provided string
 // WARNING: Limited functionality, only basic characters set
-const char *TextToCamel(const char *text)
+char *TextToCamel(const char *text)
 {
     static char buffer[MAX_TEXT_BUFFER_LENGTH] = {0};
     memset(buffer, 0, MAX_TEXT_BUFFER_LENGTH);
@@ -1915,7 +1970,7 @@ void UnloadCodepoints(int *codepoints)
 int GetCodepointCount(const char *text)
 {
     unsigned int length = 0;
-    char *ptr = (char *)&text[0];
+    const char *ptr = text;
 
     while (*ptr != '\0')
     {

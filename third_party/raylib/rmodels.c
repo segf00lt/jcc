@@ -21,7 +21,7 @@
 *
 *   LICENSE: zlib/libpng
 *
-*   Copyright (c) 2013-2024 Ramon Santamaria (@raysan5)
+*   Copyright (c) 2013-2025 Ramon Santamaria (@raysan5)
 *
 *   This software is provided "as-is", without any express or implied warranty. In no event
 *   will the authors be held liable for any damages arising from the use of this software.
@@ -183,6 +183,7 @@ void DrawLine3D(Vector3 startPos, Vector3 endPos, Color color)
 }
 
 // Draw a point in 3D space, actually a small line
+// WARNING: OpenGL ES 2.0 does not support point mode drawing
 void DrawPoint3D(Vector3 position, Color color)
 {
     rlPushMatrix();
@@ -1060,6 +1061,25 @@ void DrawRay(Ray ray, Color color)
     rlEnd();
 }
 
+// ~jfd: grid for 2D games
+void DrawGrid2D(int slices, float spacing) {
+  int halfSlices = slices >> 1;
+  rlBegin(RL_LINES);
+  for(int i = -halfSlices; i <= halfSlices; i++) {
+    rlColor3f(0.5f, 0.5f, 0.5f);
+    rlColor3f(0.5f, 0.5f, 0.5f);
+    rlColor3f(0.5f, 0.5f, 0.5f);
+    rlColor3f(0.5f, 0.5f, 0.5f);
+
+    rlVertex2f((float)i*spacing, (float)-halfSlices*spacing);
+    rlVertex2f((float)i*spacing, (float)halfSlices*spacing);
+
+    rlVertex2f((float)-halfSlices*spacing, (float)i*spacing);
+    rlVertex2f((float)halfSlices*spacing, (float)i*spacing);
+  }
+  rlEnd();
+}
+
 // Draw a grid centered at (0, 0, 0)
 void DrawGrid(int slices, float spacing)
 {
@@ -1306,7 +1326,7 @@ void UploadMesh(Mesh *mesh, bool dynamic)
     {
         // Default vertex attribute: normal
         // WARNING: Default value provided to shader if location available
-        float value[3] = { 1.0f, 1.0f, 1.0f };
+        float value[3] = { 0.0f, 0.0f, 1.0f };
         rlSetVertexAttributeDefault(RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL, value, SHADER_ATTRIB_VEC3, 3);
         rlDisableVertexAttribute(RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL);
     }
@@ -1338,7 +1358,7 @@ void UploadMesh(Mesh *mesh, bool dynamic)
     {
         // Default vertex attribute: tangent
         // WARNING: Default value provided to shader if location available
-        float value[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        float value[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
         rlSetVertexAttributeDefault(RL_DEFAULT_SHADER_ATTRIB_LOCATION_TANGENT, value, SHADER_ATTRIB_VEC4, 4);
         rlDisableVertexAttribute(RL_DEFAULT_SHADER_ATTRIB_LOCATION_TANGENT);
     }
@@ -1960,7 +1980,7 @@ bool ExportMesh(Mesh mesh, const char *fileName)
         byteCount += sprintf(txtData + byteCount, "# // more info and bugs-report:  github.com/raysan5/raylib                        //\n");
         byteCount += sprintf(txtData + byteCount, "# // feedback and support:       ray[at]raylib.com                                //\n");
         byteCount += sprintf(txtData + byteCount, "# //                                                                              //\n");
-        byteCount += sprintf(txtData + byteCount, "# // Copyright (c) 2018-2024 Ramon Santamaria (@raysan5)                          //\n");
+        byteCount += sprintf(txtData + byteCount, "# // Copyright (c) 2018-2025 Ramon Santamaria (@raysan5)                          //\n");
         byteCount += sprintf(txtData + byteCount, "# //                                                                              //\n");
         byteCount += sprintf(txtData + byteCount, "# //////////////////////////////////////////////////////////////////////////////////\n\n");
         byteCount += sprintf(txtData + byteCount, "# Vertex Count:     %i\n", mesh.vertexCount);
@@ -2277,7 +2297,6 @@ void UpdateModelAnimationBones(Model model, ModelAnimation anim, int frame)
         {
             if (model.meshes[i].boneMatrices)
             {
-                assert(model.meshes[i].boneCount == anim.boneCount);
                 if (firstMeshWithBones == -1)
                 {
                     firstMeshWithBones = i;
@@ -2286,39 +2305,28 @@ void UpdateModelAnimationBones(Model model, ModelAnimation anim, int frame)
             }
         }
 
-        // Update all bones and boneMatrices of first mesh with bones.
-        for (int boneId = 0; boneId < anim.boneCount; boneId++)
-        {
-            Vector3 inTranslation = model.bindPose[boneId].translation;
-            Quaternion inRotation = model.bindPose[boneId].rotation;
-            Vector3 inScale = model.bindPose[boneId].scale;
-
-            Vector3 outTranslation = anim.framePoses[frame][boneId].translation;
-            Quaternion outRotation = anim.framePoses[frame][boneId].rotation;
-            Vector3 outScale = anim.framePoses[frame][boneId].scale;
-
-            Vector3 invTranslation = Vector3RotateByQuaternion(Vector3Negate(inTranslation), QuaternionInvert(inRotation));
-            Quaternion invRotation = QuaternionInvert(inRotation);
-            Vector3 invScale = Vector3Divide((Vector3){ 1.0f, 1.0f, 1.0f }, inScale);
-
-            Vector3 boneTranslation = Vector3Add(
-                Vector3RotateByQuaternion(Vector3Multiply(outScale, invTranslation),
-                outRotation), outTranslation);
-            Quaternion boneRotation = QuaternionMultiply(outRotation, invRotation);
-            Vector3 boneScale = Vector3Multiply(outScale, invScale);
-
-            Matrix boneMatrix = MatrixMultiply(MatrixMultiply(
-                QuaternionToMatrix(boneRotation),
-                MatrixTranslate(boneTranslation.x, boneTranslation.y, boneTranslation.z)),
-                MatrixScale(boneScale.x, boneScale.y, boneScale.z));
-
-            model.meshes[firstMeshWithBones].boneMatrices[boneId] = boneMatrix;
-        }
-
-        // Update remaining meshes with bones
-        // NOTE: Using deep copy because shallow copy results in double free with 'UnloadModel()'
         if (firstMeshWithBones != -1)
         {
+            // Update all bones and boneMatrices of first mesh with bones.
+            for (int boneId = 0; boneId < anim.boneCount; boneId++)
+            {
+                Transform *bindTransform = &model.bindPose[boneId];
+                Matrix bindMatrix = MatrixMultiply(MatrixMultiply(
+                    MatrixScale(bindTransform->scale.x, bindTransform->scale.y, bindTransform->scale.z),
+                    QuaternionToMatrix(bindTransform->rotation)),
+                    MatrixTranslate(bindTransform->translation.x, bindTransform->translation.y, bindTransform->translation.z));
+
+                Transform *targetTransform = &anim.framePoses[frame][boneId];
+                Matrix targetMatrix = MatrixMultiply(MatrixMultiply(
+                    MatrixScale(targetTransform->scale.x, targetTransform->scale.y, targetTransform->scale.z),
+                    QuaternionToMatrix(targetTransform->rotation)),
+                    MatrixTranslate(targetTransform->translation.x, targetTransform->translation.y, targetTransform->translation.z));
+
+                model.meshes[firstMeshWithBones].boneMatrices[boneId] = MatrixMultiply(MatrixInvert(bindMatrix), targetMatrix);
+            }
+
+            // Update remaining meshes with bones
+            // NOTE: Using deep copy because shallow copy results in double free with 'UnloadModel()'
             for (int i = firstMeshWithBones + 1; i < model.meshCount; i++)
             {
                 if (model.meshes[i].boneMatrices)
@@ -2350,6 +2358,9 @@ void UpdateModelAnimation(Model model, ModelAnimation anim, int frame)
         bool updated = false; // Flag to check when anim vertex information is updated
         const int vValues = mesh.vertexCount*3;
 
+        // Skip if missing bone data, causes segfault without on some models
+        if ((mesh.boneWeights == NULL) || (mesh.boneIds == NULL)) continue;
+
         for (int vCounter = 0; vCounter < vValues; vCounter += 3)
         {
             mesh.animVertices[vCounter] = 0;
@@ -2361,7 +2372,8 @@ void UpdateModelAnimation(Model model, ModelAnimation anim, int frame)
                 mesh.animNormals[vCounter + 1] = 0;
                 mesh.animNormals[vCounter + 2] = 0;
             }
-                // Iterates over 4 bones per vertex
+
+            // Iterates over 4 bones per vertex
             for (int j = 0; j < 4; j++, boneCounter++)
             {
                 boneWeight = mesh.boneWeights[boneCounter];
@@ -2378,10 +2390,10 @@ void UpdateModelAnimation(Model model, ModelAnimation anim, int frame)
 
                 // Normals processing
                 // NOTE: We use meshes.baseNormals (default normal) to calculate meshes.normals (animated normals)
-                if (mesh.normals != NULL)
+                if ((mesh.normals != NULL) && (mesh.animNormals != NULL ))
                 {
                     animNormal = (Vector3){ mesh.normals[vCounter], mesh.normals[vCounter + 1], mesh.normals[vCounter + 2] };
-                    animNormal = Vector3Transform(animNormal,model.meshes[m].boneMatrices[boneId]);
+                    animNormal = Vector3Transform(animNormal, MatrixTranspose(MatrixInvert(model.meshes[m].boneMatrices[boneId])));
                     mesh.animNormals[vCounter] += animNormal.x*boneWeight;
                     mesh.animNormals[vCounter + 1] += animNormal.y*boneWeight;
                     mesh.animNormals[vCounter + 2] += animNormal.z*boneWeight;
@@ -2392,7 +2404,7 @@ void UpdateModelAnimation(Model model, ModelAnimation anim, int frame)
         if (updated)
         {
             rlUpdateVertexBuffer(mesh.vboId[0], mesh.animVertices, mesh.vertexCount*3*sizeof(float), 0); // Update vertex position
-            rlUpdateVertexBuffer(mesh.vboId[2], mesh.animNormals, mesh.vertexCount*3*sizeof(float), 0);  // Update vertex normals
+            if (mesh.normals != NULL) rlUpdateVertexBuffer(mesh.vboId[2], mesh.animNormals, mesh.vertexCount*3*sizeof(float), 0); // Update vertex normals
         }
     }
 }
@@ -3777,6 +3789,7 @@ void DrawModelWiresEx(Model model, Vector3 position, Vector3 rotationAxis, float
 }
 
 // Draw a model points
+// WARNING: OpenGL ES 2.0 does not support point mode drawing
 void DrawModelPoints(Model model, Vector3 position, float scale, Color tint)
 {
     rlEnablePointMode();
@@ -3785,10 +3798,11 @@ void DrawModelPoints(Model model, Vector3 position, float scale, Color tint)
     DrawModel(model, position, scale, tint);
 
     rlEnableBackfaceCulling();
-    rlDisableWireMode();
+    rlDisablePointMode();
 }
 
 // Draw a model points
+// WARNING: OpenGL ES 2.0 does not support point mode drawing
 void DrawModelPointsEx(Model model, Vector3 position, Vector3 rotationAxis, float rotationAngle, Vector3 scale, Color tint)
 {
     rlEnablePointMode();
@@ -3797,7 +3811,7 @@ void DrawModelPointsEx(Model model, Vector3 position, Vector3 rotationAxis, floa
     DrawModelEx(model, position, rotationAxis, rotationAngle, scale, tint);
 
     rlEnableBackfaceCulling();
-    rlDisableWireMode();
+    rlDisablePointMode();
 }
 
 // Draw a billboard
@@ -3874,10 +3888,10 @@ void DrawBillboardPro(Camera camera, Texture2D texture, Rectangle source, Vector
     }
 
     Vector2 texcoords[4];
-    texcoords[0] = (Vector2) { (float)source.x/texture.width, (float)(source.y + source.height)/texture.height };
-    texcoords[1] = (Vector2) { (float)(source.x + source.width)/texture.width, (float)(source.y + source.height)/texture.height };
-    texcoords[2] = (Vector2) { (float)(source.x + source.width)/texture.width, (float)source.y/texture.height };
-    texcoords[3] = (Vector2) { (float)source.x/texture.width, (float)source.y/texture.height };
+    texcoords[0] = (Vector2){ (float)source.x/texture.width, (float)(source.y + source.height)/texture.height };
+    texcoords[1] = (Vector2){ (float)(source.x + source.width)/texture.width, (float)(source.y + source.height)/texture.height };
+    texcoords[2] = (Vector2){ (float)(source.x + source.width)/texture.width, (float)source.y/texture.height };
+    texcoords[3] = (Vector2){ (float)source.x/texture.width, (float)source.y/texture.height };
 
     rlSetTexture(texture.id);
     rlBegin(RL_QUADS);
@@ -4568,12 +4582,14 @@ static Model LoadIQM(const char *fileName)
     if (memcmp(iqmHeader->magic, IQM_MAGIC, sizeof(IQM_MAGIC)) != 0)
     {
         TRACELOG(LOG_WARNING, "MODEL: [%s] IQM file is not a valid model", fileName);
+        UnloadFileData(fileData);
         return model;
     }
 
     if (iqmHeader->version != IQM_VERSION)
     {
         TRACELOG(LOG_WARNING, "MODEL: [%s] IQM file version not supported (%i)", fileName, iqmHeader->version);
+        UnloadFileData(fileData);
         return model;
     }
 
@@ -4889,12 +4905,14 @@ static ModelAnimation *LoadModelAnimationsIQM(const char *fileName, int *animCou
     if (memcmp(iqmHeader->magic, IQM_MAGIC, sizeof(IQM_MAGIC)) != 0)
     {
         TRACELOG(LOG_WARNING, "MODEL: [%s] IQM file is not a valid model", fileName);
+        UnloadFileData(fileData);
         return NULL;
     }
 
     if (iqmHeader->version != IQM_VERSION)
     {
         TRACELOG(LOG_WARNING, "MODEL: [%s] IQM file version not supported (%i)", fileName, iqmHeader->version);
+        UnloadFileData(fileData);
         return NULL;
     }
 
@@ -5132,7 +5150,7 @@ static Image LoadImageFromCgltfImage(cgltf_image *cgltfImage, const char *texPat
             image = LoadImage(TextFormat("%s/%s", texPath, cgltfImage->uri));
         }
     }
-    else if (cgltfImage->buffer_view != NULL && cgltfImage->buffer_view->buffer->data != NULL)    // Check if image is provided as data buffer
+    else if ((cgltfImage->buffer_view != NULL) && (cgltfImage->buffer_view->buffer->data != NULL))    // Check if image is provided as data buffer
     {
         unsigned char *data = RL_MALLOC(cgltfImage->buffer_view->size);
         int offset = (int)cgltfImage->buffer_view->offset;
@@ -5147,10 +5165,14 @@ static Image LoadImageFromCgltfImage(cgltf_image *cgltfImage, const char *texPat
 
         // Check mime_type for image: (cgltfImage->mime_type == "image/png")
         // NOTE: Detected that some models define mime_type as "image\\/png"
-        if ((strcmp(cgltfImage->mime_type, "image\\/png") == 0) ||
-            (strcmp(cgltfImage->mime_type, "image/png") == 0)) image = LoadImageFromMemory(".png", data, (int)cgltfImage->buffer_view->size);
-        else if ((strcmp(cgltfImage->mime_type, "image\\/jpeg") == 0) ||
-                 (strcmp(cgltfImage->mime_type, "image/jpeg") == 0)) image = LoadImageFromMemory(".jpg", data, (int)cgltfImage->buffer_view->size);
+        if ((strcmp(cgltfImage->mime_type, "image\\/png") == 0) || (strcmp(cgltfImage->mime_type, "image/png") == 0))
+        {
+            image = LoadImageFromMemory(".png", data, (int)cgltfImage->buffer_view->size);
+        }
+        else if ((strcmp(cgltfImage->mime_type, "image\\/jpeg") == 0) || (strcmp(cgltfImage->mime_type, "image/jpeg") == 0))
+        {
+            image = LoadImageFromMemory(".jpg", data, (int)cgltfImage->buffer_view->size);
+        }
         else TRACELOG(LOG_WARNING, "MODEL: glTF image data MIME type not recognized", TextFormat("%s/%s", texPath, cgltfImage->uri));
 
         RL_FREE(data);
@@ -5276,19 +5298,18 @@ static Model LoadGLTF(const char *fileName)
         if (result != cgltf_result_success) TRACELOG(LOG_INFO, "MODEL: [%s] Failed to load mesh/material buffers", fileName);
 
         int primitivesCount = 0;
+
         // NOTE: We will load every primitive in the glTF as a separate raylib Mesh.
         // Determine total number of meshes needed from the node hierarchy.
         for (unsigned int i = 0; i < data->nodes_count; i++)
         {
             cgltf_node *node = &(data->nodes[i]);
             cgltf_mesh *mesh = node->mesh;
-            if (!mesh)
-                continue;
+            if (!mesh) continue;
 
             for (unsigned int p = 0; p < mesh->primitives_count; p++)
             {
-                if (mesh->primitives[p].type == cgltf_primitive_type_triangles)
-                    primitivesCount++;
+                if (mesh->primitives[p].type == cgltf_primitive_type_triangles) primitivesCount++;
             }
         }
         TRACELOG(LOG_DEBUG, "    > Primitives (triangles only) count based on hierarchy : %i", primitivesCount);
@@ -5338,7 +5359,34 @@ static Model LoadGLTF(const char *fileName)
                     Image imMetallicRoughness = LoadImageFromCgltfImage(data->materials[i].pbr_metallic_roughness.metallic_roughness_texture.texture->image, texPath);
                     if (imMetallicRoughness.data != NULL)
                     {
-                        model.materials[j].maps[MATERIAL_MAP_ROUGHNESS].texture = LoadTextureFromImage(imMetallicRoughness);
+                        Image imMetallic = { 0 };
+                        Image imRoughness = { 0 };
+
+                        imMetallic.data = RL_MALLOC(imMetallicRoughness.width*imMetallicRoughness.height);
+                        imRoughness.data = RL_MALLOC(imMetallicRoughness.width*imMetallicRoughness.height);
+
+                        imMetallic.width = imRoughness.width = imMetallicRoughness.width;
+                        imMetallic.height = imRoughness.height = imMetallicRoughness.height;
+
+                        imMetallic.format = imRoughness.format = PIXELFORMAT_UNCOMPRESSED_GRAYSCALE;
+                        imMetallic.mipmaps = imRoughness.mipmaps = 1;
+
+                        for (int x = 0; x < imRoughness.width; x++)
+                        {
+                            for (int y = 0; y < imRoughness.height; y++)
+                            {
+                                Color color = GetImageColor(imMetallicRoughness, x, y);
+
+                                ((unsigned char *)imRoughness.data)[y*imRoughness.width + x] = color.g; // Roughness color channel
+                                ((unsigned char *)imMetallic.data)[y*imMetallic.width + x] = color.b; // Metallic color channel
+                            }
+                        }
+
+                        model.materials[j].maps[MATERIAL_MAP_ROUGHNESS].texture = LoadTextureFromImage(imRoughness);
+                        model.materials[j].maps[MATERIAL_MAP_METALNESS].texture = LoadTextureFromImage(imMetallic);
+
+                        UnloadImage(imRoughness);
+                        UnloadImage(imMetallic);
                         UnloadImage(imMetallicRoughness);
                     }
 

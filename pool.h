@@ -41,8 +41,8 @@ struct Pool {
 };
 
 struct Pool_save {
-  uint32_t occupied;
-  uint32_t cur_chunk;
+  uint64_t occupied;
+  uint64_t cur_chunk;
 };
 
 void pool_init(Pool *p, size_t item_size) {
@@ -62,7 +62,7 @@ void* pool_alloc(Pool *p) {
     if(p->cur_chunk >= p->chunks_available) {
       p->chunks_available <<= 1;
       p->chunks = realloc(p->chunks, sizeof(uint8_t*) * p->chunks_available);
-      for(uint32_t i = p->cur_chunk; i < p->chunks_available; ++i)
+      for(uint64_t i = p->cur_chunk; i < p->chunks_available; ++i)
         p->chunks[i] = malloc(p->item_size << 6);
     }
   }
@@ -81,7 +81,7 @@ void pool_free(Pool *p) {
 
 void pool_destroy(Pool *p) {
   if(p->chunks) {
-    for(uint32_t i = 0; i < p->chunks_available; ++i)
+    for(uint64_t i = 0; i < p->chunks_available; ++i)
       free(p->chunks[i]);
     free(p->chunks);
   }

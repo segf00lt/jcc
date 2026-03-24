@@ -42,7 +42,7 @@
 *
 *   LICENSE: zlib/libpng
 *
-*   Copyright (c) 2013-2024 Ramon Santamaria (@raysan5)
+*   Copyright (c) 2013-2025 Ramon Santamaria (@raysan5)
 *
 *   This software is provided "as-is", without any express or implied warranty. In no event
 *   will the authors be held liable for any damages arising from the use of this software.
@@ -124,10 +124,6 @@
 #endif
 
 // Image fileformats not supported by default
-#if defined(__TINYC__)
-    #define STBI_NO_SIMD
-#endif
-
 #if (defined(SUPPORT_FILEFORMAT_BMP) || \
      defined(SUPPORT_FILEFORMAT_PNG) || \
      defined(SUPPORT_FILEFORMAT_TGA) || \
@@ -148,6 +144,10 @@
     #define STBI_REALLOC RL_REALLOC
 
     #define STBI_NO_THREAD_LOCALS
+
+    #if defined(__TINYC__)
+        #define STBI_NO_SIMD
+    #endif
 
     #define STB_IMAGE_IMPLEMENTATION
     #include "external/stb_image.h"         // Required for: stbi_load_from_file()
@@ -218,6 +218,9 @@
     #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 
+#if defined(__TINYC__)
+    #define STBIR_NO_SIMD
+#endif
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include "external/stb_image_resize2.h"     // Required for: stbir_resize_uint8_linear() [ImageResize()]
 
@@ -761,7 +764,7 @@ bool ExportImageAsCode(Image image, const char *fileName)
     byteCount += sprintf(txtData + byteCount, "// more info and bugs-report:  github.com/raysan5/raylib                              //\n");
     byteCount += sprintf(txtData + byteCount, "// feedback and support:       ray[at]raylib.com                                      //\n");
     byteCount += sprintf(txtData + byteCount, "//                                                                                    //\n");
-    byteCount += sprintf(txtData + byteCount, "// Copyright (c) 2018-2024 Ramon Santamaria (@raysan5)                                //\n");
+    byteCount += sprintf(txtData + byteCount, "// Copyright (c) 2018-2025 Ramon Santamaria (@raysan5)                                //\n");
     byteCount += sprintf(txtData + byteCount, "//                                                                                    //\n");
     byteCount += sprintf(txtData + byteCount, "////////////////////////////////////////////////////////////////////////////////////////\n\n");
 
@@ -4205,8 +4208,11 @@ TextureCubemap LoadTextureCubemap(Image image, int layout)
 
             Image mipmapped = ImageCopy(image);
         #if defined(SUPPORT_IMAGE_MANIPULATION)
-            ImageMipmaps(&mipmapped);
-            ImageMipmaps(&faces);
+            if (image.mipmaps > 1)
+            {
+                ImageMipmaps(&mipmapped);
+                ImageMipmaps(&faces);
+            }
         #endif
 
             // NOTE: Image formatting does not work with compressed textures
@@ -4223,7 +4229,7 @@ TextureCubemap LoadTextureCubemap(Image image, int layout)
         if (cubemap.id != 0)
         {
             cubemap.format = faces.format;
-            cubemap.mipmaps = 1;
+            cubemap.mipmaps = faces.mipmaps;
         }
         else TRACELOG(LOG_WARNING, "IMAGE: Failed to load cubemap image");
 
@@ -4485,6 +4491,127 @@ void DrawTextureRec(Texture2D texture, Rectangle source, Vector2 position, Color
     DrawTexturePro(texture, source, dest, origin, 0.0f, tint);
 }
 
+// TODO
+// ~jfd: custom function
+// Draw a part of a texture (defined by a rectangle) with 'pro' parameters
+// NOTE: origin is relative to destination rectangle size
+// NOTE(jfd) this function takes a matrix for doing the transform, to avoid needing to call atan2 before drawing
+void DrawTextureProMatrix(Texture2D texture, Rectangle source, Rectangle dest, Vector2 origin, Matrix transform, Color tint)
+{
+  assert("UNIMPLEMENTED"&&0);
+#if !1
+    // Check if texture is valid
+    if (texture.id > 0)
+    {
+        float width = (float)texture.width;
+        float height = (float)texture.height;
+
+        bool flipX = false;
+
+        if (source.width < 0) { flipX = true; source.width *= -1; }
+        if (source.height < 0) source.y -= source.height;
+
+        if (dest.width < 0) dest.width *= -1;
+        if (dest.height < 0) dest.height *= -1;
+
+        Vector2 topLeft = { 0 };
+        Vector2 topRight = { 0 };
+        Vector2 bottomLeft = { 0 };
+        Vector2 bottomRight = { 0 };
+
+
+
+        float sinRotation = sinf(rotation*DEG2RAD);
+        float cosRotation = cosf(rotation*DEG2RAD);
+        float x = dest.x;
+        float y = dest.y;
+        float dx = -origin.x;
+        float dy = -origin.y;
+
+        topLeft.x = x + dx*cosRotation - dy*sinRotation;
+        topLeft.y = y + dx*sinRotation + dy*cosRotation;
+
+        topRight.x = x + (dx + dest.width)*cosRotation - dy*sinRotation;
+        topRight.y = y + (dx + dest.width)*sinRotation + dy*cosRotation;
+
+        bottomLeft.x = x + dx*cosRotation - (dy + dest.height)*sinRotation;
+        bottomLeft.y = y + dx*sinRotation + (dy + dest.height)*cosRotation;
+
+        bottomRight.x = x + (dx + dest.width)*cosRotation - (dy + dest.height)*sinRotation;
+        bottomRight.y = y + (dx + dest.width)*sinRotation + (dy + dest.height)*cosRotation;
+
+        rlSetTexture(texture.id);
+        rlBegin(RL_QUADS);
+
+            rlColor4ub(tint.r, tint.g, tint.b, tint.a);
+            rlNormal3f(0.0f, 0.0f, 1.0f);                          // Normal vector pointing towards viewer
+
+            // Top-left corner for texture and quad
+            if (flipX) rlTexCoord2f((source.x + source.width)/width, source.y/height);
+            else rlTexCoord2f(source.x/width, source.y/height);
+            rlVertex2f(topLeft.x, topLeft.y);
+
+            // Bottom-left corner for texture and quad
+            if (flipX) rlTexCoord2f((source.x + source.width)/width, (source.y + source.height)/height);
+            else rlTexCoord2f(source.x/width, (source.y + source.height)/height);
+            rlVertex2f(bottomLeft.x, bottomLeft.y);
+
+            // Bottom-right corner for texture and quad
+            if (flipX) rlTexCoord2f(source.x/width, (source.y + source.height)/height);
+            else rlTexCoord2f((source.x + source.width)/width, (source.y + source.height)/height);
+            rlVertex2f(bottomRight.x, bottomRight.y);
+
+            // Top-right corner for texture and quad
+            if (flipX) rlTexCoord2f(source.x/width, source.y/height);
+            else rlTexCoord2f((source.x + source.width)/width, source.y/height);
+            rlVertex2f(topRight.x, topRight.y);
+
+        rlEnd();
+        rlSetTexture(0);
+
+        // NOTE: Vertex position can be transformed using matrices
+        // but the process is way more costly than just calculating
+        // the vertex positions manually, like done above
+        // I leave here the old implementation for educational purposes,
+        // just in case someone wants to do some performance test
+        /*
+        rlSetTexture(texture.id);
+        rlPushMatrix();
+            rlTranslatef(dest.x, dest.y, 0.0f);
+            if (rotation != 0.0f) rlRotatef(rotation, 0.0f, 0.0f, 1.0f);
+            rlTranslatef(-origin.x, -origin.y, 0.0f);
+
+            rlBegin(RL_QUADS);
+                rlColor4ub(tint.r, tint.g, tint.b, tint.a);
+                rlNormal3f(0.0f, 0.0f, 1.0f);                          // Normal vector pointing towards viewer
+
+                // Bottom-left corner for texture and quad
+                if (flipX) rlTexCoord2f((source.x + source.width)/width, source.y/height);
+                else rlTexCoord2f(source.x/width, source.y/height);
+                rlVertex2f(0.0f, 0.0f);
+
+                // Bottom-right corner for texture and quad
+                if (flipX) rlTexCoord2f((source.x + source.width)/width, (source.y + source.height)/height);
+                else rlTexCoord2f(source.x/width, (source.y + source.height)/height);
+                rlVertex2f(0.0f, dest.height);
+
+                // Top-right corner for texture and quad
+                if (flipX) rlTexCoord2f(source.x/width, (source.y + source.height)/height);
+                else rlTexCoord2f((source.x + source.width)/width, (source.y + source.height)/height);
+                rlVertex2f(dest.width, dest.height);
+
+                // Top-left corner for texture and quad
+                if (flipX) rlTexCoord2f(source.x/width, source.y/height);
+                else rlTexCoord2f((source.x + source.width)/width, source.y/height);
+                rlVertex2f(dest.width, 0.0f);
+            rlEnd();
+        rlPopMatrix();
+        rlSetTexture(0);
+        */
+    }
+#endif
+}
+                                                                                                                                    //
 // Draw a part of a texture (defined by a rectangle) with 'pro' parameters
 // NOTE: origin is relative to destination rectangle size
 void DrawTexturePro(Texture2D texture, Rectangle source, Rectangle dest, Vector2 origin, float rotation, Color tint)
@@ -5384,13 +5511,19 @@ static float HalfToFloat(unsigned short x)
 {
     float result = 0.0f;
 
+    union
+    {
+        float fm;
+        unsigned int ui;
+    } uni;
+
     const unsigned int e = (x & 0x7C00) >> 10; // Exponent
     const unsigned int m = (x & 0x03FF) << 13; // Mantissa
-    const float fm = (float)m;
-    const unsigned int v = (*(unsigned int *)&fm) >> 23; // Evil log2 bit hack to count leading zeros in denormalized format
-    const unsigned int r = (x & 0x8000) << 16 | (e != 0)*((e + 112) << 23 | m) | ((e == 0)&(m != 0))*((v - 37) << 23 | ((m << (150 - v)) & 0x007FE000)); // sign : normalized : denormalized
+    uni.fm = (float)m;
+    const unsigned int v = uni.ui >> 23; // Evil log2 bit hack to count leading zeros in denormalized format
+    uni.ui = (x & 0x8000) << 16 | (e != 0)*((e + 112) << 23 | m) | ((e == 0)&(m != 0))*((v - 37) << 23 | ((m << (150 - v)) & 0x007FE000)); // sign : normalized : denormalized
 
-    result = *(float *)&r;
+    result = uni.fm;
 
     return result;
 }
@@ -5400,7 +5533,14 @@ static unsigned short FloatToHalf(float x)
 {
     unsigned short result = 0;
 
-    const unsigned int b = (*(unsigned int *) & x) + 0x00001000; // Round-to-nearest-even: add last bit after truncated mantissa
+    union
+    {
+        float fm;
+        unsigned int ui;
+    } uni;
+    uni.fm = x;
+
+    const unsigned int b = uni.ui + 0x00001000; // Round-to-nearest-even: add last bit after truncated mantissa
     const unsigned int e = (b & 0x7F800000) >> 23; // Exponent
     const unsigned int m = b & 0x007FFFFF; // Mantissa; in line below: 0x007FF000 = 0x00800000-0x00001000 = decimal indicator flag - initial rounding
 
@@ -5493,6 +5633,7 @@ static Vector4 *LoadImageDataNormalized(Image image)
                     pixels[i].z = 0.0f;
                     pixels[i].w = 1.0f;
 
+                    k += 1;
                 } break;
                 case PIXELFORMAT_UNCOMPRESSED_R32G32B32:
                 {
@@ -5518,6 +5659,8 @@ static Vector4 *LoadImageDataNormalized(Image image)
                     pixels[i].y = 0.0f;
                     pixels[i].z = 0.0f;
                     pixels[i].w = 1.0f;
+
+                    k += 1;
                 } break;
                 case PIXELFORMAT_UNCOMPRESSED_R16G16B16:
                 {

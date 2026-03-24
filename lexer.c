@@ -1,7 +1,4 @@
 #include <ctype.h>
-#include "basic.h"
-#include <string.h>
-
 
 //TODO make these things order independent
 #define TOKENS                             \
@@ -158,7 +155,7 @@ u64 token_keyword_lengths[] = {
 char token_chars[] = "!\"#$%&\'()*+,-./:;<=>?@[\\]^`{|}~";
 
 
-INLINE void lexer_init(Lexer *l, char *src, char *src_path) {
+force_inline void lexer_init(Lexer *l, char *src, char *src_path) {
   *l = (Lexer){0};
   l->token = TOKEN_INVALID;
   l->src_path = src_path;
@@ -174,7 +171,7 @@ INLINE void lexer_init(Lexer *l, char *src, char *src_path) {
   l->loc_next = l->loc;
 }
 
-INLINE Token get_literal(char *s, int n) {
+force_inline Token get_literal(char *s, int n) {
   int i = 0;
 
   if(s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
@@ -218,7 +215,7 @@ INLINE Token get_literal(char *s, int n) {
   }
 }
 
-INLINE float strn_to_float(char *s, int n) {
+force_inline float strn_to_float(char *s, int n) {
   float result = 0.0f;
   float multiplier = 0.1f;
   int i = 0;
@@ -249,7 +246,7 @@ INLINE float strn_to_float(char *s, int n) {
     }
 
     for(; i < n && isdigit(s[i]); ++i) {
-      exponent *= 10.0f;
+      exponent *= 10;
       exponent += s[i] - '0';
     }
 
@@ -263,7 +260,7 @@ INLINE float strn_to_float(char *s, int n) {
   return result;
 }
 
-INLINE s64 strn_to_int(char *s, int n) {
+force_inline s64 strn_to_int(char *s, int n) {
   s64 result = 0;
 
   for(int i = 0; i < n; ++i) {
@@ -274,7 +271,7 @@ INLINE s64 strn_to_int(char *s, int n) {
   return result;
 }
 
-INLINE u64 strn_to_hex(char *s, int n) {
+force_inline u64 strn_to_hex(char *s, int n) {
   u64 result = 0;
 
   if(s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
@@ -291,7 +288,7 @@ INLINE u64 strn_to_hex(char *s, int n) {
   return result;
 }
 
-INLINE u64 strn_to_bin(char *s, int n) {
+force_inline u64 strn_to_bin(char *s, int n) {
   u64 result = 0;
 
   if(s[0] == '0' && (s[1] == 'b' || s[1] == 'B')) {
@@ -307,7 +304,7 @@ INLINE u64 strn_to_bin(char *s, int n) {
   return result;
 }
 
-INLINE Token lex(Lexer *l) {
+force_inline Token lex(Lexer *l) {
   if(l->token == 0) {
     return 0;
   }
@@ -372,8 +369,8 @@ INLINE Token lex(Lexer *l) {
   l->token = TOKEN_INVALID;
 
   /* keywords */
-  for(int i = TOKEN_KEYWORD + 1 - TOKEN_INVALID; i < STATICARRLEN(token_keywords); ++i) {
-    int keyword_length = token_keyword_lengths[i];
+  for(int i = TOKEN_KEYWORD + 1 - TOKEN_INVALID; i < ARRLEN(token_keywords); ++i) {
+    int keyword_length = (int)token_keyword_lengths[i];
     if(strstr(tp, token_keywords[i]) == tp && (!(isalpha(tp[keyword_length]) || tp[keyword_length] == '_') || isdigit(tp[keyword_length]))) {
       l->text.e = tp + keyword_length;
       l->pos += keyword_length;
@@ -456,7 +453,7 @@ INLINE Token lex(Lexer *l) {
     l->text.e = s;
     l->text.s = tp + 1;
     l->pos = s + 1;
-    l->loc_next.col += l->pos - tp;
+    l->loc_next.col += (int)(l->pos - tp);
     return (l->token = TOKEN_STRINGLIT);
   } else {
     /* find possible end of number */
@@ -511,14 +508,14 @@ INLINE Token lex(Lexer *l) {
       }
     }
 
-    int n = s - tp;
+    int n = (int)(s - tp);
 
     switch(l->token) {
       case TOKEN_INVALID:
         break;
       default:
         printf("%s unimplemented\n", TOKEN_DEBUG(l->token));
-        assert(0);
+        UNIMPLEMENTED;
         break;
       case TOKEN_INTLIT:
         l->integer = strn_to_int(tp, n);
@@ -557,7 +554,7 @@ INLINE Token lex(Lexer *l) {
     l->text.s = tp;
     l->text.e = s;
     l->pos = s;
-    l->loc_next.col += s - tp;
+    l->loc_next.col += (int)(s - tp);
     return (l->token = TOKEN_IDENT);
   }
 

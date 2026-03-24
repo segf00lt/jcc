@@ -29,7 +29,7 @@
 *
 *   LICENSE: zlib/libpng
 *
-*   Copyright (c) 2013-2024 Ramon Santamaria (@raysan5) and contributors
+*   Copyright (c) 2013-2025 Ramon Santamaria (@raysan5) and contributors
 *
 *   This software is provided "as-is", without any express or implied warranty. In no event
 *   will the authors be held liable for any damages arising from the use of this software.
@@ -277,7 +277,7 @@ void MinimizeWindow(void)
     TRACELOG(LOG_WARNING, "MinimizeWindow() not available on target platform");
 }
 
-// Set window state: not minimized/maximized
+// Restore window from being minimized/maximized
 void RestoreWindow(void)
 {
     TRACELOG(LOG_WARNING, "RestoreWindow() not available on target platform");
@@ -371,7 +371,7 @@ int GetMonitorCount(void)
     return 1;
 }
 
-// Get number of monitors
+// Get current monitor where window is placed
 int GetCurrentMonitor(void)
 {
     TRACELOG(LOG_WARNING, "GetCurrentMonitor() not implemented on target platform");
@@ -632,6 +632,13 @@ void SetMousePosition(int x, int y)
     CORE.Input.Mouse.previousPosition = CORE.Input.Mouse.currentPosition;
 }
 
+// Set mouse position XY
+void SetMousePositionV(Vector2 v)
+{
+    CORE.Input.Mouse.currentPosition = v;
+    CORE.Input.Mouse.previousPosition = CORE.Input.Mouse.currentPosition;
+}
+
 // Set mouse cursor
 void SetMouseCursor(int cursor)
 {
@@ -735,20 +742,24 @@ int InitPlatform(void)
 
 #if defined(DEFAULT_GRAPHIC_DEVICE_DRM)
     platform.fd = open(DEFAULT_GRAPHIC_DEVICE_DRM, O_RDWR);
+    if (platform.fd != -1) TRACELOG(LOG_INFO, "DISPLAY: Default graphic device DRM opened successfully");
 #else
-    TRACELOG(LOG_INFO, "DISPLAY: No graphic card set, trying platform-gpu-card");
+    TRACELOG(LOG_WARNING, "DISPLAY: No graphic card set, trying platform-gpu-card");
     platform.fd = open("/dev/dri/by-path/platform-gpu-card",  O_RDWR); // VideoCore VI (Raspberry Pi 4)
+    if (platform.fd != -1) TRACELOG(LOG_INFO, "DISPLAY: platform-gpu-card opened successfully");
 
     if ((platform.fd == -1) || (drmModeGetResources(platform.fd) == NULL))
     {
-        TRACELOG(LOG_INFO, "DISPLAY: Failed to open platform-gpu-card, trying card1");
+        TRACELOG(LOG_WARNING, "DISPLAY: Failed to open platform-gpu-card, trying card1");
         platform.fd = open("/dev/dri/card1", O_RDWR); // Other Embedded
+        if (platform.fd != -1) TRACELOG(LOG_INFO, "DISPLAY: card1 opened successfully");
     }
 
     if ((platform.fd == -1) || (drmModeGetResources(platform.fd) == NULL))
     {
-        TRACELOG(LOG_INFO, "DISPLAY: Failed to open graphic card1, trying card0");
+        TRACELOG(LOG_WARNING, "DISPLAY: Failed to open graphic card1, trying card0");
         platform.fd = open("/dev/dri/card0", O_RDWR); // VideoCore IV (Raspberry Pi 1-3)
+        if (platform.fd != -1) TRACELOG(LOG_INFO, "DISPLAY: card0 opened successfully");
     }
 #endif
 
@@ -898,18 +909,17 @@ int InitPlatform(void)
         TRACELOG(LOG_INFO, "DISPLAY: Trying to enable MSAA x4");
     }
 
-    const EGLint framebufferAttribs[] =
-    {
-        EGL_RENDERABLE_TYPE, (rlGetVersion() == RL_OPENGL_ES_30)? EGL_OPENGL_ES3_BIT : EGL_OPENGL_ES2_BIT,      // Type of context support
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,          // Don't use it on Android!
+    const EGLint framebufferAttribs[] = {
+        EGL_RENDERABLE_TYPE, (rlGetVersion() == RL_OPENGL_ES_30)? EGL_OPENGL_ES3_BIT : EGL_OPENGL_ES2_BIT, // Type of context support
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT, // Don't use it on Android!
         EGL_RED_SIZE, 8,            // RED color bit depth (alternative: 5)
         EGL_GREEN_SIZE, 8,          // GREEN color bit depth (alternative: 6)
         EGL_BLUE_SIZE, 8,           // BLUE color bit depth (alternative: 5)
         EGL_ALPHA_SIZE, 8,        // ALPHA bit depth (required for transparent framebuffer)
         //EGL_TRANSPARENT_TYPE, EGL_NONE, // Request transparent framebuffer (EGL_TRANSPARENT_RGB does not work on RPI)
-        EGL_DEPTH_SIZE, 16,         // Depth buffer size (Required to use Depth testing!)
+        EGL_DEPTH_SIZE, 24,         // Depth buffer size (Required to use Depth testing!)
         //EGL_STENCIL_SIZE, 8,      // Stencil buffer size
-        EGL_SAMPLE_BUFFERS, sampleBuffer,    // Activate MSAA
+        EGL_SAMPLE_BUFFERS, sampleBuffer, // Activate MSAA
         EGL_SAMPLES, samples,       // 4x Antialiasing if activated (Free on MALI GPUs)
         EGL_NONE
     };
@@ -1400,7 +1410,7 @@ static void ConfigureEvdevDevice(char *device)
     int fd = open(device, O_RDONLY | O_NONBLOCK);
     if (fd < 0)
     {
-        TRACELOG(LOG_WARNING, "DRM: Failed to open input device: %s", device);
+        TRACELOG(LOG_WARNING, "SYSTEM: Failed to open input device: %s", device);
         return;
     }
 

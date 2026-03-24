@@ -1,0 +1,71 @@
+// raddbg 0.9.24 project file
+
+recent_file: path: "jcc.c"
+recent_file: path: "third_party/stb/stb_sprintf.h"
+recent_file: path: "base/arena.c"
+recent_file: path: "base/str.c"
+target:
+{
+  executable: "jcc.exe"
+  working_directory: ""
+  enabled: 1
+  entry_point: main
+  arguments: "test/breakout.jpl"
+}
+debug_info:
+{
+  path: "C:/Users/joaod/fun/jcc/jcc.pdb"
+  timestamp: 66210184443167
+}
+breakpoint:
+{
+  address_location: main
+  hit_count: 1
+  enabled: 1
+}
+breakpoint:
+{
+  address_location: ir_gen_foreign_proc_x64
+  hit_count: 0
+  enabled: 0
+}
+breakpoint:
+{
+  source_location: "jcc.c:5279:1"
+  hit_count: 0
+  enabled: 0
+}
+breakpoint:
+{
+  source_location: "jcc.c:1401:1"
+  hit_count: 0
+  enabled: 0
+}
+breakpoint:
+{
+  source_location: "jcc.c:1408:1"
+  hit_count: 0
+  enabled: 0
+}
+breakpoint:
+{
+  source_location: "jcc.c:5298:1"
+  hit_count: 0
+  enabled: 0
+}
+debug_info:
+{
+  path: "C:/Users/joaod/fun/jcc/third_party/raylib/build/debug/raylib.pdb"
+  timestamp: 66210145563555
+}
+breakpoint:
+{
+  source_location: "jcc.c:7249:18"
+  hit_count: 1
+}
+breakpoint:
+{
+  source_location: "jcc.c:12905:1"
+  hit_count: 0
+  enabled: 0
+}

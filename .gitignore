@@ -23,6 +23,12 @@ vgcore*
 *.dylib
 *.so
 *.so*
+*.dll*
+*.pdb*
+*.exp*
+*.exe*
+*.obj*
+*.rdi*
 a.out
 .project.gf
 rule110
