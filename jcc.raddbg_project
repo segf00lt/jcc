@@ -15,7 +15,7 @@ target:
 debug_info:
 {
   path: "C:/Users/joaod/fun/jcc/jcc.pdb"
-  timestamp: 66210184443167
+  timestamp: 66210236172290
 }
 breakpoint:
 {
@@ -60,12 +60,37 @@ debug_info:
 }
 breakpoint:
 {
-  source_location: "jcc.c:7249:18"
-  hit_count: 1
-}
-breakpoint:
-{
   source_location: "jcc.c:12905:1"
   hit_count: 0
   enabled: 0
+}
+breakpoint:
+{
+  hit_count: 2
+  source_location: "jcc.c:7258:1"
+}
+breakpoint:
+{
+  hit_count: 2
+  source_location: "jcc.c:7282:1"
+}
+breakpoint:
+{
+  hit_count: 1
+  source_location: "jcc.c:7302:1"
+}
+breakpoint:
+{
+  hit_count: 1
+  source_location: "jcc.c:7317:1"
+}
+breakpoint:
+{
+  hit_count: 0
+  source_location: "jcc.c:7263:1"
+}
+type_view:
+{
+  type: IR_foreign_call_param_info_array
+  expr: "array(d, count)"
 }
