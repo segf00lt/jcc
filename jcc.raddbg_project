@@ -1,96 +1,91 @@
 // raddbg 0.9.24 project file
 
 recent_file: path: "jcc.c"
+recent_file: path: "preload.c"
+recent_file: path: "third_party/dyncall-1.4/dyncall/dyncall_api.c"
+recent_file: path: "third_party/dyncall-1.4/dyncall/dyncall_callvm_x64.c"
+recent_file: path: "base/str.c"
+recent_file: path: "third_party/raylib/rshapes.c"
+recent_file: path: "test_dyncall.c"
 recent_file: path: "third_party/stb/stb_sprintf.h"
 recent_file: path: "base/arena.c"
-recent_file: path: "base/str.c"
 target:
 {
   executable: "jcc.exe"
   working_directory: ""
-  enabled: 1
   entry_point: main
-  arguments: "test/breakout.jpl"
+  arguments: "test/hello.jpl"
+  enabled: 1
 }
 debug_info:
 {
   path: "C:/Users/joaod/fun/jcc/jcc.pdb"
-  timestamp: 66210236172290
-}
-breakpoint:
-{
-  address_location: main
-  hit_count: 1
-  enabled: 1
-}
-breakpoint:
-{
-  address_location: ir_gen_foreign_proc_x64
-  hit_count: 0
-  enabled: 0
-}
-breakpoint:
-{
-  source_location: "jcc.c:5279:1"
-  hit_count: 0
-  enabled: 0
-}
-breakpoint:
-{
-  source_location: "jcc.c:1401:1"
-  hit_count: 0
-  enabled: 0
-}
-breakpoint:
-{
-  source_location: "jcc.c:1408:1"
-  hit_count: 0
-  enabled: 0
-}
-breakpoint:
-{
-  source_location: "jcc.c:5298:1"
-  hit_count: 0
-  enabled: 0
+  timestamp: 66210333945482
 }
 debug_info:
 {
   path: "C:/Users/joaod/fun/jcc/third_party/raylib/build/debug/raylib.pdb"
   timestamp: 66210145563555
 }
+type_view:
+{
+  type: IR_foreign_call_param_info_array
+  expr: "array(d, count)"
+}
+debug_info:
+{
+  path: "C:/Users/joaod/fun/jcc/test_dyncall.pdb"
+  timestamp: 66210327899723
+}
 breakpoint:
 {
-  source_location: "jcc.c:12905:1"
+  address_location: CheckCollisionCircleRec
+  hit_count: 0
+  enabled: 0
+}
+target:
+{
+  executable: "test_dyncall.exe"
+  working_directory: ""
+  enabled: 0
+  entry_point: main
+}
+breakpoint:
+{
+  source_location: "jcc.c:7533:1"
+  enabled: 0
+  hit_count: 0
+}
+breakpoint:
+{
+  source_location: "jcc.c:7509:1"
   hit_count: 0
   enabled: 0
 }
 breakpoint:
 {
-  hit_count: 2
-  source_location: "jcc.c:7258:1"
-}
-breakpoint:
-{
-  hit_count: 2
-  source_location: "jcc.c:7282:1"
-}
-breakpoint:
-{
+  address_location: write
   hit_count: 1
-  source_location: "jcc.c:7302:1"
+  enabled: 0
 }
 breakpoint:
 {
+  enabled: 0
   hit_count: 1
-  source_location: "jcc.c:7317:1"
+  source_location: "jcc.c:7461:1"
+  condition: "new_procid == 3"
 }
 breakpoint:
 {
-  hit_count: 0
-  source_location: "jcc.c:7263:1"
+  source_location: "jcc.c:7416:1"
+  condition: "new_procid == 3"
+  hit_count: 3
+  enabled: 0
 }
-type_view:
+breakpoint:
 {
-  type: IR_foreign_call_param_info_array
-  expr: "array(d, count)"
+  condition: "procid == 15"
+  hit_count: 2
+  source_location: "jcc.c:7946:1"
+  enabled: 0
 }

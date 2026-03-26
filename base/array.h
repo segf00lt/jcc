@@ -74,7 +74,7 @@ struct name {                 \
 
 #define arr_clear(array) ((array).count = 0, memory_zero((array).d, arr_stride((array)) * (array).cap))
 
-#define arr_pop(array)        ( ( ((array).count > 0) ? ((array).count--) : (0) ), ( ((array).count <= 0) ? (arr_clear((array))) : (0) ), (array).d[(array).count] )
+#define arr_pop(array) ( ( ((array).count <= 0) ? (arr_clear((array))) : (0) ), ( ((array).count > 0) ? (--(array).count) : (0) ), (array).d[(array).count] )
 
 #define arr_del(array, i) ( (array).d[i] = arr_last(array), --(array).count )
 // #define arr_del_ordered(array, i)

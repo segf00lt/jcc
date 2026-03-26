@@ -1,6 +1,7 @@
 #run main();
 
 proc main() {
+    print("hello\n");
     print("hello world %\n", 42);
     s := "jimmy";
     s2 := "bob";
@@ -8,7 +9,7 @@ proc main() {
     bob_age := 29;
     print("% is % years old, % is % years younger than %\n", s, jimmy_age, s2, cast(f32)(jimmy_age - bob_age), s);
     print("%\n", 124.91);
-    
+
     testarr: [..]float;
     arr_push(@testarr, 1.2);
     print("here 1!!!!!\n");

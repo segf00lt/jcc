@@ -29,6 +29,7 @@ vgcore*
 *.exe*
 *.obj*
 *.rdi*
+*.lib*
 a.out
 .project.gf
 rule110

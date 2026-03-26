@@ -10,12 +10,6 @@ proc temp_c_string(s: string) *char {
 TARGET_FPS :: 60;
 
 proc main() {
-    bricks: [N_BRICKS]Rectangle = ---;
-
-    {
-        v: Vector2;
-        CheckCollisionCircleRec(v, BALL_RADIUS, bricks[0]);
-    }
 
     print("test_arr = %\n", test_arr);
     print("BRICK_COLS = %\nBRICK_ROWS = %\n", BRICK_COLS, BRICK_ROWS);
@@ -64,6 +58,7 @@ proc main() {
     DisableCursor();
 
 
+    bricks: [N_BRICKS]Rectangle = ---;
     cur_brick: Rectangle = ---;
     cur_brick.x = 0;
     cur_brick.y = 0;

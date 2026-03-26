@@ -136,7 +136,7 @@ proc memmove(dest: *void, src: *void, n: size_t) *void #system;
 
 proc __align_up(offset: u64, align: u64 = 8) u64 {
     if align == cast(u64)0 return offset;
-    
+
     return (offset + align - cast(u64)1) & ~(align - cast(u64)1);
 }
 

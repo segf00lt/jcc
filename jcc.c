@@ -1248,7 +1248,7 @@ u64         ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_liter
 void        ir_gen_memorycopy(Job *jp, u64 bytes, u64 align, u64 to_ptr_reg, u64 from_ptr_reg);
 u64         ir_gen_array_from_value(Job *jp, Type *array_type, Value *v);
 void        ir_gen_entry_point_preamble(Job *jp);
-void        ir_run(Job *jp, int procid);
+internal void        ir_run(Job *jp, int procid);
 void        show_ir_loc(IRinst inst);
 
 void        ir_gen_C(Job *jp, IRproc irproc, Type *proc_type);
@@ -1476,7 +1476,16 @@ func get_proc_from_foreign_lib(Job *jp, Str8 proc_name, Str8 lib_name, b32 is_sy
   Arena_scope scope = arena_scope_begin(jp->allocator.scratch);
 
   void *foreign_proc_addr = 0;
+
   char *proc_name_cstr = cstr_from_str8(jp->allocator.scratch, proc_name);
+
+  // TODO jfd 26/03/26: big hack, need to make the language aware of the target platform, and have conditional compilation
+  #if 0 && PLATFORM_WINDOWS
+  if(str8_match_lit("write", proc_name) || str8_match_lit("read", proc_name)) {
+    COWABUNGA;
+    // proc_name_cstr = cstrf(jp->allocator.scratch, "_%S", proc_name);
+  }
+  #endif
 
   if(lib_name.len == 0) {
     #if PLATFORM_WINDOWS
@@ -1498,6 +1507,8 @@ func get_proc_from_foreign_lib(Job *jp, Str8 proc_name, Str8 lib_name, b32 is_sy
       foreign_lib = get_foreign_lib(jp, possible_locations[possible_location_index], is_system);
       possible_location_index++;
     }
+
+    ASSERT(foreign_proc_addr);
 
     #else
     #error unimplemented platform
@@ -5306,33 +5317,18 @@ void ir_gen_foreign_proc_x64(Job *jp) {
 
   Str8 proc_name = str8_from_cstr(jp->allocator.scratch, ast_proc->name);
   Str8 lib_name = str8_from_cstr(jp->allocator.scratch, foreign_lib_str);
+
   void *proc_addr = get_proc_from_foreign_lib(jp,
     proc_name,
     lib_name,
     is_system
   );
 
-  // nocheckin
-  if(str8_match_lit("malloc", proc_name)) {
-    typedef void *(Mymalloc)(size_t);
-    Mymalloc *mymalloc = (Mymalloc*)proc_addr;
-    char *cowabungastring = mymalloc(123);
-    memory_set(cowabungastring, 'g', 122);
-    cowabungastring[122] = 0;
-    printf("%s\n", cowabungastring);
-    COWABUNGA;
-  }
-
-  if(is_system) {
-    COWABUNGA;
-  } else {
-    COWABUNGA;
-  }
-
   arena_scope_end(scratch_scope);
 
   Sym *proc_sym = ast_proc->symbol_annotation;
-  Type *proc_type = proc_sym->type;
+  // nocheckin
+  // Type *proc_type = proc_sym->type;
 
   IRproc proc_data = {
     .procid = proc_sym->procid,
@@ -7077,7 +7073,64 @@ func ir_call_foreign_proc(IRmachine *interp, IRproc procedure) {
   UNIMPLEMENTED;
 }
 
-void ir_run(Job *jp, int procid) {
+internal char
+func dc_type_signature_from_type_kind(Typekind kind) {
+  char type_signature = 0;
+
+  switch(kind) {
+    default:
+    break;
+    case TYPE_KIND_VOID:
+    type_signature = DC_SIGCHAR_VOID;
+    break;
+    case TYPE_KIND_BOOL:
+    type_signature = DC_SIGCHAR_BOOL;
+    break;
+    case TYPE_KIND_CHAR:
+    case TYPE_KIND_S8:
+    type_signature = DC_SIGCHAR_CHAR;
+    break;
+    case TYPE_KIND_U8:
+    type_signature = DC_SIGCHAR_UCHAR;
+    break;
+    case TYPE_KIND_S16:
+    type_signature = DC_SIGCHAR_SHORT;
+    break;
+    case TYPE_KIND_U16:
+    type_signature = DC_SIGCHAR_USHORT;
+    break;
+    case TYPE_KIND_S32:
+    type_signature = DC_SIGCHAR_INT;
+    break;
+    case TYPE_KIND_U32:
+    type_signature = DC_SIGCHAR_UINT;
+    break;
+    case TYPE_KIND_S64:
+    type_signature = DC_SIGCHAR_LONGLONG;
+    break;
+    case TYPE_KIND_U64:
+    type_signature = DC_SIGCHAR_ULONGLONG;
+    break;
+    case TYPE_KIND_INT:
+    type_signature = DC_SIGCHAR_INT;
+    break;
+    case TYPE_KIND_FLOAT:
+    case TYPE_KIND_F32:
+    type_signature = DC_SIGCHAR_FLOAT;
+    break;
+    case TYPE_KIND_F64:
+    type_signature = DC_SIGCHAR_DOUBLE;
+    break;
+    case TYPE_KIND_POINTER:
+    type_signature = DC_SIGCHAR_POINTER;
+    break;
+  }
+
+  return type_signature;
+}
+
+internal void
+func ir_run(Job *jp, int procid) {
 
   Arena_scope interpreter_scope = arena_scope_begin(jp->allocator.scratch);
 
@@ -7270,58 +7323,9 @@ void ir_run(Job *jp, int procid) {
               Type *scalar_type = ret_type->record.flattened_scalars.types[i];
               u64 offset = ret_type->record.flattened_scalars.offsets[i];
 
-              // HERE
-
               ASSERT(TYPE_KIND_IS_SCALAR(scalar_type->kind));
 
-              char type_signature = 0;
-
-              switch(scalar_type->kind) {
-                case TYPE_KIND_VOID:
-                type_signature = DC_SIGCHAR_VOID;
-                break;
-                case TYPE_KIND_BOOL:
-                type_signature = DC_SIGCHAR_BOOL;
-                break;
-                case TYPE_KIND_CHAR:
-                case TYPE_KIND_S8:
-                type_signature = DC_SIGCHAR_CHAR;
-                break;
-                case TYPE_KIND_U8:
-                type_signature = DC_SIGCHAR_UCHAR;
-                break;
-                case TYPE_KIND_S16:
-                type_signature = DC_SIGCHAR_SHORT;
-                break;
-                case TYPE_KIND_U16:
-                type_signature = DC_SIGCHAR_USHORT;
-                break;
-                case TYPE_KIND_S32:
-                type_signature = DC_SIGCHAR_INT;
-                break;
-                case TYPE_KIND_U32:
-                type_signature = DC_SIGCHAR_UINT;
-                break;
-                case TYPE_KIND_S64:
-                type_signature = DC_SIGCHAR_LONGLONG;
-                break;
-                case TYPE_KIND_U64:
-                type_signature = DC_SIGCHAR_ULONGLONG;
-                break;
-                case TYPE_KIND_INT:
-                type_signature = DC_SIGCHAR_INT;
-                break;
-                case TYPE_KIND_FLOAT:
-                case TYPE_KIND_F32:
-                type_signature = DC_SIGCHAR_FLOAT;
-                break;
-                case TYPE_KIND_F64:
-                type_signature = DC_SIGCHAR_DOUBLE;
-                break;
-                case TYPE_KIND_POINTER:
-                type_signature = DC_SIGCHAR_POINTER;
-                break;
-              }
+              char type_signature = dc_type_signature_from_type_kind(scalar_type->kind);
 
               ASSERT(type_signature);
 
@@ -7335,16 +7339,15 @@ void ir_run(Job *jp, int procid) {
           }
         }
 
-        COWABUNGA;
       } break;
       case IROP_HINT_END_FOREIGN_CALL:
       {
         cur_called_proc_type = 0;
-        COWABUNGA;
       } break;
       case IROP_HINT_BEGIN_PASS_NON_SCALAR:
       {
-        Type *non_scalar_param_type = inst.hint.non_scalar_param_type;
+        // nocheckin
+        // Type *non_scalar_param_type = inst.hint.non_scalar_param_type;
       } break;
       case IROP_HINT_END_PASS_NON_SCALAR:
       {
@@ -7352,19 +7355,39 @@ void ir_run(Job *jp, int procid) {
         Type *non_scalar_param_type = inst.hint.non_scalar_param_type;
         IRinst *prev_inst = &instructions[pc - 1];
 
+        DCaggr *aggr = dcNewAggr(non_scalar_param_type->record.flattened_scalars.n, non_scalar_param_type->bytes);
+
+        for(u64 i = 0; i < non_scalar_param_type->record.flattened_scalars.n; i++) {
+          Type *scalar_type = non_scalar_param_type->record.flattened_scalars.types[i];
+          u64 offset = non_scalar_param_type->record.flattened_scalars.offsets[i];
+
+          ASSERT(TYPE_KIND_IS_SCALAR(scalar_type->kind));
+
+          char type_signature = dc_type_signature_from_type_kind(scalar_type->kind);
+
+          ASSERT(type_signature);
+
+          dcAggrField(aggr, type_signature, offset, 1);
+
+        }
+
+        dcCloseAggr(aggr);
+
+        ASSERT(prev_inst->opcode == IROP_SETARG);
+
         IR_foreign_call_param_info info = {
           .pc = pc - 1,
           .inst = prev_inst,
           .type = non_scalar_param_type,
+          .aggregate = aggr,
         };
         arr_push(foreign_call_param_buffer, info);
-
-        COWABUNGA;
 
       } break;
       case IROP_HINT_BEGIN_PASS_SCALAR:
       {
-        Type *scalar_param_type = inst.hint.scalar_param_type;
+        // nocheckin
+        // Type *scalar_param_type = inst.hint.scalar_param_type;
       } break;
       case IROP_HINT_END_PASS_SCALAR:
       {
@@ -7379,8 +7402,6 @@ void ir_run(Job *jp, int procid) {
         };
         arr_push(foreign_call_param_buffer, info);
 
-        COWABUNGA;
-
       } break;
       case IROP_CALL:
       {
@@ -7390,24 +7411,111 @@ void ir_run(Job *jp, int procid) {
 
         if(new_procedure.is_foreign) {
           // cowabunga
-          #if 0
-          IR_foreign_proc foreign_proc = new_procedure.foreign_proc;
-          foreign_proc(&interp);
-          #else
-          COWABUNGA;
 
           while(foreign_call_param_buffer.count > 0) {
             IR_foreign_call_param_info param_info = arr_pop(foreign_call_param_buffer);
 
+            if(param_info.aggregate != 0) {
+              u64 port = param_info.inst->setport.port;
+              void *ptr = (void*)interp.ports[port].integer;
+              dcArgAggr(dc_vm, param_info.aggregate, ptr);
+            } else {
+              u64 port = param_info.inst->setport.port;
+              void *ptr = (void*)&interp.ports[port];
 
+              switch(param_info.type->kind) {
+                default:
+                UNREACHABLE;
+                break;
+                case TYPE_KIND_BOOL:
+                dcArgBool(dc_vm, *(DCbool*)ptr);
+                break;
+                case TYPE_KIND_CHAR: case TYPE_KIND_S8: case TYPE_KIND_U8:
+                dcArgChar(dc_vm, *(DCchar*)ptr);
+                break;
+                case TYPE_KIND_S16: case TYPE_KIND_U16:
+                dcArgShort(dc_vm, *(DCshort*)ptr);
+                break;
+                case TYPE_KIND_S32: case TYPE_KIND_U32: case TYPE_KIND_INT:
+                dcArgInt(dc_vm, *(DCint*)ptr);
+                break;
+                case TYPE_KIND_S64: case TYPE_KIND_U64:
+                dcArgLongLong(dc_vm, *(DClonglong*)ptr);
+                break;
+                case TYPE_KIND_FLOAT: case TYPE_KIND_F32:
+                dcArgFloat(dc_vm, *(DCfloat*)ptr);
+                break;
+                case TYPE_KIND_F64:
+                dcArgDouble(dc_vm, *(DCdouble*)ptr);
+                break;
+                case TYPE_KIND_POINTER:
+                dcArgPointer(dc_vm, *(DCpointer*)ptr);
+                break;
+              }
+
+            }
 
           }
 
-          // if(cur_
 
-          ir_call_foreign_proc(&interp, new_procedure);
-          #endif
+          ASSERT(cur_called_proc_type->proc.ret.n <= 1);
+
+
+          if(cur_called_proc_type->proc.ret.n > 0) {
+
+            Type *ret_type = cur_called_proc_type->proc.ret.types[0];
+
+            if(TYPE_KIND_IS_NOT_SCALAR(ret_type->kind)) {
+              void *non_scalar_return_value_address = (void*)interp.ports[0].integer;
+              dcCallAggr(
+                dc_vm,
+                (DCpointer)new_procedure.foreign_proc,
+                foreign_call_return_aggregate,
+                (DCpointer)non_scalar_return_value_address
+              );
+
+            } else {
+
+              IRvalue scalar_return_value = {0};
+              void *scalar_return_value_ptr = &scalar_return_value;
+
+              switch(ret_type->kind) {
+                default:
+                UNREACHABLE;
+                break;
+                // NOTE jfd 26/03/26: dyncall defines DC_BOOL (DCbool) as an int, but our bools are u8
+                case TYPE_KIND_BOOL: case TYPE_KIND_CHAR: case TYPE_KIND_S8: case TYPE_KIND_U8:
+                *(DCchar*)scalar_return_value_ptr = dcCallChar(dc_vm, (DCpointer)new_procedure.foreign_proc);
+                break;
+                case TYPE_KIND_S16: case TYPE_KIND_U16:
+                *(DCshort*)scalar_return_value_ptr = dcCallShort(dc_vm, (DCpointer)new_procedure.foreign_proc);
+                break;
+                case TYPE_KIND_S32: case TYPE_KIND_U32: case TYPE_KIND_INT:
+                *(DCint*)scalar_return_value_ptr = dcCallInt(dc_vm, (DCpointer)new_procedure.foreign_proc);
+                break;
+                case TYPE_KIND_S64: case TYPE_KIND_U64:
+                // TODO jfd: find out on which platforms this needs to be just 'long'
+                *(DClonglong*)scalar_return_value_ptr = dcCallLongLong(dc_vm, (DCpointer)new_procedure.foreign_proc);
+                break;
+                case TYPE_KIND_FLOAT: case TYPE_KIND_F32:
+                *(DCfloat*)scalar_return_value_ptr = dcCallFloat(dc_vm, (DCpointer)new_procedure.foreign_proc);
+                break;
+                case TYPE_KIND_F64:
+                *(DCdouble*)scalar_return_value_ptr = dcCallDouble(dc_vm, (DCpointer)new_procedure.foreign_proc);
+                break;
+                case TYPE_KIND_POINTER:
+                *(DCpointer*)scalar_return_value_ptr = dcCallPointer(dc_vm, (DCpointer)new_procedure.foreign_proc);
+                break;
+              }
+              interp.ports[0] = scalar_return_value;
+            }
+
+          } else {
+            dcCallVoid(dc_vm, (DCpointer)new_procedure.foreign_proc);
+          }
+
           ++pc;
+
         } else {
           //fprintf(stderr, "calling %s, stepping stack pointer by %lu\n",
           //        new_procedure.name,
@@ -7676,11 +7784,15 @@ void ir_run(Job *jp, int procid) {
       case IROP_SETARG:
       case IROP_SETRET:
       {
-        if(inst.setport.port >= (u64)arrlen(interp.ports))
-        arrsetlen(interp.ports, inst.setport.port + 1);
-        imask = (inst.setport.bytes < 8)
-        ? ((1LU << (inst.setport.bytes << 3LU)) - 1LU)
-        : (u64)(-1);
+        if(inst.setport.port >= (u64)arrlen(interp.ports)) {
+          arrsetlen(interp.ports, inst.setport.port + 1);
+        }
+        if(inst.setport.bytes < 8) {
+          imask = (u64)1 << (inst.setport.bytes << (u64)3);
+          imask -= (u64)1;
+        } else {
+          imask = (u64)(-1);
+        }
         interp.ports[inst.setport.port].integer = imask & interp.iregs[inst.setport.reg_src];
       }
       break;
@@ -7689,9 +7801,12 @@ void ir_run(Job *jp, int procid) {
       {
         if(inst.getport.port >= (u64)arrlen(interp.ports))
         arrsetlen(interp.ports, inst.getport.port + 1);
-        imask = (inst.getport.bytes < 8)
-        ? ((1LU << (inst.getport.bytes << 3LU)) - 1LU)
-        : (u64)(-1);
+        if(inst.setport.bytes < 8) {
+          imask = (u64)1 << (inst.setport.bytes << (u64)3);
+          imask -= (u64)1;
+        } else {
+          imask = (u64)(-1);
+        }
         interp.iregs[inst.getport.reg_dest] = imask & interp.ports[inst.getport.port].integer;
       }
       break;
@@ -7809,22 +7924,31 @@ void ir_run(Job *jp, int procid) {
       break;
       case IROP_FTOI:
       if(inst.typeconv.from_bytes == 8) {
-        imask = (inst.typeconv.to_bytes < 8)
-        ? ((1LU << (inst.typeconv.to_bytes << 3LU)) - 1LU)
-        : (u64)(-1);
+        if(inst.typeconv.to_bytes < 8) {
+          imask = (u64)1 << (inst.typeconv.to_bytes << (u64)3);
+          imask -= (u64)1;
+        } else {
+          imask = (u64)(-1);
+        }
         interp.iregs[inst.typeconv.to_reg] = imask & (u64)(interp.f64regs[inst.typeconv.from_reg]);
       } else {
-        imask = (inst.typeconv.to_bytes < 8)
-        ? ((1LU << (inst.typeconv.to_bytes << 3LU)) - 1LU)
-        : (u64)(-1);
+        if(inst.typeconv.to_bytes < 8) {
+          imask = (u64)1 << (inst.typeconv.to_bytes << (u64)3);
+          imask -= (u64)1;
+        } else {
+          imask = (u64)(-1);
+        }
         interp.iregs[inst.typeconv.to_reg] = imask & (u64)(interp.f32regs[inst.typeconv.from_reg]);
       }
       break;
       case IROP_ITOI:
       {
-        imask = (inst.typeconv.to_bytes < 8)
-        ? ((1LU << (inst.typeconv.to_bytes << 3LU)) - 1LU)
-        : (u64)(-1);
+        if(inst.typeconv.to_bytes < 8) {
+          imask = (u64)1 << (inst.typeconv.to_bytes << (u64)3);
+          imask -= (u64)1;
+        } else {
+          imask = (u64)(-1);
+        }
         u64 masked = imask & interp.iregs[inst.typeconv.from_reg];
         interp.iregs[inst.typeconv.to_reg] =
         inst.typeconv.sign
@@ -13049,9 +13173,6 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
           };
           inst.loc = jp->cur_loc;
           arrpush(jp->instructions, inst);
-          IRinst *ip = &arrlast(jp->instructions);
-          u64 pc = arrlen(jp->instructions) - 1;
-          COWABUNGA;
         }
 
       } else {

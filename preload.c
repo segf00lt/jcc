@@ -1,3 +1,6 @@
+#ifndef JCC_PRELOAD_C
+#define JCC_PRELOAD_C
+
 #define TYPEINFODECL              \
   X(void    ,  VOID     ,   0)    \
   X(int     ,  INT      ,   1)    \
@@ -133,3 +136,18 @@ struct Temporary_storage {
   u32 size;
   u32 high_water_mark;
 };
+
+#if PLATFORM_WINDOWS
+shared_function size_t
+func write(int fd, void *buf, size_t bytes) {
+  return (size_t)_write(fd, buf, (int)bytes);
+}
+
+shared_function size_t
+func read(int fd, void *buf, size_t bytes) {
+  return (size_t)_read(fd, buf, (int)bytes);
+}
+#endif
+
+
+#endif
