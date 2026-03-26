@@ -7129,6 +7129,18 @@ func dc_type_signature_from_type_kind(Typekind kind) {
   return type_signature;
 }
 
+force_inline u64
+func ir_imask_from_bytes(u64 bytes) {
+  u64 imask = 0;
+  if(bytes < 8) {
+    imask = (u64)1 << (bytes << (u64)3);
+    imask -= (u64)1;
+  } else {
+    imask = (u64)(-1);
+  }
+  return imask;
+}
+
 internal void
 func ir_run(Job *jp, int procid) {
 
@@ -7227,10 +7239,10 @@ func ir_run(Job *jp, int procid) {
       break;
       #define X(opcode, opsym) \
       case IROP_##opcode: \
-      imask = (inst.arith.operand_bytes[0] < 8) ? ((1l << (inst.arith.operand_bytes[0] << 3l)) - 1l) : (u64)(-1l); \
+      imask = ir_imask_from_bytes(inst.arith.operand_bytes[0]); \
       if(inst.arith.sign) { \
-        s64 a = SIGN_EXTEND_S64(((s64)interp.iregs[inst.arith.reg[1]]), (inst.arith.operand_bytes[1] << 3lu)); \
-        s64 b = SIGN_EXTEND_S64(((s64)interp.iregs[inst.arith.reg[2]]), (inst.arith.operand_bytes[2] << 3lu)); \
+        s64 a = SIGN_EXTEND_S64(((s64)interp.iregs[inst.arith.reg[1]]), (inst.arith.operand_bytes[1] << (u64)3)); \
+        s64 b = SIGN_EXTEND_S64(((s64)interp.iregs[inst.arith.reg[2]]), (inst.arith.operand_bytes[2] << (u64)3)); \
         if(inst.arith.immediate) { \
           b = SIGN_EXTEND_S64(((s64)inst.arith.imm.integer), (inst.arith.operand_bytes[2] << 3lu)); \
         } \
@@ -7249,7 +7261,7 @@ func ir_run(Job *jp, int procid) {
       #undef X
       #define X(opcode, opsym) \
       case IROP_##opcode: \
-      imask = (inst.arith.operand_bytes[0] < 8) ? ((1l << (inst.arith.operand_bytes[0] << 3l)) - 1l) : (u64)(-1l); \
+      imask = ir_imask_from_bytes(inst.arith.operand_bytes[0]); \
       interp.iregs[inst.arith.reg[0]] = imask & (opsym interp.iregs[inst.arith.reg[1]]); \
       break;
       IR_INT_UNOPS
@@ -7554,9 +7566,7 @@ func ir_run(Job *jp, int procid) {
       continue;
       case IROP_LOAD:
       if(inst.load.immediate) {
-        imask = (inst.load.bytes < 8)
-        ? ((u64)((1LU << (inst.load.bytes << 3LU)) - 1LU))
-        : ((u64)(-1));
+        imask = ir_imask_from_bytes(inst.load.bytes);
         interp.iregs[inst.load.reg_dest] = imask & inst.load.imm.integer;
       } else {
         u8 *ptr = (u8*)(interp.iregs[inst.load.reg_src_ptr]);
@@ -7756,28 +7766,32 @@ func ir_run(Job *jp, int procid) {
       case IROP_SETVAR:
       switch(inst.setvar.bytes) {
         case 1:
-        *varptr =
-        inst.setvar.immediate
-        ? (inst.setvar.imm.integer & 0xff)
-        : (u8)(interp.iregs[inst.setvar.reg_src]);
+        if(inst.setvar.immediate) {
+          *varptr = (u8)inst.setvar.imm.integer;
+        } else {
+          *varptr = (u8)interp.iregs[inst.setvar.reg_src];
+        }
         break;
         case 2:
-        *(u16*)varptr =
-        inst.setvar.immediate
-        ? (inst.setvar.imm.integer & 0xffff)
-        : (u16)(interp.iregs[inst.setvar.reg_src]);
+        if(inst.setvar.immediate) {
+          *(u16*)varptr = (u16)inst.setvar.imm.integer;
+        } else {
+          *(u16*)varptr = (u16)interp.iregs[inst.setvar.reg_src];
+        }
         break;
         case 4:
-        *(u32*)varptr =
-        inst.setvar.immediate
-        ? (inst.setvar.imm.integer & 0xffffffff)
-        : (u32)(interp.iregs[inst.setvar.reg_src]);
+        if(inst.setvar.immediate) {
+          *(u32*)varptr = (u32)inst.setvar.imm.integer;
+        } else {
+          *(u32*)varptr = (u32)interp.iregs[inst.setvar.reg_src];
+        }
         break;
         case 8:
-        *(u64*)varptr =
-        inst.setvar.immediate
-        ? inst.setvar.imm.integer
-        : (u64)(interp.iregs[inst.setvar.reg_src]);
+        if(inst.setvar.immediate) {
+          *(u64*)varptr = (u64)inst.setvar.imm.integer;
+        } else {
+          *(u64*)varptr = (u64)interp.iregs[inst.setvar.reg_src];
+        }
         break;
       }
       break;
@@ -7787,12 +7801,7 @@ func ir_run(Job *jp, int procid) {
         if(inst.setport.port >= (u64)arrlen(interp.ports)) {
           arrsetlen(interp.ports, inst.setport.port + 1);
         }
-        if(inst.setport.bytes < 8) {
-          imask = (u64)1 << (inst.setport.bytes << (u64)3);
-          imask -= (u64)1;
-        } else {
-          imask = (u64)(-1);
-        }
+        imask = ir_imask_from_bytes(inst.setport.bytes);
         interp.ports[inst.setport.port].integer = imask & interp.iregs[inst.setport.reg_src];
       }
       break;
@@ -7801,20 +7810,16 @@ func ir_run(Job *jp, int procid) {
       {
         if(inst.getport.port >= (u64)arrlen(interp.ports))
         arrsetlen(interp.ports, inst.getport.port + 1);
-        if(inst.setport.bytes < 8) {
-          imask = (u64)1 << (inst.setport.bytes << (u64)3);
-          imask -= (u64)1;
-        } else {
-          imask = (u64)(-1);
-        }
+        imask = ir_imask_from_bytes(inst.getport.bytes);
         interp.iregs[inst.getport.reg_dest] = imask & interp.ports[inst.getport.port].integer;
       }
       break;
       case IROP_GETVARF:
-      if(inst.getvar.bytes == 8)
-      interp.f64regs[inst.getvar.reg_dest] = *(f64*)(varptr);
-      else
-      interp.f32regs[inst.getvar.reg_dest] = *(f32*)(varptr);
+      if(inst.getvar.bytes == 8) {
+        interp.f64regs[inst.getvar.reg_dest] = *(f64*)(varptr);
+      } else {
+        interp.f32regs[inst.getvar.reg_dest] = *(f32*)(varptr);
+      }
       break;
       case IROP_SETVARF:
       if(inst.setvar.bytes == 8)
@@ -7830,21 +7835,25 @@ func ir_run(Job *jp, int procid) {
       break;
       case IROP_SETARGF:
       case IROP_SETRETF:
-      if(inst.setport.port >= (u64)arrlen(interp.ports))
-      arrsetlen(interp.ports, inst.setport.port + 1);
-      if(inst.setport.bytes == 8)
-      interp.ports[inst.setport.port].floating64 = interp.f64regs[inst.setport.reg_src];
-      else
-      interp.ports[inst.setport.port].floating32 = interp.f32regs[inst.setport.reg_src];
+      if(inst.setport.port >= (u64)arrlen(interp.ports)) {
+        arrsetlen(interp.ports, inst.setport.port + 1);
+      }
+      if(inst.setport.bytes == 8) {
+        interp.ports[inst.setport.port].floating64 = interp.f64regs[inst.setport.reg_src];
+      } else {
+        interp.ports[inst.setport.port].floating32 = interp.f32regs[inst.setport.reg_src];
+      }
       break;
       case IROP_GETARGF:
       case IROP_GETRETF:
-      if(inst.getport.port >= (u64)arrlen(interp.ports))
-      arrsetlen(interp.ports, inst.getport.port + 1);
-      if(inst.getport.bytes == 8)
-      interp.f64regs[inst.getport.reg_dest] = interp.ports[inst.getport.port].floating64;
-      else
-      interp.f32regs[inst.getport.reg_dest] = interp.ports[inst.getport.port].floating32;
+      if(inst.getport.port >= (u64)arrlen(interp.ports)) {
+        arrsetlen(interp.ports, inst.getport.port + 1);
+      }
+      if(inst.getport.bytes == 8) {
+        interp.f64regs[inst.getport.reg_dest] = interp.ports[inst.getport.port].floating64;
+      } else {
+        interp.f32regs[inst.getport.reg_dest] = interp.ports[inst.getport.port].floating32;
+      }
       break;
       case IROP_ITOF:
       if(inst.typeconv.to_bytes == 8) {
@@ -7924,35 +7933,20 @@ func ir_run(Job *jp, int procid) {
       break;
       case IROP_FTOI:
       if(inst.typeconv.from_bytes == 8) {
-        if(inst.typeconv.to_bytes < 8) {
-          imask = (u64)1 << (inst.typeconv.to_bytes << (u64)3);
-          imask -= (u64)1;
-        } else {
-          imask = (u64)(-1);
-        }
+        imask = ir_imask_from_bytes(inst.typeconv.to_bytes);
         interp.iregs[inst.typeconv.to_reg] = imask & (u64)(interp.f64regs[inst.typeconv.from_reg]);
       } else {
-        if(inst.typeconv.to_bytes < 8) {
-          imask = (u64)1 << (inst.typeconv.to_bytes << (u64)3);
-          imask -= (u64)1;
-        } else {
-          imask = (u64)(-1);
-        }
+        imask = ir_imask_from_bytes(inst.typeconv.to_bytes);
         interp.iregs[inst.typeconv.to_reg] = imask & (u64)(interp.f32regs[inst.typeconv.from_reg]);
       }
       break;
       case IROP_ITOI:
       {
-        if(inst.typeconv.to_bytes < 8) {
-          imask = (u64)1 << (inst.typeconv.to_bytes << (u64)3);
-          imask -= (u64)1;
-        } else {
-          imask = (u64)(-1);
-        }
+        imask = ir_imask_from_bytes(inst.typeconv.to_bytes);
         u64 masked = imask & interp.iregs[inst.typeconv.from_reg];
         interp.iregs[inst.typeconv.to_reg] =
         inst.typeconv.sign
-        ? SIGN_EXTEND_S64(masked, (inst.typeconv.to_bytes << 3lu))
+        ? SIGN_EXTEND_S64(masked, (inst.typeconv.to_bytes << (u64)3))
         : masked;
       }
       break;
@@ -12910,7 +12904,44 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
 
     arrlast(jp->local_offset) = align_up(arrlast(jp->local_offset), p->type_annotation->align);
 
-    arrpush(saved_param_offsets, arrlast(jp->local_offset));
+    /* NOTE jfd 26/03/26: nested call bug explanation
+
+    I ran in to a serious bug today because of the line commented out above
+    The local_offset was growing past where it had been saved here to saved_param_offsets, so when it came time to generate the instructions
+    for retrieving the values of nested calls (I didn't encounter this with varargs), the address being retrieved from was before the call
+    had been done, and contained the wrong value.
+
+    Here's the idea:
+
+    arrpush(saved_param_offsets, arrlast(jp->local_offset)); // local_offset is at 8 let's say
+
+    if(type is non scalar) {
+      ir_gen_expr(jp, p->value);
+
+      // ...
+
+      inst = (IRinst) { ... };
+
+      // Here arrlast(jp->local_offset) is used for .offset,
+      // but if there were other nested calls inside the
+      // expression then the local offset will have grown further than what we saved in saved_param_offsets.
+      // When we come around to reading the value saved in local scope back in to a register we'll be reading from
+      // the wrong local offset, because the value got written to a higher address than the one we saved due to
+      // the stack growing.
+
+    } else {
+      // ibid
+    }
+
+
+    My solution was to only save the local offset after generating the code for the nested call in p->value. This
+    way we'll get the right one back later.
+
+    This bug was only possible because when I originally wrote the compiler I didn't have a good understanding of arenas
+    and lifetimes. If there were a better API for managing the lifetimes of local variables (and registers) the compiler
+    would be much simpler and less buggy.
+
+    */
 
     if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {
       ir_gen_expr(jp, p->value);
@@ -12926,6 +12957,8 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
       };
       inst.loc = jp->cur_loc;
       arrpush(jp->instructions, inst);
+
+      arrpush(saved_param_offsets, arrlast(jp->local_offset));
 
       arrlast(jp->local_offset) += p->type_annotation->bytes;
       ir_gen_memorycopy(jp, p->type_annotation->bytes, p->type_annotation->align, jp->reg_alloc, jp->reg_alloc - 1);
@@ -12961,7 +12994,11 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
       };
       inst.loc = jp->cur_loc;
       arrpush(jp->instructions, inst);
+
+      arrpush(saved_param_offsets, arrlast(jp->local_offset));
+
       arrlast(jp->local_offset) += p->type_annotation->bytes;
+
     }
   }
 
@@ -13199,6 +13236,18 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         inst.loc = jp->cur_loc;
         arrpush(jp->instructions, inst);
 
+        if(is_foreign) {
+          inst =
+          (IRinst) {
+            .opcode = IROP_HINT_BEGIN_PASS_SCALAR,
+            .hint = {
+              .scalar_param_type = p->type_annotation,
+            },
+          };
+          inst.loc = jp->cur_loc;
+          arrpush(jp->instructions, inst);
+        }
+
         inst =
         (IRinst) {
           .opcode = opcode2,
@@ -13210,6 +13259,19 @@ Arr(Type*) ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call) {
         };
         inst.loc = jp->cur_loc;
         arrpush(jp->instructions, inst);
+
+        if(is_foreign) {
+          inst =
+          (IRinst) {
+            .opcode = IROP_HINT_END_PASS_SCALAR,
+            .hint = {
+              .scalar_param_type = p->type_annotation,
+            },
+          };
+          inst.loc = jp->cur_loc;
+          arrpush(jp->instructions, inst);
+        }
+
       }
     } else {
       if(TYPE_KIND_IS_NOT_SCALAR(p->type_annotation->kind)) {

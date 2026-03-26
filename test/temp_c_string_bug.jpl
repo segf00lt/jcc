@@ -1,0 +1,25 @@
+
+proc cstr_len(s: *char) int {
+  result := 0;
+  ss := s;
+  while >ss {
+    result++;
+    ss++;
+  }
+  return result;
+}
+
+proc main() {
+  test := 0;
+  test_len := cstr_len(temp_c_string("hello"));
+  print("test_len = %\n", test_len);
+}
+
+#run main();
+
+proc temp_c_string(s: string) *char {
+    cstr: *char = temp_alloc(s.len + 1);
+    cstr[s.len] = 0;
+    for s cstr[it_index] = it;
+    return cstr;
+}

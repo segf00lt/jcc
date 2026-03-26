@@ -1,6 +1,7 @@
 // raddbg 0.9.24 project file
 
 recent_file: path: "jcc.c"
+recent_file: path: "third_party/raylib/rcore.c"
 recent_file: path: "preload.c"
 recent_file: path: "third_party/dyncall-1.4/dyncall/dyncall_api.c"
 recent_file: path: "third_party/dyncall-1.4/dyncall/dyncall_callvm_x64.c"
@@ -14,18 +15,20 @@ target:
   executable: "jcc.exe"
   working_directory: ""
   entry_point: main
-  arguments: "test/hello.jpl"
+  arguments: "test/breakout.jpl"
   enabled: 1
+  stdout_path: "output.txt"
+  stderr_path: "output.txt"
 }
 debug_info:
 {
   path: "C:/Users/joaod/fun/jcc/jcc.pdb"
-  timestamp: 66210333945482
+  timestamp: 66210350836533
 }
 debug_info:
 {
   path: "C:/Users/joaod/fun/jcc/third_party/raylib/build/debug/raylib.pdb"
-  timestamp: 66210145563555
+  timestamp: 66210334967472
 }
 type_view:
 {
@@ -37,12 +40,6 @@ debug_info:
   path: "C:/Users/joaod/fun/jcc/test_dyncall.pdb"
   timestamp: 66210327899723
 }
-breakpoint:
-{
-  address_location: CheckCollisionCircleRec
-  hit_count: 0
-  enabled: 0
-}
 target:
 {
   executable: "test_dyncall.exe"
@@ -52,40 +49,48 @@ target:
 }
 breakpoint:
 {
-  source_location: "jcc.c:7533:1"
-  enabled: 0
-  hit_count: 0
-}
-breakpoint:
-{
-  source_location: "jcc.c:7509:1"
+  source_location: "jcc.c:7147:1"
   hit_count: 0
   enabled: 0
 }
 breakpoint:
 {
-  address_location: write
-  hit_count: 1
+  hit_count: 0
+  condition: "callee_symbol.procid == 29"
+  source_location: "jcc.c:12728:1"
   enabled: 0
 }
 breakpoint:
 {
-  enabled: 0
-  hit_count: 1
-  source_location: "jcc.c:7461:1"
-  condition: "new_procid == 3"
-}
-breakpoint:
-{
-  source_location: "jcc.c:7416:1"
-  condition: "new_procid == 3"
-  hit_count: 3
+  condition: "callee_symbol.procid == 29"
+  source_location: "jcc.c:12956:1"
+  hit_count: 0
   enabled: 0
 }
 breakpoint:
 {
-  condition: "procid == 15"
-  hit_count: 2
-  source_location: "jcc.c:7946:1"
+  source_location: "jcc.c:12929:1"
+  condition: "callee_symbol.procid == 29"
+  hit_count: 0
   enabled: 0
+}
+breakpoint:
+{
+  address_location: 0x1c8a5aedc70
+  address_range_size: 8
+  break_on_write: 1
+  hit_count: 0
+  enabled: 0
+}
+breakpoint:
+{
+  source_location: "jcc.c:7183:1"
+  condition: "procid == 30 && pc == 401"
+  hit_count: 0
+  enabled: 0
+}
+watch_pin:
+{
+  expression: pc
+  source_location: "jcc.c:7182:29"
 }

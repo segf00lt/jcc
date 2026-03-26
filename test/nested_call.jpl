@@ -1,0 +1,15 @@
+
+#run main();
+
+proc main() {
+  print("result = %\n", second(first(0)));
+}
+
+proc first(i: int) int {
+  return i + 1;
+}
+
+proc second(i: int) int {
+  return i + 2;
+}
+
