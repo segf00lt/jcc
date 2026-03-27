@@ -5331,7 +5331,9 @@ void ir_gen_foreign_proc_x64(Job *jp) {
 
 }
 
-void ir_gen_C(Job *jp, IRproc irproc, Type *proc_type) {
+internal void
+func ir_gen_C(Job *jp, IRproc irproc, Type *proc_type) {
+
   char *IR_C_ireg_map[] = { "reg0",  "reg1",  "reg2",  "reg3",  "reg4",  "reg5",  };
   char *IR_C_f32reg_map[] = { "f32reg0",  "f32reg1",  "f32reg2",  "f32reg3",  "f32reg4",  "f32reg5",  };
   char *IR_C_f64reg_map[] = { "f64reg0",  "f64reg1",  "f64reg2",  "f64reg3",  "f64reg4",  "f64reg5",  };

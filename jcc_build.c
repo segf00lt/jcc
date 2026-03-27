@@ -27,4 +27,4 @@
 #include "platform/platform_core_macos.c"
 #elif PLATFORM_LINUX
 #include "platform/platform_core_linux.c"
-
+#endif

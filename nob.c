@@ -105,10 +105,10 @@ int linux_build(void) {
 int main(int argc, char **argv) {
   NOB_GO_REBUILD_URSELF(argc, argv);
 
-  if(!linux_build()) return 1;
+  if(!win32_build()) return 1;
 
   return 0;
-  if(!win32_build()) return 1;
+  if(!linux_build()) return 1;
   if(!build_raylib_win32()) return 1;
   if(!win32_test_dyncall_build()) return 1;
 
