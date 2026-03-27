@@ -562,10 +562,7 @@ struct IRproc {
       char *assembly;
     };
     struct {
-      // IR_foreign_proc foreign_proc;
-      // nocheckin
       void *foreign_proc;
-      // void *wrapper_dll;
     };
   };
 };
@@ -1187,130 +1184,130 @@ struct Foreign_lib {
 };
 
 /* function headers */
-Job         job_spawn(Jobid *jobid_alloc, Pipe_stage stage);
-void        job_die(Job *jp);
-AST*        job_alloc_ast(Job *jp, ASTkind kind);
-Value*      job_alloc_value(Job *jp, Valuekind kind);
-Type*       job_alloc_type(Job *jp, Typekind kind);
-Sym*        job_alloc_sym(Job *jp);
-Sym*        job_alloc_global_sym(Job *jp);
-char*       job_alloc_text(Job *jp, char *s, char *e);
-void*       job_alloc_scratch(Job *jp, size_t bytes);
-char*       job_sprint(Job *jp, char *fmt, ...);
+internal Job         job_spawn(Jobid *jobid_alloc, Pipe_stage stage);
+internal void        job_die(Job *jp);
+internal AST*        job_alloc_ast(Job *jp, ASTkind kind);
+internal Value*      job_alloc_value(Job *jp, Valuekind kind);
+internal Type*       job_alloc_type(Job *jp, Typekind kind);
+internal Sym*        job_alloc_sym(Job *jp);
+internal Sym*        job_alloc_global_sym(Job *jp);
+internal char*       job_alloc_text(Job *jp, char *s, char *e);
+internal void*       job_alloc_scratch(Job *jp, size_t bytes);
+internal char*       job_sprint(Job *jp, char *fmt, ...);
 
-void        job_ast_allocator_to_save(Job *jp, Pool_save save[AST_KIND_MAX]);
-void        job_ast_allocator_from_save(Job *jp, Pool_save save[AST_KIND_MAX]);
-bool        job_runner(char *src, char *src_path);
-Sym*        job_scope_lookup(Job *jp, char *name);
-Sym*        job_current_scope_lookup(Job *jp, char *name);
-void        job_scope_enter(Job *jp, Sym *sym);
-void        job_report_all_messages(Job *jp);
-void        job_report_mutual_dependency(Job *jp1, Job *jp2);
-void        job_error(Job *jp, Loc_info loc, char *fmt, ...);
-char*       job_type_to_str(Job *jp, Type *t);
-char*       job_type_to_ctype_str(Job *jp, Type *t);
-IRlabel     job_label_lookup(Job *jp, char *name);
-bool        job_label_create(Job *jp, IRlabel label);
-char*       job_op_token_to_str(Job *jp, Token op);
-Type_info*  job_make_type_info(Job *jp, Type *t);
-void        linearize_expr(Job *jp, AST *ast);
+internal void        job_ast_allocator_to_save(Job *jp, Pool_save save[AST_KIND_MAX]);
+internal void        job_ast_allocator_from_save(Job *jp, Pool_save save[AST_KIND_MAX]);
+internal bool        job_runner(char *src, char *src_path);
+internal Sym*        job_scope_lookup(Job *jp, char *name);
+internal Sym*        job_current_scope_lookup(Job *jp, char *name);
+internal void        job_scope_enter(Job *jp, Sym *sym);
+internal void        job_report_all_messages(Job *jp);
+internal void        job_report_mutual_dependency(Job *jp1, Job *jp2);
+internal void        job_error(Job *jp, Loc_info loc, char *fmt, ...);
+internal char*       job_type_to_str(Job *jp, Type *t);
+internal char*       job_type_to_ctype_str(Job *jp, Type *t);
+internal IRlabel     job_label_lookup(Job *jp, char *name);
+internal bool        job_label_create(Job *jp, IRlabel label);
+internal char*       job_op_token_to_str(Job *jp, Token op);
+internal Type_info*  job_make_type_info(Job *jp, Type *t);
+internal void        linearize_expr(Job *jp, AST *ast);
 
-bool        is_lvalue(AST *ast);
-bool        all_paths_return(Job *jp, AST *ast);
-bool        has_nested_call(AST *ast);
-void        add_implicit_casts_to_expr(Job *jp, AST *ast);
-u64         align_up(u64 offset, u64 align);
-u64         next_pow_2(u64 v);
-AST*        arena_dup_ast(Arena *a, AST* ast);
-AST*        ast_copy(Arena *arena, AST *root);
-void        serialize_value(Job *jp, u8 *dest, Value *v, Type *t);
-bool        records_have_member_name_conflicts(Job *jp, Loc_info using_loc, Type *a, Type *b);
-void        do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type);
-void        copy_array_data_to_value(Job *jp, Value *v, Type *t, u8 *data);
-Value*      make_empty_array_value(Job *jp, Type *t);
-void        annotate_aggregate_literal(Job *jp, Type *t, AST *ast_lit);
+internal bool        is_lvalue(AST *ast);
+internal bool        all_paths_return(Job *jp, AST *ast);
+internal bool        has_nested_call(AST *ast);
+internal void        add_implicit_casts_to_expr(Job *jp, AST *ast);
+internal u64         align_up(u64 offset, u64 align);
+internal u64         next_pow_2(u64 v);
+internal AST*        arena_dup_ast(Arena *a, AST* ast);
+internal AST*        ast_copy(Arena *arena, AST *root);
+internal void        serialize_value(Job *jp, u8 *dest, Value *v, Type *t);
+internal bool        records_have_member_name_conflicts(Job *jp, Loc_info using_loc, Type *a, Type *b);
+internal void        do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type);
+internal void        copy_array_data_to_value(Job *jp, Value *v, Type *t, u8 *data);
+internal Value*      make_empty_array_value(Job *jp, Type *t);
+internal void        annotate_aggregate_literal(Job *jp, Type *t, AST *ast_lit);
 
-Arr(AST*)   ir_linearize_expr(Arr(AST*) ir_expr, AST *ast);
+internal Arr(AST*)   ir_linearize_expr(Arr(AST*) ir_expr, AST *ast);
 internal void        ir_gen(Job *jp);
-void        ir_gen_foreign_proc_C(Job *jp); // TODO jfd:
-void        ir_gen_foreign_proc_x64(Job *jp);
-void        ir_gen_foreign_proc_arm64(Job *jp); // TODO jfd:
-Arr(Type*)  ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call);
-Arr(Type*)  ir_gen_call_arm64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call); // TODO jfd:
-void        ir_gen_block(Job *jp, AST *ast);
-void        ir_gen_deferred(Job *jp, AST_statement *defer_list);
-void        ir_gen_statement(Job *jp, AST_statement *ast_statement);
-void        ir_gen_logical_expr(Job *jp, AST *ast);
-void        ir_gen_struct_init(Job *jp, Type *struct_type, IRsegment segment, u64 offset);
-void        ir_gen_expr(Job *jp, AST *ast);
-u64         ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array);
-u64         ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array, u64 offset, u64 ptr_reg);
-void        ir_gen_memorycopy(Job *jp, u64 bytes, u64 align, u64 to_ptr_reg, u64 from_ptr_reg);
-u64         ir_gen_array_from_value(Job *jp, Type *array_type, Value *v);
-void        ir_gen_entry_point_preamble(Job *jp);
+internal void        ir_gen_foreign_proc_C(Job *jp); // TODO jfd:
+internal void        ir_gen_foreign_proc_x64(Job *jp);
+internal void        ir_gen_foreign_proc_arm64(Job *jp); // TODO jfd:
+internal Arr(Type*)  ir_gen_call_x64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call);
+internal Arr(Type*)  ir_gen_call_arm64(Job *jp, Arr(Type*) type_stack, AST_call *ast_call); // TODO jfd:
+internal void        ir_gen_block(Job *jp, AST *ast);
+internal void        ir_gen_deferred(Job *jp, AST_statement *defer_list);
+internal void        ir_gen_statement(Job *jp, AST_statement *ast_statement);
+internal void        ir_gen_logical_expr(Job *jp, AST *ast);
+internal void        ir_gen_struct_init(Job *jp, Type *struct_type, IRsegment segment, u64 offset);
+internal void        ir_gen_expr(Job *jp, AST *ast);
+internal u64         ir_gen_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array);
+internal u64         ir_gen_copy_array_literal(Job *jp, Type *array_type, AST_array_literal *ast_array, u64 offset, u64 ptr_reg);
+internal void        ir_gen_memorycopy(Job *jp, u64 bytes, u64 align, u64 to_ptr_reg, u64 from_ptr_reg);
+internal u64         ir_gen_array_from_value(Job *jp, Type *array_type, Value *v);
+internal void        ir_gen_entry_point_preamble(Job *jp);
 internal void        ir_run(Job *jp, int procid);
-void        show_ir_loc(IRinst inst);
+internal void        show_ir_loc(IRinst inst);
 
-void        ir_gen_C(Job *jp, IRproc irproc, Type *proc_type);
+internal void        ir_gen_C(Job *jp, IRproc irproc, Type *proc_type);
 
-Value*      atom_to_value(Job *jp, AST_atom *atom);
-Type*       atom_to_type(Job *jp, AST_atom *atom);
+internal Value*      atom_to_value(Job *jp, AST_atom *atom);
+internal Type*       atom_to_type(Job *jp, AST_atom *atom);
 
-Value*      evaluate_unary(Job *jp, Value *a, AST_expr *op_ast);
-Value*      evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast);
+internal Value*      evaluate_unary(Job *jp, Value *a, AST_expr *op_ast);
+internal Value*      evaluate_binary(Job *jp, Value *a, Value *b, AST_expr *op_ast);
 
-void        proc_table_add(int procid, IRproc procdata);
+internal void        proc_table_add(int procid, IRproc procdata);
 
-bool        types_are_same(Type *a, Type *b);
-Type*       typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST **right);
-Type*       typecheck_dot(Job *jp, Type *a, char *field, u64 *offsetp);
-void        typecheck_expr(Job *jp);
-void        typecheck_vardecl(Job *jp);
-void        typecheck_procdecl(Job *jp);
-void        typecheck_polymorphic_procdecl(Job *jp);
-void        typecheck_structdecl(Job *jp);
+internal bool        types_are_same(Type *a, Type *b);
+internal Type*       typecheck_operation(Job *jp, Type *a, Type *b, Token op, AST **left, AST **right);
+internal Type*       typecheck_dot(Job *jp, Type *a, char *field, u64 *offsetp);
+internal void        typecheck_expr(Job *jp);
+internal void        typecheck_vardecl(Job *jp);
+internal void        typecheck_procdecl(Job *jp);
+internal void        typecheck_polymorphic_procdecl(Job *jp);
+internal void        typecheck_structdecl(Job *jp);
 
-int         getprec(Token t);
+internal int         getprec(Token t);
 
 // TODO jfd: better parser errors
-AST*        parse_top_level_statement(Job *jp);
-AST*        parse_directive_statement(Job *jp);
-AST*        parse_load_or_import_directive(Job *jp);
-AST*        parse_run_directive(Job *jp);
-AST*        parse_procdecl(Job *jp);
-AST*        parse_structdecl(Job *jp);
-AST*        parse_anonstruct(Job *jp);
-AST*        parse_structblock(Job *jp, int *n_members, int *n_using);
-AST*        parse_procblock(Job *jp);
-AST*        parse_pushcontext(Job *jp);
-AST*        parse_usingstatement(Job *jp);
-AST*        parse_statement(Job *jp);
-AST*        parse_controlflow(Job *jp);
-AST*        parse_vardecl(Job *jp);
-AST*        parse_paramdecl(Job *jp);
-AST*        parse_expr(Job *jp);
-AST*        parse_expr_increase_prec(Job *jp, AST *left, int min_prec);
-AST*        parse_expr_decrease_prec(Job *jp, int min_prec);
-AST*        parse_prefix(Job *jp);
-AST*        parse_postfix(Job *jp);
-AST*        parse_term(Job *jp);
-AST*        parse_call(Job *jp);
-AST*        parse_array_lit(Job *jp);
-AST*        parse_struct_lit(Job *jp);
-AST*        parse_rvalue(Job *jp);
+internal AST*        parse_top_level_statement(Job *jp);
+internal AST*        parse_directive_statement(Job *jp);
+internal AST*        parse_load_or_import_directive(Job *jp);
+internal AST*        parse_run_directive(Job *jp);
+internal AST*        parse_procdecl(Job *jp);
+internal AST*        parse_structdecl(Job *jp);
+internal AST*        parse_anonstruct(Job *jp);
+internal AST*        parse_structblock(Job *jp, int *n_members, int *n_using);
+internal AST*        parse_procblock(Job *jp);
+internal AST*        parse_pushcontext(Job *jp);
+internal AST*        parse_usingstatement(Job *jp);
+internal AST*        parse_statement(Job *jp);
+internal AST*        parse_controlflow(Job *jp);
+internal AST*        parse_vardecl(Job *jp);
+internal AST*        parse_paramdecl(Job *jp);
+internal AST*        parse_expr(Job *jp);
+internal AST*        parse_expr_increase_prec(Job *jp, AST *left, int min_prec);
+internal AST*        parse_expr_decrease_prec(Job *jp, int min_prec);
+internal AST*        parse_prefix(Job *jp);
+internal AST*        parse_postfix(Job *jp);
+internal AST*        parse_term(Job *jp);
+internal AST*        parse_call(Job *jp);
+internal AST*        parse_array_lit(Job *jp);
+internal AST*        parse_struct_lit(Job *jp);
+internal AST*        parse_rvalue(Job *jp);
 
-void*       global_alloc_scratch(size_t bytes);
-Sym*        global_scope_lookup(Job *jp, char *name);
-void        global_scope_enter(Job *jp, Sym *sym);
+internal void*       global_alloc_scratch(size_t bytes);
+internal Sym*        global_scope_lookup(Job *jp, char *name);
+internal void        global_scope_enter(Job *jp, Sym *sym);
 
 internal void*          get_proc_from_foreign_lib(Job *jp, Str8 proc_name, Str8 lib_name, b32 is_system);
 internal Foreign_lib*   get_foreign_lib(Job *jp, Str8 lib_name, b32 is_system);
 
-void        print_sym(Sym sym);
-void        sprint_ir_inst(IRinst inst, FILE *f);
-void        print_ir_inst(IRinst inst, FILE *f);
-void        print_ir_machine(IRmachine *machine, FILE *f);
-void        print_ast_expr(AST *expr, int indent);
+internal void        print_sym(Sym sym);
+internal void        sprint_ir_inst(IRinst inst, FILE *f);
+internal void        print_ir_inst(IRinst inst, FILE *f);
+internal void        print_ir_machine(IRmachine *machine, FILE *f);
+internal void        print_ast_expr(AST *expr, int indent);
 
 /* globals */
 
@@ -5299,14 +5296,7 @@ func ir_gen(Job *jp) {
   }
 }
 
-// cc -shared -o libfoo.so foo.c
-// cc -dynamiclib -o libfoo.dylib foo.c -install_name @rpath/libfoo.dylib
-// cc -dynamiclib -o jcc_wrap_foo.dylib jcc_wrap_foo.c -L'.' -lfoo -install_name @rpath/jcc_wrap_foo.dylib -Wl,-rpath,@loader_path
-
 void ir_gen_foreign_proc_x64(Job *jp) {
-
-  #if PLATFORM_WINDOWS
-
 
   Arena_scope scratch_scope = arena_scope_begin(jp->allocator.scratch);
 
@@ -5327,8 +5317,6 @@ void ir_gen_foreign_proc_x64(Job *jp) {
   arena_scope_end(scratch_scope);
 
   Sym *proc_sym = ast_proc->symbol_annotation;
-  // nocheckin
-  // Type *proc_type = proc_sym->type;
 
   IRproc proc_data = {
     .procid = proc_sym->procid,
@@ -5341,366 +5329,6 @@ void ir_gen_foreign_proc_x64(Job *jp) {
 
   proc_sym->ready_to_run = true;
 
-  #else
-
-  Arena_scope scratch_scope = arena_scope_begin(jp->allocator.scratch);
-
-  AST_procdecl *ast_proc = (AST_procdecl*)(jp->root);
-  bool is_system = ast_proc->is_system;
-
-  char *foreign_lib_str = ast_proc->foreign_lib_str;
-
-  char *dynamic_lib_path;
-  char *static_lib_path;
-  char *header_path;
-
-  if(is_system) {
-    dynamic_lib_path = NULL;
-    static_lib_path = NULL;
-    header_path = NULL;
-  } else {
-    if(!DirectoryExists(ast_proc->foreign_lib_str)) {
-      job_error(jp, ast_proc->base.loc, "couldn't find foreign library '%s', no such directory",
-        ast_proc->foreign_lib_str);
-      return;
-    }
-
-    #if PLATFORM_MACOS
-    dynamic_lib_path = job_sprint(jp, "%s/lib%s.dylib", foreign_lib_str, foreign_lib_str);
-    #else
-    dynamic_lib_path = job_sprint(jp, "%s/lib%s.so", foreign_lib_str, foreign_lib_str);
-    #endif
-
-    static_lib_path = job_sprint(jp, "%s/lib%s.a", foreign_lib_str, foreign_lib_str);
-    header_path = job_sprint(jp, "%s/%s.h", foreign_lib_str, foreign_lib_str);
-
-    if(!FileExists(dynamic_lib_path)) {
-      job_error(jp, ast_proc->base.loc,
-        "couldn't find '%s', this file must exist in order to use the foreign library '%s'",
-        dynamic_lib_path, foreign_lib_str);
-      return;
-    }
-
-    if(!FileExists(static_lib_path)) {
-      job_error(jp, ast_proc->base.loc,
-        "couldn't find '%s', this file must exist in order to use the foreign library '%s'",
-        static_lib_path, foreign_lib_str);
-      return;
-    }
-
-    if(!FileExists(header_path)) {
-      job_error(jp, ast_proc->base.loc,
-        "couldn't find '%s', this file must exist in order to use the foreign library '%s'",
-        header_path, foreign_lib_str);
-      return;
-    }
-
-  }
-
-  char *wrapper_preamble =
-  "#include <stdint.h>\n"
-  "#include <stdbool.h>\n"
-  "#include <stddef.h>\n"
-  "#define Arr(T) T *\n"
-  "typedef int64_t s64;\n"
-  "typedef uint64_t u64;\n"
-  "typedef int32_t s32;\n"
-  "typedef uint32_t u32;\n"
-  "typedef int16_t s16;\n"
-  "typedef uint16_t u16;\n"
-  "typedef int8_t s8;\n"
-  "typedef uint8_t u8;\n"
-  "typedef float f32;\n"
-  "typedef double f64;\n"
-  "typedef union IRvalue {\n"
-  "    u64 integer;\n"
-  "    f32 floating32;\n"
-  "    f64 floating64;\n"
-  "} IRvalue;\n"
-  "typedef struct IRmachine {\n"
-  #define X(x) #x "\n"
-  IRMACHINE_BODY
-  #undef X
-  "} IRmachine;\n";
-
-  Sym *proc_sym = ast_proc->symbol_annotation;
-  Type *proc_type = proc_sym->type;
-
-  if(proc_type->proc.ret.n > 1) {
-    job_error(jp, ast_proc->base.loc, "foreign procedures cannot have multiple return values");
-    return;
-  }
-
-  char *wrapper_name = job_sprint(jp, "__jcc__wrap__%s", proc_sym->name);
-  char *wrapper_path = job_sprint(jp, "%s.c", wrapper_name);
-
-  #if defined(__MACH__)
-  char *wrapper_dl_path = job_sprint(jp, "%s.dylib", wrapper_name);
-  #else
-  char *wrapper_dl_path = job_sprint(jp, "%s.so", wrapper_name);
-  #endif
-
-  FILE *wrapper_file = fopen(wrapper_path, "w");
-  int has_non_scalar_return =
-  (proc_type->proc.ret.n > 0) && TYPE_KIND_IS_NOT_SCALAR(proc_type->proc.ret.types[0]->kind);
-
-  if(is_system) {
-    char *system_preamble =
-    "#include <ASSERT.h>\n"
-    "#include <ctype.h>\n"
-    "#include <errno.h>\n"
-    "#include <float.h>\n"
-    "#include <limits.h>\n"
-    "#include <locale.h>\n"
-    "#include <math.h>\n"
-    "#include <setjmp.h>\n"
-    "#include <signal.h>\n"
-    "#include <stdarg.h>\n"
-    "#include <stddef.h>\n"
-    "#include <stdio.h>\n"
-    "#include <stdlib.h>\n"
-    "#include <string.h>\n"
-    "#include <time.h>\n"
-    "\n"
-    "#include <stdbool.h>\n"
-    "#include <stdint.h>\n"
-    "#include <inttypes.h>\n"
-    "#include <tgmath.h>\n"
-    "#include <complex.h>\n"
-    "#include <fenv.h>\n"
-    "\n"
-    "#include <unistd.h>\n"
-    "#include <sys/types.h>\n"
-    "#include <sys/stat.h>\n"
-    "#include <fcntl.h>\n"
-    "#include <dirent.h>\n"
-    "#include <pthread.h>\n"
-    "#include <semaphore.h>\n"
-    "#include <errno.h>\n"
-    "#include <dlfcn.h>\n"
-    "#include <netdb.h>\n"
-    "#include <netinet/in.h>\n"
-    "#include <arpa/inet.h>\n"
-    "#include <sys/socket.h>\n"
-    "#include <sys/time.h>\n"
-    "#include <sys/wait.h>\n"
-    "#include <pwd.h>\n"
-    "#include <grp.h>\n"
-    "\n"
-    "#define Arr(T) T *\n"
-    "typedef int64_t s64;\n"
-    "typedef uint64_t u64;\n"
-    "typedef int32_t s32;\n"
-    "typedef uint32_t u32;\n"
-    "typedef int16_t s16;\n"
-    "typedef uint16_t u16;\n"
-    "typedef int8_t s8;\n"
-    "typedef uint8_t u8;\n"
-    "typedef float f32;\n"
-    "typedef double f64;\n"
-    "typedef union IRvalue {\n"
-    "    u64 integer;\n"
-    "    f32 floating32;\n"
-    "    f64 floating64;\n"
-    "} IRvalue;\n"
-    "typedef struct IRmachine {\n"
-    #define X(x) #x "\n"
-    IRMACHINE_BODY
-    #undef X
-    "} IRmachine;\n";
-
-    fprintf(wrapper_file, "%s\nvoid %s(IRmachine *interp) {\n", system_preamble, wrapper_name);
-  } else {
-    fprintf(wrapper_file, "%s\n#include \"%s\"\nvoid %s(IRmachine *interp) {\n", wrapper_preamble, header_path, wrapper_name);
-  }
-
-  ASSERT(proc_sym->is_foreign);
-
-  int port_index = 0;
-
-  for(int i = 0; i < proc_type->proc.param.n; ++i) {
-    char *param_name = proc_type->proc.param.names[i];
-    Type *param_type = proc_type->proc.param.types[i];
-
-    char *param_ctype_str;
-    if(TYPE_KIND_IS_RECORD(param_type->kind)) {
-      // TODO jfd: is it better to not require the C header file and generate it from our code?
-      //
-      // its better to generate the necessary headers from our own code, headers take time
-      // to compile
-      //
-      // yes it is definitely better, but then again, it would be better to generate the wrapper in assembly
-      // so until we do that it will use C
-      ASSERT(param_type->record.name);
-      param_ctype_str =
-      job_sprint(jp, "%s %s",
-        (param_type->kind == TYPE_KIND_UNION) ? "union" : "struct",
-        param_type->record.name);
-    } else {
-      param_ctype_str = job_type_to_ctype_str(jp, param_type);
-    }
-
-    port_index = i;
-
-    fprintf(wrapper_file, "%s %s;\n", param_ctype_str, param_name);
-
-    if(TYPE_KIND_IS_NOT_SCALAR(param_type->kind)) {
-      fprintf(wrapper_file,
-        "%s = *(%s*)(void*)(interp->ports[%i].integer);\n",
-        param_name, param_ctype_str, port_index + has_non_scalar_return);
-    } else {
-      if(param_type->kind == TYPE_KIND_F64) {
-        fprintf(wrapper_file,
-          "%s = interp->ports[%i].floating64;\n",
-          param_name, port_index + has_non_scalar_return);
-      } else if(TYPE_KIND_IS_FLOAT(param_type->kind)) {
-        fprintf(wrapper_file,
-          "%s = interp->ports[%i].floating32;\n",
-          param_name, port_index + has_non_scalar_return);
-      } else {
-        fprintf(wrapper_file,
-          "%s = (%s)(interp->ports[%i].integer);\n",
-          param_name, param_ctype_str, port_index + has_non_scalar_return);
-      }
-      ++port_index;
-    }
-  }
-
-  if(proc_type->proc.ret.n == 0) {
-    fprintf(wrapper_file, "%s(", proc_sym->name);
-    int i;
-    if(proc_type->proc.param.n == 0) {
-      fprintf(wrapper_file, ");\n");
-    } else {
-      for(i = 0; i < proc_type->proc.param.n - 1; ++i) {
-        char *param_name = proc_type->proc.param.names[i];
-        fprintf(wrapper_file, "%s, ", param_name);
-      }
-      char *param_name = proc_type->proc.param.names[i];
-      fprintf(wrapper_file, "%s);\n", param_name);
-    }
-  } else {
-    Type *ret_type = proc_type->proc.ret.types[0];
-
-    if(TYPE_KIND_IS_NOT_SCALAR(ret_type->kind)) {
-      char *ret_ctype_str =
-      job_sprint(jp, "%s %s",
-        (ret_type->kind == TYPE_KIND_UNION) ? "union" : "struct",
-        ret_type->record.name);
-      fprintf(wrapper_file, "%s r = %s(", ret_ctype_str, proc_sym->name);
-      int i;
-      if(proc_type->proc.param.n == 0) {
-        fprintf(wrapper_file, ");\n");
-      } else {
-        for(i = 0; i < proc_type->proc.param.n - 1; ++i) {
-          char *param_name = proc_type->proc.param.names[i];
-          fprintf(wrapper_file, "%s, ", param_name);
-        }
-        char *param_name = proc_type->proc.param.names[i];
-        fprintf(wrapper_file, "%s);\n", param_name);
-      }
-
-      fprintf(wrapper_file, "*(%s*)(void*)(interp->ports[0].integer) = r;\n", ret_ctype_str);
-    } else {
-      char *ret_ctype_str = job_type_to_ctype_str(jp, ret_type);
-      fprintf(wrapper_file, "%s r = %s(", ret_ctype_str, proc_sym->name);
-      int i;
-      if(proc_type->proc.param.n == 0) {
-        fprintf(wrapper_file, ");\n");
-      } else {
-        for(i = 0; i < proc_type->proc.param.n - 1; ++i) {
-          char *param_name = proc_type->proc.param.names[i];
-          fprintf(wrapper_file, "%s, ", param_name);
-        }
-        char *param_name = proc_type->proc.param.names[i];
-        fprintf(wrapper_file, "%s);\n", param_name);
-      }
-
-      char *port_field = "integer";
-      char *cast_str = "(u64)";
-
-      if(ret_type->kind == TYPE_KIND_F64) {
-        port_field = "floating64";
-        cast_str = "(f64)";
-      } else if(TYPE_KIND_IS_FLOAT(ret_type->kind)) {
-        port_field = "floating32";
-        cast_str = "(f32)";
-      }
-
-      fprintf(wrapper_file, "interp->ports[0].%s = %sr;\n", port_field, cast_str);
-    }
-  }
-
-  fprintf(wrapper_file, "}\n");
-  fclose(wrapper_file);
-
-  char *wrapper_compile;
-
-  #if defined(__MACH__)
-  if(is_system) {
-    wrapper_compile = job_sprint(jp,
-      "cc -g -dynamiclib -o %s %s -install_name @rpath/%s",
-      wrapper_dl_path,
-      wrapper_path,
-      wrapper_dl_path);
-  } else {
-    wrapper_compile = job_sprint(jp,
-      "cc -g -dynamiclib -o %s %s -L'%s' -l'%s' -install_name @rpath/%s -Wl,-rpath,'%s'",
-      wrapper_dl_path,
-      wrapper_path,
-      foreign_lib_str,
-      foreign_lib_str,
-      wrapper_dl_path,
-      foreign_lib_str);
-  }
-  #else
-  if(is_system) {
-    wrapper_compile = job_sprint(jp,
-      "cc -g -shared -o %s %s",
-      wrapper_dl_path,
-      wrapper_path);
-  } else {
-    wrapper_compile = job_sprint(jp,
-      "cc -g -shared -o %s %s -L'%s' -l'%s' -Wl,-rpath,'%s'",
-      wrapper_dl_path,
-      wrapper_path,
-      foreign_lib_str,
-      foreign_lib_str,
-      foreign_lib_str);
-  }
-  #endif
-
-  ASSERT(system(wrapper_compile) == 0);
-  ASSERT(FileExists(wrapper_dl_path));
-
-  // TODO jfd: replace full_wrapper_dl_path with an arena alloc'd buffer
-  char full_wrapper_dl_path[512];
-  ASSERT(realpath(wrapper_dl_path, full_wrapper_dl_path));
-
-  void *wrapper_module = dlopen(full_wrapper_dl_path, RTLD_NOW);
-  printf("%s\n", dlerror());
-  ASSERT(wrapper_module);
-  IR_foreign_proc foreign_proc = (IR_foreign_proc)dlsym(wrapper_module, wrapper_name);
-
-  if(!foreign_proc) {
-    ASSERT("didn't find symbol"&&0);
-  }
-
-  IRproc proc_data = {
-    .procid = proc_sym->procid,
-    .name = proc_sym->name,
-    .is_foreign = true,
-    .foreign_proc = foreign_proc,
-    .wrapper_dll = wrapper_module,
-  };
-
-  proc_table_add(proc_sym->procid, proc_data);
-
-  proc_sym->ready_to_run = true;
-
-  arena_scope_end(scratch_scope);
-
-  #endif
 }
 
 void ir_gen_C(Job *jp, IRproc irproc, Type *proc_type) {
@@ -7068,11 +6696,6 @@ void ir_gen_C(Job *jp, IRproc irproc, Type *proc_type) {
   free(code_buf);
 }
 
-force_inline void
-func ir_call_foreign_proc(IRmachine *interp, IRproc procedure) {
-  UNIMPLEMENTED;
-}
-
 internal char
 func dc_type_signature_from_type_kind(Typekind kind) {
   char type_signature = 0;
@@ -7357,10 +6980,7 @@ func ir_run(Job *jp, int procid) {
         cur_called_proc_type = 0;
       } break;
       case IROP_HINT_BEGIN_PASS_NON_SCALAR:
-      {
-        // nocheckin
-        // Type *non_scalar_param_type = inst.hint.non_scalar_param_type;
-      } break;
+      break;
       case IROP_HINT_END_PASS_NON_SCALAR:
       {
 
@@ -7397,10 +7017,7 @@ func ir_run(Job *jp, int procid) {
 
       } break;
       case IROP_HINT_BEGIN_PASS_SCALAR:
-      {
-        // nocheckin
-        // Type *scalar_param_type = inst.hint.scalar_param_type;
-      } break;
+      break;
       case IROP_HINT_END_PASS_SCALAR:
       {
 
@@ -7422,7 +7039,6 @@ func ir_run(Job *jp, int procid) {
         IRproc new_procedure = hmget(proc_table, new_procid);
 
         if(new_procedure.is_foreign) {
-          // cowabunga
 
           while(foreign_call_param_buffer.count > 0) {
             IR_foreign_call_param_info param_info = arr_pop(foreign_call_param_buffer);
@@ -8861,9 +8477,9 @@ force_inline void ir_gen_statement(Job *jp, AST_statement *ast_statement) {
     arrpush(jp->instructions, inst_write);
   }
 
-
   jp->reg_alloc = 0;
   jp->float_reg_alloc = 0;
+
 }
 
 void ir_gen_block(Job *jp, AST *ast) {
@@ -19441,10 +19057,12 @@ void print_sym(Sym sym) {
 
 // VERSION 1.0
 //
-// TODO jfd: finish globals
-// TODO jfd: struct literals
 // TODO jfd: output C
 // TODO jfd: procedures for interfacing with the compiler (e.g. add_source_file())
+
+// CANCELED (maybe next time...)
+// TODO jfd: finish globals
+// TODO jfd: struct literals
 // TODO jfd: debug info (maybe better to do this in the interpreter? seeing as we output C) (internal and convert to gdb debug format)
 
 // EXTRA

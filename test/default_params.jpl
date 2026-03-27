@@ -1,7 +1,7 @@
-#run fib();
-#run fib(5);
+#run print("fib() = %\n", #run fib());
+#run print("fib(5) = %\n", #run fib(5));
 
-#run test(b=2.0, a=5, c=#run fib());
+//#run print("test() = %\n", test(b=2.0, a=5, c=#run fib()));
 
 proc test(a: int, b: float, c: int = 4, d: float = 5.0) float {
     a += c;
