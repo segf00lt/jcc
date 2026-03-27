@@ -539,7 +539,7 @@ force_inline Token lex(Lexer *l) {
   }
 
   /* chars */
-  for(int i = 0; i < STRLEN(token_chars); ++i) {
+  for(int i = 0; i < (int)STRLEN(token_chars); ++i) {
     if(!(*l->pos ^ token_chars[i])) {
       l->token = *l->pos;
       ++l->pos;

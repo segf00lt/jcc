@@ -51,12 +51,16 @@ struct Platform {
 
 #if PLATFORM_WINDOWS
 #define platform_core_api __declspec(dllexport)
+#else
+#define platform_core_api __attribute__((visibility("default")))
 #endif
 
 #elif defined(PLATFORM_CORE_IMPORT)
 
 #if PLATFORM_WINDOWS
 #define platform_core_api __declspec(dllimport)
+#else
+#define platform_core_api extern
 #endif
 
 #else

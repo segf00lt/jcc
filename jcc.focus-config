@@ -20,8 +20,8 @@ open_panel_on_build:               true
 close_panel_on_success:            true
 clear_build_output_before_running: true
 auto_jump_to_error:                true
-error_regex:   ^(?P<file>.*)\((?P<line>\d+),?(?P<col>\d+)?\)[ ]?: (?P<type>fatal error|error|warning) (?P<msg>.*)$
-# error_regex:                       ^(?P<file>.*):(?P<line>\d+):(?P<col>\d+): (?P<type>fatal error|error|warning): (?P<msg>.*)( \[(?P<msg1>.*)\])?$
+# error_regex:   ^(?P<file>.*)\((?P<line>\d+),?(?P<col>\d+)?\)[ ]?: (?P<type>fatal error|error|warning) (?P<msg>.*)$
+error_regex:                       ^(?P<file>.*):(?P<line>\d+):(?P<col>\d+): (?P<type>fatal error|error|warning): (?P<msg>.*)( \[(?P<msg1>.*)\])?$
 
 [build]
 build_command: %BUILD_WORKING_DIR%/nob %BUILD_WORKING_DIR%

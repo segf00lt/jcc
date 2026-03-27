@@ -71,12 +71,44 @@ int win32_test_dyncall_build(void) {
   return 1;
 }
 
+int linux_build(void) {
+  Nob_Cmd cmd = {0};
+  nob_cmd_append(&cmd,
+    "clang",
+    "-std=c11",
+    "-Wall",
+    "-Wextra",
+    "-Wno-unused-parameter",
+    "-Wno-unused-function",
+    "-Wno-switch",
+    "-Wno-sign-compare",
+    // "-Wno-format",
+    "-g",
+    "-fno-omit-frame-pointer",
+    // "-no-pie",
+    "-O0",
+    // "-pthread",
+    // "-fsanitize=address",
+    "-o",
+    "jcc",
+    "jcc_build.c",
+    "third_party/dyncall-1.4/dyncall/libdyncall_s.a",
+    "third_party/dyncall-1.4/dynload/libdynload_s.a",
+    ""
+  );
+  if(!nob_cmd_run_sync_and_reset(&cmd)) return 0;
+  return 1;
+}
+
+
+
 int main(int argc, char **argv) {
   NOB_GO_REBUILD_URSELF(argc, argv);
 
-  if(!win32_build()) return 1;
+  if(!linux_build()) return 1;
 
   return 0;
+  if(!win32_build()) return 1;
   if(!build_raylib_win32()) return 1;
   if(!win32_test_dyncall_build()) return 1;
 

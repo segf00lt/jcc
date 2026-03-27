@@ -20,4 +20,11 @@
 #include "base/base_include.c"
 
 #include "platform/platform.c"
+
+#if PLATFORM_WINDOWS
 #include "platform/platform_core_win32.c"
+#elif PLATFORM_MACOS
+#include "platform/platform_core_macos.c"
+#elif PLATFORM_LINUX
+#include "platform/platform_core_linux.c"
+
