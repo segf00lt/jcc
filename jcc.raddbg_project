@@ -23,7 +23,7 @@ target:
 debug_info:
 {
   path: "C:/Users/joaod/fun/jcc/jcc.pdb"
-  timestamp: 66210350836533
+  timestamp: 66210873481766
 }
 debug_info:
 {
@@ -93,4 +93,19 @@ watch_pin:
 {
   expression: pc
   source_location: "jcc.c:7182:29"
+}
+breakpoint:
+{
+  source_location: "jcc.c:15183:1"
+  hit_count: 1
+}
+breakpoint:
+{
+  source_location: "jcc.c:15185:1"
+  hit_count: 0
+}
+breakpoint:
+{
+  source_location: "jcc.c:15190:1"
+  hit_count: 1
 }

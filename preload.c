@@ -138,6 +138,10 @@ struct Temporary_storage {
 };
 
 #if PLATFORM_WINDOWS
+
+extern int _write(int fd, const void *buffer, unsigned int count);
+extern int _read(int fd, const void *buffer, unsigned int count);
+
 shared_function size_t
 func write(int fd, void *buf, size_t bytes) {
   return (size_t)_write(fd, buf, (int)bytes);

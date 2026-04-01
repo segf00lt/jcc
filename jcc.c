@@ -705,6 +705,7 @@ struct Sym {
   Type *type;
   //union {
   //};
+  Str8 generated_c_code;
   Value *value;
   AST *initializer;
   AST *polymorphic_proc_ast;
@@ -1248,7 +1249,7 @@ internal void        ir_gen_entry_point_preamble(Job *jp);
 internal void        ir_run(Job *jp, int procid);
 internal void        show_ir_loc(IRinst inst);
 
-internal void        ir_gen_C(Job *jp, IRproc irproc, Type *proc_type);
+internal Str8        ir_gen_c(Job *jp, IRproc irproc, Type *proc_type);
 
 internal Value*      atom_to_value(Job *jp, AST_atom *atom);
 internal Type*       atom_to_type(Job *jp, AST_atom *atom);
@@ -1761,7 +1762,8 @@ void job_scope_enter(Job *jp, Sym *sym) {
   arrlast(jp->scopes) = scope;
 }
 
-force_inline Sym* global_scope_lookup(Job *jp, char *name) {
+force_inline Sym*
+func global_scope_lookup(Job *jp, char *name) {
   return shget(*(jp->global_scope), name);
 }
 
@@ -5331,8 +5333,191 @@ void ir_gen_foreign_proc_x64(Job *jp) {
 
 }
 
-internal void
-func ir_gen_C(Job *jp, IRproc irproc, Type *proc_type) {
+internal Str8
+func ir_gen_c_header_for_foreign_proc(Job *jp, Type *proc_type) {
+  Str8 result = {0};
+
+  Arena_scope string_scope = arena_scope_begin(string_arena);
+
+  if(proc_type->proc.ret.n == 1) {
+    Type *ret_type = proc_type->proc.ret.types[0];
+
+    Str8 type_str = {0};
+
+    int levels_of_pointer_indirection = 0;
+    while(ret_type && ret_type->kind == TYPE_KIND_POINTER) {
+      ret_type = ret_type->pointer.to;
+      levels_of_pointer_indirection++;
+    }
+
+    if(TYPE_KIND_IS_NOT_SCALAR(ret_type->kind)) {
+      ASSERT(TYPE_KIND_IS_RECORD(ret_type->kind));
+      type_str = str8f(string_arena, "struct %s", ret_type->record.name);
+    } else {
+      switch(ret_type->kind) {
+        case TYPE_KIND_VOID:
+        type_str = str8_from_cstr(string_arena, "void");
+        break;
+        case TYPE_KIND_BOOL:
+        type_str = str8_from_cstr(string_arena, "bool");
+        break;
+        case TYPE_KIND_CHAR:
+        type_str = str8_from_cstr(string_arena, "char");
+        break;
+        case TYPE_KIND_S8:
+        type_str = str8_from_cstr(string_arena, "s8");
+        break;
+        case TYPE_KIND_U8:
+        type_str = str8_from_cstr(string_arena, "u8");
+        break;
+        case TYPE_KIND_S16:
+        type_str = str8_from_cstr(string_arena, "s16");
+        break;
+        case TYPE_KIND_U16:
+        type_str = str8_from_cstr(string_arena, "u16");
+        break;
+        case TYPE_KIND_S32:
+        type_str = str8_from_cstr(string_arena, "s32");
+        break;
+        case TYPE_KIND_U32:
+        type_str = str8_from_cstr(string_arena, "u32");
+        break;
+        case TYPE_KIND_S64:
+        case TYPE_KIND_INT:
+        type_str = str8_from_cstr(string_arena, "s64");
+        break;
+        case TYPE_KIND_U64:
+        type_str = str8_from_cstr(string_arena, "u64");
+        break;
+        case TYPE_KIND_FLOAT:
+        case TYPE_KIND_F32:
+        type_str = str8_from_cstr(string_arena, "f32");
+        break;
+        case TYPE_KIND_F64:
+        type_str = str8_from_cstr(string_arena, "f64");
+        break;
+      }
+    }
+
+    while(levels_of_pointer_indirection > 0) {
+      type_str = str8_cat(string_arena, type_str, str8_lit("*"));
+      levels_of_pointer_indirection--;
+    }
+
+    result = str8f(string_arena, "extern %S %s(", type_str, proc_type->proc.name);
+  } else {
+    ASSERT(proc_type->proc.ret.n == 0);
+
+    result = str8f(string_arena, "extern void %s(", proc_type->proc.name);
+  }
+
+  Str8 param_list = {0};
+  for(int i = 0; i < proc_type->proc.param.n; i++) {
+    char *param_name = proc_type->proc.param.names[i];
+    Type *param_type = proc_type->proc.param.types[i];
+
+    // NOTE jfd 01/04/2026: This isn't gonna handle function pointers yet, I cannot be bothered
+
+    Str8 type_str = {0};
+
+    Type *original_param_type = param_type;
+
+    int levels_of_pointer_indirection = 0;
+    int levels_of_array_indirection = 0;
+    while(param_type && (param_type->kind == TYPE_KIND_POINTER || param_type->kind == TYPE_KIND_ARRAY)) {
+      if(param_type->kind == TYPE_KIND_POINTER) {
+        param_type = param_type->pointer.to;
+        levels_of_pointer_indirection++;
+      } else {
+        param_type = param_type->array.of;
+        levels_of_array_indirection++;
+      }
+    }
+
+    if(TYPE_KIND_IS_NOT_SCALAR(param_type->kind)) {
+      ASSERT(TYPE_KIND_IS_RECORD(param_type->kind));
+      type_str = str8f(string_arena, "struct %s", param_type->record.name);
+    } else {
+      switch(param_type->kind) {
+        case TYPE_KIND_VOID:
+        type_str = str8_from_cstr(string_arena, "void");
+        break;
+        case TYPE_KIND_BOOL:
+        type_str = str8_from_cstr(string_arena, "bool");
+        break;
+        case TYPE_KIND_CHAR:
+        type_str = str8_from_cstr(string_arena, "char");
+        break;
+        case TYPE_KIND_S8:
+        type_str = str8_from_cstr(string_arena, "s8");
+        break;
+        case TYPE_KIND_U8:
+        type_str = str8_from_cstr(string_arena, "u8");
+        break;
+        case TYPE_KIND_S16:
+        type_str = str8_from_cstr(string_arena, "s16");
+        break;
+        case TYPE_KIND_U16:
+        type_str = str8_from_cstr(string_arena, "u16");
+        break;
+        case TYPE_KIND_S32:
+        type_str = str8_from_cstr(string_arena, "s32");
+        break;
+        case TYPE_KIND_U32:
+        type_str = str8_from_cstr(string_arena, "u32");
+        break;
+        case TYPE_KIND_S64:
+        case TYPE_KIND_INT:
+        type_str = str8_from_cstr(string_arena, "s64");
+        break;
+        case TYPE_KIND_U64:
+        type_str = str8_from_cstr(string_arena, "u64");
+        break;
+        case TYPE_KIND_FLOAT:
+        case TYPE_KIND_F32:
+        type_str = str8_from_cstr(string_arena, "f32");
+        break;
+        case TYPE_KIND_F64:
+        type_str = str8_from_cstr(string_arena, "f64");
+        break;
+      }
+    }
+
+    type_str = str8_cat(string_arena, type_str, str8_lit(" "));
+
+    Str8 param_name_str = str8_from_cstr(string_arena, param_name);
+
+    param_type = original_param_type; // now you don't know what to think do ya?
+
+    while(param_type && (param_type->kind == TYPE_KIND_POINTER || param_type->kind == TYPE_KIND_ARRAY)) {
+      if(param_type->kind == TYPE_KIND_POINTER) {
+        type_str = str8_cat(string_arena, type_str, str8_lit("*"));
+        param_type = param_type->pointer.to;
+      } else {
+        param_name_str = str8f(string_arena, "%S[%lu]", param_name_str, param_type->array.n);
+        param_type = param_type->array.of;
+      }
+    }
+
+    param_list = str8_cat(string_arena, type_str, param_name_str);
+    if(i + 1 < proc_type->proc.param.n) {
+      param_list = str8_cat(string_arena, param_list, str8_lit(", "));
+    }
+
+  }
+
+  result = str8_cat(string_arena, result, str8_cat(string_arena, param_list, str8_lit(");")));
+  Str8 copy = str8_copy(string_arena, result);
+
+  arena_scope_end(string_scope);
+
+  result = str8_copy(string_arena, copy);
+
+  return result;
+}
+
+internal Str8
+func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
 
   char *IR_C_ireg_map[] = { "reg0",  "reg1",  "reg2",  "reg3",  "reg4",  "reg5",  };
   char *IR_C_f32reg_map[] = { "f32reg0",  "f32reg1",  "f32reg2",  "f32reg3",  "f32reg4",  "f32reg5",  };
@@ -5340,9 +5525,7 @@ func ir_gen_C(Job *jp, IRproc irproc, Type *proc_type) {
 
   fprintf(stderr, "\ngenerating C code for %s procid %i\n\n", irproc.name, irproc.procid);
 
-  if(irproc.is_foreign) {
-    return;
-  }
+  ASSERT(irproc.is_foreign == false);
 
   Arr(u32) float32_constants = NULL;
   Arr(u64) float64_constants = NULL;
@@ -5695,21 +5878,21 @@ func ir_gen_C(Job *jp, IRproc irproc, Type *proc_type) {
 
       case IROP_LABEL:
       n_written = stbsp_snprintf(line_buf, sizeof(line_buf),
-        "%s_label_%lx:\n",
-        irproc.name, inst.label.id);
+        "label_%lx:\n",
+        inst.label.id);
       break;
       case IROP_IF:
       case IROP_IFZ:
       n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
-        "if((bool)%s == (bool)%i) goto %s_label_%lx;\n",
+        "if((bool)%s == (bool)%i) goto label_%lx;\n",
         IR_C_ireg_map[inst.branch.cond_reg],
         (inst.opcode == IROP_IF) ? true : false,
-        irproc.name, inst.branch.label_id);
+        inst.branch.label_id);
       break;
       case IROP_JMP:
       n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
-        "goto %s_label_%lx;\n",
-        irproc.name, inst.branch.label_id);
+        "goto label_%lx;\n",
+        inst.branch.label_id);
       break;
 
       case IROP_GETCONTEXTARG:
@@ -6687,15 +6870,26 @@ func ir_gen_C(Job *jp, IRproc irproc, Type *proc_type) {
     for(u64 i = 0; i < n_written;) preamble_buf[preamble_buf_used++] = line_buf[i++];
   }
 
+  {
+    int n_written = stbsp_snprintf(line_buf, sizeof(line_buf), "u8 local_segment[%lu] = {0};\n", align_up(jp->max_local_offset, 8));
+
+    if(n_written + preamble_buf_used >= preamble_buf_cap) {
+      while(n_written + preamble_buf_used >= preamble_buf_cap) preamble_buf_cap <<= 1;
+      preamble_buf = realloc(preamble_buf, preamble_buf_cap);
+    }
+
+    for(u64 i = 0; i < n_written;) preamble_buf[preamble_buf_used++] = line_buf[i++];
+  }
+
   preamble_buf[preamble_buf_used] = 0;
   code_buf[code_buf_used] = 0;
 
-  fprintf(stderr, "%s\n%s\n}\n", preamble_buf, code_buf);
-  fprintf(stderr, "highest_argument_index = %lu\nhighest_return_index = %lu",
-    highest_argument_index,
-    highest_return_index);
+  Str8 generated_c_code = str8f(string_arena, "%s%s}\n", preamble_buf, code_buf);
+
   free(preamble_buf);
   free(code_buf);
+
+  return generated_c_code;
 }
 
 internal char
@@ -13608,7 +13802,8 @@ bool records_have_member_name_conflicts(Job *jp, Loc_info using_loc, Type *a, Ty
   return false;
 }
 
-bool job_runner(char *src, char *src_path) {
+internal bool
+func job_runner(char *src, char *src_path) {
   Lexer lexer = {0};
   lexer_init(&lexer, src, src_path);
 
@@ -14975,10 +15170,22 @@ bool job_runner(char *src, char *src_path) {
             continue;
           }
 
-          if(handling_sym->type->kind == TYPE_KIND_PROC && !handling_sym->is_foreign) {
-            IRproc procedure = hmget(proc_table, handling_sym->procid);
-            ir_gen_C(jp, procedure, handling_sym->type);
+          Str8 generated_c_code = {0};
+
+          if(handling_sym->type->kind == TYPE_KIND_PROC) {
+            if(handling_sym->is_foreign) {
+              generated_c_code = ir_gen_c_header_for_foreign_proc(jp, handling_sym->type);
+            } else {
+              IRproc procedure = hmget(proc_table, handling_sym->procid);
+              generated_c_code = ir_gen_c(jp, procedure, handling_sym->type);
+            }
+          } else if(handling_sym->type->kind == TYPE_KIND_TYPE) {
+            COWABUNGA;
+          } else {
+            COWABUNGA;
           }
+
+          handling_sym->generated_c_code = generated_c_code;
 
           job_die(jp);
 
