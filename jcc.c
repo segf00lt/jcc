@@ -253,6 +253,8 @@ X(ARM64)         \
 
 #define IROP_IS_INT_ARITH(op) ((bool)(op >= IROP_ADD && op <= IROP_NEG))
 
+#define VALUE_KIND_IS_SCALAR_BUT_NOT_POINTER(kind) (!!(kind >= VALUE_KIND_BOOL && kind <= VALUE_KIND_DFLOAT))
+
 
 typedef struct Scope_entry* Scope;
 typedef int    Jobid;
@@ -703,8 +705,6 @@ struct Sym {
   IRsegment segment;
   u64 segment_offset;
   Type *type;
-  //union {
-  //};
   Str8 generated_c_code;
   Value *value;
   AST *initializer;
@@ -1367,6 +1367,8 @@ Pool                       global_sym_allocator;
 Pool                       global_type_allocator;
 Pool                       global_value_allocator;
 Scope                      global_scope;
+
+Str8_list                  global_generated_c_code;
 
 Arena                     *string_arena;
 
@@ -2396,7 +2398,9 @@ void add_implicit_casts_to_expr(Job *jp, AST *ast) {
   //}
 }
 
-void serialize_value(Job *jp, u8 *dest, Value *v, Type *t) {
+#if 0
+internal void
+func serialize_value(Job *jp, u8 *dest, Value *v, Type *t) {
   ASSERT(v && t && dest);
 
   if(TYPE_KIND_IS_NOT_SCALAR(t->kind)) {
@@ -2426,11 +2430,20 @@ void serialize_value(Job *jp, u8 *dest, Value *v, Type *t) {
     }
   } else {
     if(t->kind == TYPE_KIND_POINTER) {
+      // NOTE jfd 02/04/2026: This is a fantastic example of how NOT to write a compiler
       UNIMPLEMENTED;
     } else {
       memcpy(dest, (void*)&(v->val), t->bytes);
     }
   }
+}
+#endif
+
+internal void
+func serialize_ast_expr_to_memory(Job *jp, u8 *dest, AST *node) {
+  // HERE
+  // TODO jfd 02/04/2026: serialize to memory from an ast so that we can serialize globals with pointers in them
+  UNIMPLEMENTED;
 }
 
 bool all_paths_return(Job *jp, AST *ast) {
@@ -3084,7 +3097,8 @@ int getprec(Token t) {
   }
 }
 
-force_inline AST* parse_top_level_statement(Job *jp) {
+force_inline AST*
+func parse_top_level_statement(Job *jp) {
   AST *ast = NULL;
 
   if(ast == NULL) ast = parse_procdecl(jp);
@@ -3095,7 +3109,8 @@ force_inline AST* parse_top_level_statement(Job *jp) {
   return ast;
 }
 
-force_inline AST* parse_directive_statement(Job *jp) {
+force_inline AST*
+func parse_directive_statement(Job *jp) {
   Lexer *lexer = jp->lexer;
   AST *ast = NULL;
 
@@ -3110,7 +3125,8 @@ force_inline AST* parse_directive_statement(Job *jp) {
   return ast;
 }
 
-AST* parse_load_or_import_directive(Job *jp) {
+internal AST*
+func parse_load_or_import_directive(Job *jp) {
   Lexer *lexer = jp->lexer;
   Lexer unlex = *lexer;
 
@@ -5334,10 +5350,121 @@ void ir_gen_foreign_proc_x64(Job *jp) {
 }
 
 internal Str8
+func ir_gen_c_name_decl_with_type(Job *jp, char *name, Type *type, Arena_scope scratch_scope) {
+  Str8 result = {0};
+
+  Arena *scratch = scratch_scope.arena;
+
+  // NOTE jfd 01/04/2026: This isn't gonna handle function pointers yet, I cannot be bothered
+
+  Str8 type_str = {0};
+
+  Type *original_type = type;
+
+  int levels_of_pointer_indirection = 0;
+  int levels_of_array_indirection = 0;
+  while(type && (type->kind == TYPE_KIND_POINTER || type->kind == TYPE_KIND_ARRAY)) {
+    if(type->kind == TYPE_KIND_POINTER) {
+      type = type->pointer.to;
+      levels_of_pointer_indirection++;
+    } else {
+      type = type->array.of;
+      levels_of_array_indirection++;
+    }
+  }
+
+  if(TYPE_KIND_IS_NOT_SCALAR(type->kind)) {
+    if(TYPE_KIND_IS_RECORD(type->kind)) {
+      type_str = str8f(scratch,
+        "%s %s",
+        (type->kind == TYPE_KIND_STRUCT) ? "struct" : "union",
+        type->record.name
+      );
+    } else if(type->kind == TYPE_KIND_STRING) {
+      type_str = str8_lit("struct String_view");
+    } else if(type->kind == TYPE_KIND_ARRAY_VIEW) {
+      type_str = str8_lit("struct Array_view");
+    } else if(type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
+      type_str = str8_lit("struct Dynamic_array");
+    } else if(type->kind == TYPE_KIND_PROC) {
+      // TODO jfd 02/04/2026: I'm using undefined behaviour here because I can't be bothered to refactor this whole thing right now
+      type_str = str8_lit("void *");
+    } else {
+      UNREACHABLE;
+    }
+  } else {
+    switch(type->kind) {
+      case TYPE_KIND_VOID:
+      type_str = str8_from_cstr(scratch, "void");
+      break;
+      case TYPE_KIND_BOOL:
+      type_str = str8_from_cstr(scratch, "bool");
+      break;
+      case TYPE_KIND_CHAR:
+      type_str = str8_from_cstr(scratch, "char");
+      break;
+      case TYPE_KIND_S8:
+      type_str = str8_from_cstr(scratch, "s8");
+      break;
+      case TYPE_KIND_U8:
+      type_str = str8_from_cstr(scratch, "u8");
+      break;
+      case TYPE_KIND_S16:
+      type_str = str8_from_cstr(scratch, "s16");
+      break;
+      case TYPE_KIND_U16:
+      type_str = str8_from_cstr(scratch, "u16");
+      break;
+      case TYPE_KIND_S32:
+      type_str = str8_from_cstr(scratch, "s32");
+      break;
+      case TYPE_KIND_U32:
+      type_str = str8_from_cstr(scratch, "u32");
+      break;
+      case TYPE_KIND_S64:
+      case TYPE_KIND_INT:
+      type_str = str8_from_cstr(scratch, "s64");
+      break;
+      case TYPE_KIND_U64:
+      type_str = str8_from_cstr(scratch, "u64");
+      break;
+      case TYPE_KIND_FLOAT:
+      case TYPE_KIND_F32:
+      type_str = str8_from_cstr(scratch, "f32");
+      break;
+      case TYPE_KIND_F64:
+      type_str = str8_from_cstr(scratch, "f64");
+      break;
+    }
+  }
+
+  type_str = str8_cat(scratch, type_str, str8_lit(" "));
+
+  Str8 name_str = str8_from_cstr(scratch, name);
+
+  type = original_type; // now you don't know what to think do ya?
+
+  while(type && (type->kind == TYPE_KIND_POINTER || type->kind == TYPE_KIND_ARRAY)) {
+    if(type->kind == TYPE_KIND_POINTER) {
+      type_str = str8_cat(scratch, type_str, str8_lit("*"));
+      type = type->pointer.to;
+    } else {
+      name_str = str8f(scratch, "%S[%lu]", name_str, type->array.n);
+      type = type->array.of;
+    }
+  }
+
+  result = str8_cat(scratch, type_str, name_str);
+
+  return result;
+}
+
+internal Str8
 func ir_gen_c_header_for_foreign_proc(Job *jp, Type *proc_type) {
   Str8 result = {0};
 
-  Arena_scope string_scope = arena_scope_begin(string_arena);
+  Arena *scratch = jp->allocator.scratch;
+  Arena_scope scratch_scope = arena_scope_begin(scratch);
 
   if(proc_type->proc.ret.n == 1) {
     Type *ret_type = proc_type->proc.ret.types[0];
@@ -5352,63 +5479,67 @@ func ir_gen_c_header_for_foreign_proc(Job *jp, Type *proc_type) {
 
     if(TYPE_KIND_IS_NOT_SCALAR(ret_type->kind)) {
       ASSERT(TYPE_KIND_IS_RECORD(ret_type->kind));
-      type_str = str8f(string_arena, "struct %s", ret_type->record.name);
+      type_str = str8f(scratch,
+        "%s %s",
+        (ret_type->kind == TYPE_KIND_STRUCT) ? "struct" : "union",
+        ret_type->record.name
+      );
     } else {
       switch(ret_type->kind) {
         case TYPE_KIND_VOID:
-        type_str = str8_from_cstr(string_arena, "void");
+        type_str = str8_from_cstr(scratch, "void");
         break;
         case TYPE_KIND_BOOL:
-        type_str = str8_from_cstr(string_arena, "bool");
+        type_str = str8_from_cstr(scratch, "bool");
         break;
         case TYPE_KIND_CHAR:
-        type_str = str8_from_cstr(string_arena, "char");
+        type_str = str8_from_cstr(scratch, "char");
         break;
         case TYPE_KIND_S8:
-        type_str = str8_from_cstr(string_arena, "s8");
+        type_str = str8_from_cstr(scratch, "s8");
         break;
         case TYPE_KIND_U8:
-        type_str = str8_from_cstr(string_arena, "u8");
+        type_str = str8_from_cstr(scratch, "u8");
         break;
         case TYPE_KIND_S16:
-        type_str = str8_from_cstr(string_arena, "s16");
+        type_str = str8_from_cstr(scratch, "s16");
         break;
         case TYPE_KIND_U16:
-        type_str = str8_from_cstr(string_arena, "u16");
+        type_str = str8_from_cstr(scratch, "u16");
         break;
         case TYPE_KIND_S32:
-        type_str = str8_from_cstr(string_arena, "s32");
+        type_str = str8_from_cstr(scratch, "s32");
         break;
         case TYPE_KIND_U32:
-        type_str = str8_from_cstr(string_arena, "u32");
+        type_str = str8_from_cstr(scratch, "u32");
         break;
         case TYPE_KIND_S64:
         case TYPE_KIND_INT:
-        type_str = str8_from_cstr(string_arena, "s64");
+        type_str = str8_from_cstr(scratch, "s64");
         break;
         case TYPE_KIND_U64:
-        type_str = str8_from_cstr(string_arena, "u64");
+        type_str = str8_from_cstr(scratch, "u64");
         break;
         case TYPE_KIND_FLOAT:
         case TYPE_KIND_F32:
-        type_str = str8_from_cstr(string_arena, "f32");
+        type_str = str8_from_cstr(scratch, "f32");
         break;
         case TYPE_KIND_F64:
-        type_str = str8_from_cstr(string_arena, "f64");
+        type_str = str8_from_cstr(scratch, "f64");
         break;
       }
     }
 
     while(levels_of_pointer_indirection > 0) {
-      type_str = str8_cat(string_arena, type_str, str8_lit("*"));
+      type_str = str8_cat(scratch, type_str, str8_lit("*"));
       levels_of_pointer_indirection--;
     }
 
-    result = str8f(string_arena, "extern %S %s(", type_str, proc_type->proc.name);
+    result = str8f(scratch, "extern %S %s(", type_str, proc_type->proc.name);
   } else {
     ASSERT(proc_type->proc.ret.n == 0);
 
-    result = str8f(string_arena, "extern void %s(", proc_type->proc.name);
+    result = str8f(scratch, "extern void %s(", proc_type->proc.name);
   }
 
   Str8 param_list = {0};
@@ -5416,102 +5547,162 @@ func ir_gen_c_header_for_foreign_proc(Job *jp, Type *proc_type) {
     char *param_name = proc_type->proc.param.names[i];
     Type *param_type = proc_type->proc.param.types[i];
 
-    // NOTE jfd 01/04/2026: This isn't gonna handle function pointers yet, I cannot be bothered
+    Str8 param_decl_str = ir_gen_c_name_decl_with_type(jp, param_name, param_type, scratch_scope);
 
-    Str8 type_str = {0};
-
-    Type *original_param_type = param_type;
-
-    int levels_of_pointer_indirection = 0;
-    int levels_of_array_indirection = 0;
-    while(param_type && (param_type->kind == TYPE_KIND_POINTER || param_type->kind == TYPE_KIND_ARRAY)) {
-      if(param_type->kind == TYPE_KIND_POINTER) {
-        param_type = param_type->pointer.to;
-        levels_of_pointer_indirection++;
-      } else {
-        param_type = param_type->array.of;
-        levels_of_array_indirection++;
-      }
-    }
-
-    if(TYPE_KIND_IS_NOT_SCALAR(param_type->kind)) {
-      ASSERT(TYPE_KIND_IS_RECORD(param_type->kind));
-      type_str = str8f(string_arena, "struct %s", param_type->record.name);
-    } else {
-      switch(param_type->kind) {
-        case TYPE_KIND_VOID:
-        type_str = str8_from_cstr(string_arena, "void");
-        break;
-        case TYPE_KIND_BOOL:
-        type_str = str8_from_cstr(string_arena, "bool");
-        break;
-        case TYPE_KIND_CHAR:
-        type_str = str8_from_cstr(string_arena, "char");
-        break;
-        case TYPE_KIND_S8:
-        type_str = str8_from_cstr(string_arena, "s8");
-        break;
-        case TYPE_KIND_U8:
-        type_str = str8_from_cstr(string_arena, "u8");
-        break;
-        case TYPE_KIND_S16:
-        type_str = str8_from_cstr(string_arena, "s16");
-        break;
-        case TYPE_KIND_U16:
-        type_str = str8_from_cstr(string_arena, "u16");
-        break;
-        case TYPE_KIND_S32:
-        type_str = str8_from_cstr(string_arena, "s32");
-        break;
-        case TYPE_KIND_U32:
-        type_str = str8_from_cstr(string_arena, "u32");
-        break;
-        case TYPE_KIND_S64:
-        case TYPE_KIND_INT:
-        type_str = str8_from_cstr(string_arena, "s64");
-        break;
-        case TYPE_KIND_U64:
-        type_str = str8_from_cstr(string_arena, "u64");
-        break;
-        case TYPE_KIND_FLOAT:
-        case TYPE_KIND_F32:
-        type_str = str8_from_cstr(string_arena, "f32");
-        break;
-        case TYPE_KIND_F64:
-        type_str = str8_from_cstr(string_arena, "f64");
-        break;
-      }
-    }
-
-    type_str = str8_cat(string_arena, type_str, str8_lit(" "));
-
-    Str8 param_name_str = str8_from_cstr(string_arena, param_name);
-
-    param_type = original_param_type; // now you don't know what to think do ya?
-
-    while(param_type && (param_type->kind == TYPE_KIND_POINTER || param_type->kind == TYPE_KIND_ARRAY)) {
-      if(param_type->kind == TYPE_KIND_POINTER) {
-        type_str = str8_cat(string_arena, type_str, str8_lit("*"));
-        param_type = param_type->pointer.to;
-      } else {
-        param_name_str = str8f(string_arena, "%S[%lu]", param_name_str, param_type->array.n);
-        param_type = param_type->array.of;
-      }
-    }
-
-    param_list = str8_cat(string_arena, type_str, param_name_str);
+    param_list = str8_cat(scratch, param_list, param_decl_str);
     if(i + 1 < proc_type->proc.param.n) {
-      param_list = str8_cat(string_arena, param_list, str8_lit(", "));
+      param_list = str8_cat(scratch, param_list, str8_lit(", "));
     }
 
   }
 
-  result = str8_cat(string_arena, result, str8_cat(string_arena, param_list, str8_lit(");")));
-  Str8 copy = str8_copy(string_arena, result);
+  result = str8_cat(scratch, result, str8_cat(scratch, param_list, str8_lit(");")));
+  result = str8_copy(string_arena, result);
 
-  arena_scope_end(string_scope);
+  arena_scope_end(scratch_scope);
 
-  result = str8_copy(string_arena, copy);
+  return result;
+}
+
+internal Str8
+func ir_gen_c_record_declaration(Job *jp, Type *record_type) {
+  Str8 result = {0};
+
+  Arena *scratch = jp->allocator.scratch;
+  Arena_scope scratch_scope = arena_scope_begin(scratch);
+
+  result = str8f(string_arena,
+    "%s %s {\n",
+    (record_type->kind == TYPE_KIND_STRUCT) ? "struct" : "union",
+    record_type->record.name
+  );
+
+  for(u64 i = 0; i < record_type->record.member.n; i++) {
+    Type *member_type = record_type->record.member.types[i];
+    char *member_name = record_type->record.member.names[i];
+
+    Str8 member_decl = ir_gen_c_name_decl_with_type(jp, member_name, member_type, scratch_scope);
+    result = str8f(scratch, "%S%S;\n", result, member_decl);
+  }
+
+  result = str8_cat(scratch, result, str8_lit("};\n"));
+
+  result = str8_copy(string_arena, result);
+
+  arena_scope_end(scratch_scope);
+
+  return result;
+}
+
+internal Str8
+func ir_gen_c_global_init_expr_from_ast(Job *jp, AST *node, Arena_scope scratch_scope) {
+  Str8 result = {0};
+  Arena *scratch = scratch_scope.arena;
+
+  ASSERT(node);
+
+  AST_expr_base *expr_base = (AST_expr_base*)node;
+
+  Value *value = expr_base->value_annotation;
+
+  if(value && VALUE_KIND_IS_SCALAR_BUT_NOT_POINTER(value->kind)) {
+    if(value->kind == VALUE_KIND_FLOAT) {
+      result = str8f(scratch, "%f", value->val.floating);
+    } else if(value->kind == VALUE_KIND_DFLOAT) {
+      result = str8f(scratch, "%g", value->val.dfloating);
+    } else {
+      result = str8f(scratch, "0x%lx", value->val.uinteger);
+    }
+  } else {
+
+    if(node->kind == AST_KIND_expr) {
+
+      AST_expr *expr = (AST_expr*)node;
+
+      if(expr->left && expr->right) {
+        // NOTE jfd 02/04/2026: I'm pretty sure the only valid operator here would be
+        UNREACHABLE;
+        Str8 left_str = ir_gen_c_global_init_expr_from_ast(jp, expr->left, scratch_scope);
+        Str8 right_str = ir_gen_c_global_init_expr_from_ast(jp, expr->right, scratch_scope);
+
+        COWABUNGA;
+
+      } else {
+        ASSERT(expr->right);
+
+        Str8 right_str = ir_gen_c_global_init_expr_from_ast(jp, expr->right, scratch_scope);
+
+        switch(expr->token) {
+          default:
+          UNREACHABLE;
+          break;
+          case '@': {
+            result = str8f(scratch, "&%S", right_str);
+          } break;
+          case '>': {
+            result = str8f(scratch, "*%S", right_str);
+          } break;
+        }
+
+        COWABUNGA;
+      }
+
+    } else if(node->kind == AST_KIND_atom) {
+
+      AST_atom *atom = (AST_atom*)node;
+      if(atom->symbol_annotation) {
+        ASSERT(atom->symbol_annotation->is_global);
+        result = str8_from_cstr(scratch, atom->symbol_annotation->name);
+      } else {
+        UNREACHABLE;
+      }
+
+    } else if(node->kind == AST_KIND_array_literal) {
+      result = str8_from_cstr(scratch, "{ ");
+
+      AST_array_literal *array_lit = (AST_array_literal*)node;
+
+      for(AST_expr_list *expr_list_node = array_lit->elements; expr_list_node; expr_list_node = expr_list_node->next) {
+        Str8 expr_str = ir_gen_c_global_init_expr_from_ast(jp, expr_list_node->expr, scratch_scope);
+        result = str8_cat(scratch, result, expr_str);
+        if(expr_list_node->next) {
+          result = str8_cat(scratch, result, str8_lit(", "));
+        }
+      }
+
+      result = str8_cat(scratch, result, str8_lit(" }"));
+
+    } else if(node->kind == AST_KIND_struct_literal) {
+      COWABUNGA;
+    }
+
+  }
+
+  return result;
+}
+
+internal Str8
+func ir_gen_c_global_variable(Job *jp, Sym *handling_sym) {
+  Str8 result = {0};
+
+  Arena *scratch = jp->allocator.scratch;
+  Arena_scope scratch_scope = arena_scope_begin(scratch);
+
+  char *var_name = handling_sym->name;
+  Type *var_type = handling_sym->type;
+  Str8 left_side = ir_gen_c_name_decl_with_type(jp, var_name, var_type, scratch_scope);
+
+  if(handling_sym->initializer) {
+    Str8 initializer_str = ir_gen_c_global_init_expr_from_ast(jp, handling_sym->initializer, scratch_scope);
+    result = str8f(scratch, "%S = %S;\n", left_side, initializer_str);
+    COWABUNGA;
+  } else {
+    result = str8f(scratch, "%S;\n", left_side);
+  }
+
+  result = str8_copy(string_arena, result);
+
+  arena_scope_end(scratch_scope);
 
   return result;
 }
@@ -13888,8 +14079,7 @@ func job_runner(char *src, char *src_path) {
 
           arrpush(job_queue_next, new_job);
           ++job_queue_pos;
-        }
-        break;
+        } break;
         case PIPE_STAGE_TYPECHECK:
         {
           AST *ast = arrlast(jp->tree_pos_stack);
@@ -15139,8 +15329,7 @@ func job_runner(char *src, char *src_path) {
           } else {
             UNIMPLEMENTED;
           }
-        }
-        break;
+        } break;
         case PIPE_STAGE_IR:
         {
           if(!jp->handling_name) {
@@ -15172,35 +15361,39 @@ func job_runner(char *src, char *src_path) {
 
           Str8 generated_c_code = {0};
 
-          if(handling_sym->type->kind == TYPE_KIND_PROC) {
+          AST *root = jp->root;
+
+          if(root->kind == AST_KIND_procdecl) {
+            ASSERT(handling_sym->type->kind == TYPE_KIND_PROC);
             if(handling_sym->is_foreign) {
               generated_c_code = ir_gen_c_header_for_foreign_proc(jp, handling_sym->type);
             } else {
               IRproc procedure = hmget(proc_table, handling_sym->procid);
               generated_c_code = ir_gen_c(jp, procedure, handling_sym->type);
             }
-          } else if(handling_sym->type->kind == TYPE_KIND_TYPE) {
-            COWABUNGA;
-          } else {
-            COWABUNGA;
+          } else if(root->kind == AST_KIND_structdecl || root->kind == AST_KIND_uniondecl) {
+            ASSERT(handling_sym->type->kind == TYPE_KIND_TYPE);
+
+            Type *record_type = handling_sym->value->val.type;
+
+            generated_c_code = ir_gen_c_record_declaration(jp, record_type);
+
+          } else if(root->kind == AST_KIND_vardecl) {
+            if(!handling_sym->constant) {
+              ASSERT(handling_sym->is_global);
+              generated_c_code = ir_gen_c_global_variable(jp, handling_sym);
+            }
           }
 
           handling_sym->generated_c_code = generated_c_code;
 
+          str8_list_append_str(global_scratch_allocator, &global_generated_c_code, generated_c_code);
+
           job_die(jp);
 
-          //IRproc procedure = hmget(proc_table, handling_sym->procid);
-          //if(!procedure.is_foreign) {
-          //    IRinst *instructions = procedure.instructions;
-          //    for(int i = 0; i < procedure.n_instructions; ++job_queue_pos) {
-          //        printf("%i: ",i);
-          //        print_ir_inst(instructions[i], stdout);
-          //    }
-          //}
           ++job_queue_pos;
-          break;
-        }
-        break;
+
+        } break;
       }
 
     }
@@ -17580,12 +17773,12 @@ void typecheck_expr(Job *jp) {
 
         for(int i = 0; i < arrlen(global_segment_data); ++i) {
           Sym *s = global_segment_data[i];
-          printf("\n");
-          print_sym(*s);
-          printf("\n");
+          // printf("\n");
+          // print_sym(*s);
+          // printf("\n");
 
-          Type *t = s->type;
-          Value *v = s->value;
+          // Type *t = s->type;
+          // Value *v = s->value;
 
           /*TODO important refactor needed, read below
            *
@@ -17594,7 +17787,11 @@ void typecheck_expr(Job *jp) {
            * one Entity struct, like in a game engine.
            */
 
-          serialize_value(jp, jp->interp.global_segment + s->segment_offset, v, t);
+          // serialize_value(jp, jp->interp.global_segment + s->segment_offset, v, t);
+          if(s->initializer) {
+            serialize_ast_expr_to_memory(jp, jp->interp.global_segment + s->segment_offset, s->initializer);
+          }
+
         }
 
         arrsetlen(jp->interp.ports, 16);

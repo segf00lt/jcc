@@ -8,6 +8,26 @@ ALLOC_MODE_RESIZE   : Allocator_mode : 1;
 ALLOC_MODE_FREE     : Allocator_mode : 2;
 ALLOC_MODE_FREE_ALL : Allocator_mode : 3;
 
+// NOTE jfd 02/04/2026: These need to be here so that they come out in the correct order when we generate C code
+
+struct _String_view { // struct definition for a builtin string
+    data: *char;
+    len:   u64;
+}
+
+struct _Array_view {
+    data: *u8;
+    count: u64;
+}
+
+struct _Dynamic_array {
+    data:           *u8;
+    count:           u64;
+    cap:             u64;
+    allocator:       Allocator;
+    allocator_data: *void;
+}
+
 Type_info_tag :: u32;
 
 //TODO add enums so we can do this in a less stupid way
@@ -77,24 +97,6 @@ struct Type_info_proc {
 
     param_types:  []*Type_info;
     return_types: []*Type_info;
-}
-
-struct _String_view { // struct definition for a builtin string
-    data: *char;
-    len:   u64;
-}
-
-struct _Array_view {
-    data: *u8;
-    count: u64;
-}
-
-struct _Dynamic_array {
-    data:           *u8;
-    count:           u64;
-    cap:             u64;
-    allocator:       Allocator;
-    allocator_data: *void;
 }
 
 struct Any {

@@ -198,6 +198,13 @@ test_arr: [12]int = [
 1, 2, 3, 4, 5, 6,
 ];
 
+test_ptr_to_int := @test_int;
+
+test_int: int = 117;
+
+// NOTE jfd 02/04/2026: Globals like this aren't even supported by the compiler
+// test_array_of_int_ptr := [ @test_int ];
+
 YELLOW:   Color = ---;
 RAYWHITE: Color = ---;
 RED:      Color = ---;

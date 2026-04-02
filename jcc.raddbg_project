@@ -23,7 +23,7 @@ target:
 debug_info:
 {
   path: "C:/Users/joaod/fun/jcc/jcc.pdb"
-  timestamp: 66210873481766
+  timestamp: 66210952679666
 }
 debug_info:
 {
@@ -94,18 +94,24 @@ watch_pin:
   expression: pc
   source_location: "jcc.c:7182:29"
 }
-breakpoint:
+type_view:
 {
-  source_location: "jcc.c:15183:1"
-  hit_count: 1
+  type: Str8
+  expr: "no_addr(array((char*)s, len))"
 }
-breakpoint:
+type_view:
 {
-  source_location: "jcc.c:15185:1"
-  hit_count: 0
+  type: Loc_info
+  expr: "no_addr(array(text.s, (text.e - text.s)))"
 }
+type_view:
+{
+  type: Token
+  expr: "(char)token"
+}
+type_view
 breakpoint:
 {
-  source_location: "jcc.c:15190:1"
-  hit_count: 1
+  hit_count: 9
+  source_location: "jcc.c:5697:1"
 }
