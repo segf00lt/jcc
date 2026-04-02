@@ -40,7 +40,7 @@ func str8_cat(Arena *a, Str8 str1, Str8 str2) {
 }
 
 internal void
-func str8_list_insert_first_str_(Arena *a, Str8_list *list, Str8 str) {
+func str8_list_insert_first_str(Arena *a, Str8_list *list, Str8 str) {
   Str8_node *node = push_struct(a, Str8_node);
   node->str = str;
   sll_queue_push_front(list->first, list->last, node);

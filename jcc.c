@@ -2398,7 +2398,7 @@ void add_implicit_casts_to_expr(Job *jp, AST *ast) {
   //}
 }
 
-#if 0
+#if 1
 internal void
 func serialize_value(Job *jp, u8 *dest, Value *v, Type *t) {
   ASSERT(v && t && dest);
@@ -5381,11 +5381,11 @@ func ir_gen_c_name_decl_with_type(Job *jp, char *name, Type *type, Arena_scope s
         type->record.name
       );
     } else if(type->kind == TYPE_KIND_STRING) {
-      type_str = str8_lit("struct String_view");
+      type_str = str8_lit("struct _String_view");
     } else if(type->kind == TYPE_KIND_ARRAY_VIEW) {
-      type_str = str8_lit("struct Array_view");
+      type_str = str8_lit("struct _Array_view");
     } else if(type->kind == TYPE_KIND_DYNAMIC_ARRAY) {
-      type_str = str8_lit("struct Dynamic_array");
+      type_str = str8_lit("struct _Dynamic_array");
     } else if(type->kind == TYPE_KIND_PROC) {
       // TODO jfd 02/04/2026: I'm using undefined behaviour here because I can't be bothered to refactor this whole thing right now
       type_str = str8_lit("void *");
@@ -6870,7 +6870,8 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
   if(proc_type->proc.ret.n == 1) {
     int n_written = stbsp_snprintf(line_buf, sizeof(line_buf),
       "union _Port %s(void *context_pointer, ",
-      proc_type->proc.name);
+      (!strcmp(proc_type->proc.name, "main")) ? "__main" : proc_type->proc.name
+      );
 
     if(n_written + preamble_buf_used >= preamble_buf_cap) {
       while(n_written + preamble_buf_used >= preamble_buf_cap) preamble_buf_cap <<= 1;
@@ -17777,9 +17778,6 @@ void typecheck_expr(Job *jp) {
           // print_sym(*s);
           // printf("\n");
 
-          // Type *t = s->type;
-          // Value *v = s->value;
-
           /*TODO important refactor needed, read below
            *
            * The separation between Sym, Type and Value is starting to cause some ergonomics problems.
@@ -17787,10 +17785,16 @@ void typecheck_expr(Job *jp) {
            * one Entity struct, like in a game engine.
            */
 
-          // serialize_value(jp, jp->interp.global_segment + s->segment_offset, v, t);
+          #if 1
+          Type *t = s->type;
+          Value *v = s->value;
+
+          serialize_value(jp, jp->interp.global_segment + s->segment_offset, v, t);
+          #else
           if(s->initializer) {
             serialize_ast_expr_to_memory(jp, jp->interp.global_segment + s->segment_offset, s->initializer);
           }
+          #endif
 
         }
 
@@ -19553,20 +19557,51 @@ int main(int argc, char **argv) {
 
   job_runner(test_src_file, path);
 
-  for(int i = 0; i < hmlen(proc_table); ++i) {
-    // TODO jfd: port c interop
-    #if 0
-    IRproc p = (proc_table + i)->value;
-    if(p.is_foreign) {
-      dlclose(p.wrapper_dll);
-    }
-    #endif
-  }
+  Str8 c_preamble = str8_lit(
+    "typedef signed char s8;\n"
+    "typedef unsigned char u8;\n"
+    "typedef signed short s16;\n"
+    "typedef unsigned short u16;\n"
+    "typedef signed short s32;\n"
+    "typedef unsigned short u32;\n"
+    "typedef signed short s64;\n"
+    "typedef unsigned short u64;\n"
+    "typedef float f32;\n"
+    "typedef double f64;\n"
+    "typedef u8 bool;\n"
+    "union _Port {\n"
+    "u64 integer;\n"
+    "f32 floating32;\n"
+    "f64 floating64;\n"
+    "};\n"
+  );
 
-  //arena_destroy(global_scratch_allocator);
-  //pool_destroy(&global_sym_allocator);
-  //pool_destroy(&global_type_allocator);
-  //pool_destroy(&global_value_allocator);
+  Str8 c_main = str8_lit(
+    "u8 __temp_storage_backing_buffer[4096];\n"
+    "int main(void) {\n"
+    "struct Temporary_storage base_temp_storage = {\n"
+    ".data = (void*)__temp_storage_backing_buffer,\n"
+    ".offset = 0,\n"
+    ".size = sizeof(__temp_storage_backing_buffer),\n"
+    ".high_water_mark = 0,\n"
+    "};\n"
+    "struct Context base_context = {\n"
+    ".thread_index = 0,\n"
+    ".allocator = (void*)__default_allocator,\n"
+    ".allocator_data = 0,\n"
+    ".temporary_storage = &base_temp_storage,\n"
+    "};\n"
+    "__main((void*)&base_context);\n"
+    "return 0;\n"
+    "}\n"
+  );
+
+  str8_list_insert_first_str(global_scratch_allocator, &global_generated_c_code, c_preamble);
+  str8_list_append_str(global_scratch_allocator, &global_generated_c_code, c_main);
+
+  Str8 generated_c_code = str8_list_join(string_arena, global_generated_c_code, str8_lit("\n"));
+
+  platform_write_entire_file(generated_c_code, "generated.c");
 
   return 0;
 }

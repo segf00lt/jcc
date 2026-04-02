@@ -198,7 +198,7 @@ test_arr: [12]int = [
 1, 2, 3, 4, 5, 6,
 ];
 
-test_ptr_to_int := @test_int;
+//test_ptr_to_int := @test_int;
 
 test_int: int = 117;
 

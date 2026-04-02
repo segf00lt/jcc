@@ -130,7 +130,6 @@ internal Str8  str8f(Arena *a, char *fmt, ...);
 internal char* cstr_from_str8(Arena *a, Str8 str);
 internal char* cstrf(Arena *a, char *fmt, ...);
 
-#define str8_list_insert_first_str(a, list, str) str8_list_insert_first_str_(a, &(list), str)
-internal void str8_list_insert_first_str_(Arena *a, Str8_list *list, Str8 str);
+internal void str8_list_insert_first_str(Arena *a, Str8_list *list, Str8 str);
 
 #endif
