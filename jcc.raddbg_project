@@ -23,7 +23,7 @@ target:
 debug_info:
 {
   path: "C:/Users/joaod/fun/jcc/jcc.pdb"
-  timestamp: 66210952679666
+  timestamp: 66211411552419
 }
 debug_info:
 {
@@ -46,48 +46,6 @@ target:
   working_directory: ""
   enabled: 0
   entry_point: main
-}
-breakpoint:
-{
-  source_location: "jcc.c:7147:1"
-  hit_count: 0
-  enabled: 0
-}
-breakpoint:
-{
-  hit_count: 0
-  condition: "callee_symbol.procid == 29"
-  source_location: "jcc.c:12728:1"
-  enabled: 0
-}
-breakpoint:
-{
-  condition: "callee_symbol.procid == 29"
-  source_location: "jcc.c:12956:1"
-  hit_count: 0
-  enabled: 0
-}
-breakpoint:
-{
-  source_location: "jcc.c:12929:1"
-  condition: "callee_symbol.procid == 29"
-  hit_count: 0
-  enabled: 0
-}
-breakpoint:
-{
-  address_location: 0x1c8a5aedc70
-  address_range_size: 8
-  break_on_write: 1
-  hit_count: 0
-  enabled: 0
-}
-breakpoint:
-{
-  source_location: "jcc.c:7183:1"
-  condition: "procid == 30 && pc == 401"
-  hit_count: 0
-  enabled: 0
 }
 watch_pin:
 {
@@ -112,6 +70,13 @@ type_view:
 type_view
 breakpoint:
 {
-  hit_count: 9
-  source_location: "jcc.c:5697:1"
+  source_location: "jcc.c:5740:1"
+  hit_count: 0
+  condition: "irproc.procid == 13"
+}
+breakpoint:
+{
+  source_location: "jcc.c:6130:1"
+  condition: "irproc.procid == 13"
+  hit_count: 0
 }

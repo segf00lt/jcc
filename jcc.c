@@ -5737,6 +5737,7 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
 
   bool is_foreign = false;
   bool generating_call = false;
+  bool is_polymorphic = (bool)proc_type->proc.is_polymorphic;
   Type *proc_type_of_generated_call = NULL;
 
   for(int inst_index = 0; inst_index < n_instructions; ++inst_index) {
@@ -6024,7 +6025,7 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
         }
 
 
-        char **freg_map = (dest_bytes == 8) ? IR_C_f64reg_map : IR_C_f32reg_map;
+        char **freg_map = (a_bytes == 8) ? IR_C_f64reg_map : IR_C_f32reg_map;
 
         switch(inst.opcode) {
           #define X(x, op) case IROP_##x: \
@@ -6088,7 +6089,7 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
 
       case IROP_GETCONTEXTARG:
       n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
-        "(void*)reg%lu = context_pointer;\n",
+        "reg%lu = (u64)context_pointer;\n",
         inst.getcontextarg.reg_dest);
       break;
       case IROP_SETCONTEXTARG:
@@ -6131,6 +6132,7 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
         char *proc_name = proc_type_of_generated_call->proc.name;
 
         if(inst.call.immediate == false) {
+          // TODO jfd: indirect calls
           if(is_foreign) {
             UNIMPLEMENTED;
           } else {
@@ -6195,7 +6197,7 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
                 proc_name);
             } else {
               n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
-                "ret0.integer = %s(",
+                "ret0.integer = (u64)%s(",
                 proc_name);
             }
           } else {
@@ -6239,12 +6241,22 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
           n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
             ";\n");
         } else {
-          if(proc_type_of_generated_call->proc.ret.n == 1) {
-            n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
-              "ret0 = %s(context_pointer, ", proc_name);
+          if(proc_type_of_generated_call->proc.is_polymorphic) {
+            if(proc_type_of_generated_call->proc.ret.n == 1) {
+              n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                "ret0 = %s_%lu(context_pointer, ", proc_name, inst.call.id_imm);
+            } else {
+              n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                "%s_%lu(context_pointer, ", proc_name, inst.call.id_imm);
+            }
           } else {
-            n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
-              "%s(context_pointer, ", proc_name);
+            if(proc_type_of_generated_call->proc.ret.n == 1) {
+              n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                "ret0 = %s(context_pointer, ", proc_name);
+            } else {
+              n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
+                "%s(context_pointer, ", proc_name);
+            }
           }
 
           if(proc_type_of_generated_call->proc.ret.n > 1) {
@@ -6255,7 +6267,7 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
             }
           }
 
-          for(u64 i = 0; i < proc_type_of_generated_call->proc.param.n; ++i) {
+          for(u64 i = 0; i < proc_type_of_generated_call->proc.param.n + proc_type_of_generated_call->proc.non_scalar_return_count; ++i) {
             n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
               "arg%lu, ",
               i);
@@ -6700,7 +6712,7 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
               reg_map[inst.load.reg_dest],
               is_float_op ? 'f' : 'u',
               inst.load.bytes << 3lu,
-              reg_map[inst.load.reg_src_ptr],
+              IR_C_ireg_map[inst.load.reg_src_ptr],
               inst.load.byte_offset_imm);
           } else if(inst.load.has_indirect_offset) {
             n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
@@ -6708,15 +6720,15 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
               reg_map[inst.load.reg_dest],
               is_float_op ? 'f' : 'u',
               inst.load.bytes << 3lu,
-              reg_map[inst.load.reg_src_ptr],
-              reg_map[inst.load.offset_reg]);
+              IR_C_ireg_map[inst.load.reg_src_ptr],
+              IR_C_ireg_map[inst.load.offset_reg]);
           } else {
             n_written += stbsp_snprintf(line_buf+n_written, sizeof(line_buf),
               "%s = *(%c%lu*)%s;\n",
               reg_map[inst.load.reg_dest],
               is_float_op ? 'f' : 'u',
               inst.load.bytes << 3lu,
-              reg_map[inst.load.reg_src_ptr]);
+              IR_C_ireg_map[inst.load.reg_src_ptr]);
           }
         }
       }
@@ -6868,10 +6880,20 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
   char *preamble_buf = malloc(preamble_buf_cap);
 
   if(proc_type->proc.ret.n == 1) {
-    int n_written = stbsp_snprintf(line_buf, sizeof(line_buf),
-      "union _Port %s(void *context_pointer, ",
-      (!strcmp(proc_type->proc.name, "main")) ? "__main" : proc_type->proc.name
+    int n_written = 0;
+    if(is_polymorphic) {
+      ASSERT(strcmp(proc_type->proc.name, "main") != 0);
+      n_written = stbsp_snprintf(line_buf, sizeof(line_buf),
+        "union _Port %s_%d(void *context_pointer, ",
+        proc_type->proc.name,
+        irproc.procid
       );
+    } else {
+      n_written = stbsp_snprintf(line_buf, sizeof(line_buf),
+        "union _Port %s(void *context_pointer, ",
+        (!strcmp(proc_type->proc.name, "main")) ? "__main" : proc_type->proc.name
+      );
+    }
 
     if(n_written + preamble_buf_used >= preamble_buf_cap) {
       while(n_written + preamble_buf_used >= preamble_buf_cap) preamble_buf_cap <<= 1;
@@ -6917,9 +6939,20 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
 
     for(u64 i = 0; i < n_written;) preamble_buf[preamble_buf_used++] = line_buf[i++];
   } else {
-    int n_written = stbsp_snprintf(line_buf, sizeof(line_buf),
-      "void %s(void *context_pointer, ",
-      proc_type->proc.name);
+    int n_written = 0;
+    if(is_polymorphic) {
+      ASSERT(strcmp(proc_type->proc.name, "main") != 0);
+      n_written = stbsp_snprintf(line_buf, sizeof(line_buf),
+        "void %s_%d(void *context_pointer, ",
+        proc_type->proc.name,
+        irproc.procid
+      );
+    } else {
+      n_written = stbsp_snprintf(line_buf, sizeof(line_buf),
+        "void %s(void *context_pointer, ",
+        (!strcmp(proc_type->proc.name, "main")) ? "__main" : proc_type->proc.name
+      );
+    }
 
     if(n_written + preamble_buf_used >= preamble_buf_cap) {
       while(n_written + preamble_buf_used >= preamble_buf_cap) preamble_buf_cap <<= 1;
@@ -7040,7 +7073,7 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
     for(u64 i = 0; i < n_written;) preamble_buf[preamble_buf_used++] = line_buf[i++];
   }
 
-  for(u64 i = proc_type->proc.param.n; i < highest_argument_index; ++i) {
+  for(u64 i = proc_type->proc.param.n + proc_type->proc.non_scalar_return_count; i <= highest_argument_index; ++i) {
     int n_written = stbsp_snprintf(line_buf, sizeof(line_buf), "union _Port arg%lu;\n", i);
 
     if(n_written + preamble_buf_used >= preamble_buf_cap) {
@@ -7051,7 +7084,7 @@ func ir_gen_c(Job *jp, IRproc irproc, Type *proc_type) {
     for(u64 i = 0; i < n_written;) preamble_buf[preamble_buf_used++] = line_buf[i++];
   }
 
-  for(u64 i = 0; i < highest_return_index; ++i) {
+  for(u64 i = 0; i <= highest_return_index; ++i) {
     int n_written = stbsp_snprintf(line_buf, sizeof(line_buf), "union _Port ret%lu;\n", i);
 
     if(n_written + preamble_buf_used >= preamble_buf_cap) {
@@ -18524,7 +18557,8 @@ void typecheck_structdecl(Job *jp) {
   }
 }
 
-void typecheck_polymorphic_procdecl(Job *jp) {
+internal void
+func typecheck_polymorphic_procdecl(Job *jp) {
   // NOTE jfd: copypasta of typecheck_procdecl()
   AST_procdecl *ast = (AST_procdecl*)arrlast(jp->tree_pos_stack);
   ASSERT(ast->base.kind == AST_KIND_procdecl);
@@ -18821,6 +18855,14 @@ void typecheck_polymorphic_procdecl(Job *jp) {
 
   ASSERT(!ast->is_foreign && !ast->is_system && !ast->c_call);
 
+
+  // NOTE jfd: I cannot beleive I didn't put this here
+  for(u64 i = 0; i < proc_type->proc.ret.n; i++) {
+    if(TYPE_KIND_IS_NOT_SCALAR(proc_type->proc.ret.types[i]->kind)) {
+      proc_type->proc.non_scalar_return_count++;
+    }
+  }
+
   // NOTE jfd: copypasta of typecheck_procdecl()
   proc_type->proc.first_default_param = ast->first_default_param;
   proc_type->proc.varargs = ast->varargs;
@@ -18878,7 +18920,8 @@ void typecheck_polymorphic_procdecl(Job *jp) {
 
 }
 
-void typecheck_procdecl(Job *jp) {
+internal void
+func typecheck_procdecl(Job *jp) {
   AST_procdecl *ast = (AST_procdecl*)arrlast(jp->tree_pos_stack);
   ASSERT(ast->base.kind == AST_KIND_procdecl);
 
@@ -19146,6 +19189,13 @@ void typecheck_procdecl(Job *jp) {
     return;
   }
 
+  // NOTE jfd: I cannot beleive I didn't put this here
+  for(u64 i = 0; i < proc_type->proc.ret.n; i++) {
+    if(TYPE_KIND_IS_NOT_SCALAR(proc_type->proc.ret.types[i]->kind)) {
+      proc_type->proc.non_scalar_return_count++;
+    }
+  }
+
   proc_type->proc.first_default_param = ast->first_default_param;
   proc_type->proc.varargs = ast->varargs;
   proc_type->proc.has_defaults = ast->has_defaults;
@@ -19207,7 +19257,8 @@ void typecheck_procdecl(Job *jp) {
   }
 }
 
-void typecheck_vardecl(Job *jp) {
+internal void
+func typecheck_vardecl(Job *jp) {
   AST_vardecl *ast = (AST_vardecl*)arrlast(jp->tree_pos_stack);
   ASSERT(ast->base.kind == AST_KIND_vardecl);
 
@@ -19468,6 +19519,9 @@ void print_sym(Sym sym) {
 // VERSION 1.0
 //
 // TODO jfd: output C
+// - Generate type info as C code
+// - serialize_ast_expr_to_memory()
+// - Generate indirect function calls
 // TODO jfd: procedures for interfacing with the compiler (e.g. add_source_file())
 
 // CANCELED (maybe next time...)
@@ -19576,6 +19630,23 @@ int main(int argc, char **argv) {
     "};\n"
   );
 
+  Str8 c_string_segment_data_str;
+
+  {
+    Str8_list list = {0};
+    for(u64 i = 0; i < string_segment_offset; i++) {
+      Str8 str = str8f(global_scratch_allocator, "0x%02x", string_segment_data[i]);
+      str8_list_append_str(global_scratch_allocator, &list, str);
+    }
+    c_string_segment_data_str = str8_list_join(global_scratch_allocator, list, str8_lit(", "));
+  }
+
+  Str8 c_string_segment_decl = str8f(global_scratch_allocator,
+    "u8 string_segment[%lu] = { %S };\n",
+    string_segment_offset,
+    c_string_segment_data_str
+  );
+
   Str8 c_main = str8_lit(
     "u8 __temp_storage_backing_buffer[4096];\n"
     "int main(void) {\n"
@@ -19596,6 +19667,7 @@ int main(int argc, char **argv) {
     "}\n"
   );
 
+  str8_list_insert_first_str(global_scratch_allocator, &global_generated_c_code, c_string_segment_decl);
   str8_list_insert_first_str(global_scratch_allocator, &global_generated_c_code, c_preamble);
   str8_list_append_str(global_scratch_allocator, &global_generated_c_code, c_main);
 
