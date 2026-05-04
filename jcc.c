@@ -1213,20 +1213,20 @@ internal char*       job_op_token_to_str(Job *jp, Token op);
 internal Type_info*  job_make_type_info(Job *jp, Type *t);
 internal void        linearize_expr(Job *jp, AST *ast);
 
-internal bool        is_lvalue(AST *ast);
-internal bool        all_paths_return(Job *jp, AST *ast);
-internal bool        has_nested_call(AST *ast);
-internal void        add_implicit_casts_to_expr(Job *jp, AST *ast);
-internal u64         align_up(u64 offset, u64 align);
-internal u64         next_pow_2(u64 v);
-internal AST*        arena_dup_ast(Arena *a, AST* ast);
-internal AST*        ast_copy(Arena *arena, AST *root);
-internal void        serialize_value(Job *jp, u8 *dest, Value *v, Type *t);
-internal bool        records_have_member_name_conflicts(Job *jp, Loc_info using_loc, Type *a, Type *b);
-internal void        do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type);
-internal void        copy_array_data_to_value(Job *jp, Value *v, Type *t, u8 *data);
-internal Value*      make_empty_array_value(Job *jp, Type *t);
-internal void        annotate_aggregate_literal(Job *jp, Type *t, AST *ast_lit);
+internal     bool        is_lvalue(AST *ast);
+internal     bool        all_paths_return(Job *jp, AST *ast);
+internal     bool        has_nested_call(AST *ast);
+internal     void        add_implicit_casts_to_expr(Job *jp, AST *ast);
+internal     u64         align_up(u64 offset, u64 align);
+internal     u64         next_pow_2(u64 v);
+force_inline AST*        arena_dup_ast(Arena *a, AST* ast);
+force_inline AST*        ast_copy(Arena *arena, AST *root);
+internal     void        serialize_value(Job *jp, u8 *dest, Value *v, Type *t);
+internal     bool        records_have_member_name_conflicts(Job *jp, Loc_info using_loc, Type *a, Type *b);
+internal     void        do_run_directive(Job *jp, AST_call *call_to_run, Type *proc_type);
+internal     void        copy_array_data_to_value(Job *jp, Value *v, Type *t, u8 *data);
+internal     Value*      make_empty_array_value(Job *jp, Type *t);
+internal     void        annotate_aggregate_literal(Job *jp, Type *t, AST *ast_lit);
 
 internal Arr(AST*)   ir_linearize_expr(Arr(AST*) ir_expr, AST *ast);
 internal void        ir_gen(Job *jp);
@@ -1877,7 +1877,8 @@ void job_report_mutual_dependency(Job *jp1, Job *jp2) {
     loc2.line, (int)(loc2.text.e - loc2.text.s), loc2.text.s);
 }
 
-Type_info* job_make_type_info(Job *jp, Type *t) {
+internal Type_info*
+func job_make_type_info(Job *jp, Type *t) {
 
   {
     int i = 0;
@@ -1989,8 +1990,7 @@ Type_info* job_make_type_info(Job *jp, Type *t) {
 
       tinfo_pointer->base.tag = TYPE_INFO_TAG_POINTER;
       tinfo_pointer->pointer_to = job_make_type_info(jp, t->pointer.to);
-    }
-    break;
+    } break;
     case TYPE_KIND_STRUCT:
     case TYPE_KIND_UNION:
     {
@@ -2398,7 +2398,6 @@ void add_implicit_casts_to_expr(Job *jp, AST *ast) {
   //}
 }
 
-#if 1
 internal void
 func serialize_value(Job *jp, u8 *dest, Value *v, Type *t) {
   ASSERT(v && t && dest);
@@ -2437,16 +2436,80 @@ func serialize_value(Job *jp, u8 *dest, Value *v, Type *t) {
     }
   }
 }
-#endif
 
 internal void
 func serialize_ast_expr_to_memory(Job *jp, u8 *dest, AST *node) {
-  // HERE
+
   // TODO jfd 02/04/2026: serialize to memory from an ast so that we can serialize globals with pointers in them
-  UNIMPLEMENTED;
+
+  ASSERT(dest);
+
+  if(!node) return;
+
+  AST_expr_base *expr_base = (AST_expr_base*)node;
+  if(expr_base->value_annotation) {
+    Type *type = expr_base->type_annotation;
+    ASSERT(type);
+    Value *val = expr_base->value_annotation;
+    if(val->kind != VALUE_KIND_NIL) {
+      serialize_value(jp, dest, val, type);
+      return;
+    }
+  }
+
+  if(node->kind == AST_KIND_expr) {
+
+    AST_expr *expr = (AST_expr*)node;
+
+    if(expr->token == '@') {
+
+      if(expr->right->kind == AST_KIND_atom) {
+
+        AST_atom *atom = (AST_atom*)expr->right;
+        Sym *atom_sym = atom->symbol_annotation;
+        ASSERT(atom_sym);
+        u8 *segment_ptr = 0;
+
+        switch(atom_sym->segment) {
+          case IRSEG_LOCAL: {
+            UNIMPLEMENTED;
+          } break;
+          case IRSEG_GLOBAL: {
+            segment_ptr = jp->interp.global_segment;
+          } break;
+          case IRSEG_BSS: {
+            UNIMPLEMENTED;
+          } break;
+          case IRSEG_TYPE: {
+            UNIMPLEMENTED;
+          } break;
+        }
+        *(u8**)dest = segment_ptr + atom_sym->segment_offset;
+
+      } else {
+        UNIMPLEMENTED;
+      }
+
+    } else {
+      UNIMPLEMENTED;
+    }
+
+  } else if(node->kind == AST_KIND_atom) {
+    UNIMPLEMENTED;
+  } else if(node->kind == AST_KIND_array_literal) {
+    UNIMPLEMENTED;
+  } else if(node->kind == AST_KIND_param) {
+    UNIMPLEMENTED;
+  } else if(node->kind == AST_KIND_call || node->kind == AST_KIND_run_directive) {
+    UNIMPLEMENTED;
+  } else {
+    UNIMPLEMENTED;
+  }
+
 }
 
-bool all_paths_return(Job *jp, AST *ast) {
+internal bool
+func all_paths_return(Job *jp, AST *ast) {
   if(ast->kind == AST_KIND_block) {
     AST_block *block = (AST_block*)ast;
     ast = block->down;
@@ -5622,8 +5685,10 @@ func ir_gen_c_global_init_expr_from_ast(Job *jp, AST *node, Arena_scope scratch_
       if(expr->left && expr->right) {
         // NOTE jfd 02/04/2026: I'm pretty sure the only valid operator here would be
         UNREACHABLE;
+        #if 0
         Str8 left_str = ir_gen_c_global_init_expr_from_ast(jp, expr->left, scratch_scope);
         Str8 right_str = ir_gen_c_global_init_expr_from_ast(jp, expr->right, scratch_scope);
+        #endif
 
         COWABUNGA;
 
@@ -5703,6 +5768,60 @@ func ir_gen_c_global_variable(Job *jp, Sym *handling_sym) {
   result = str8_copy(string_arena, result);
 
   arena_scope_end(scratch_scope);
+
+  return result;
+}
+
+internal Str8
+func ir_gen_c_type_info_segment_data(Arena *arena) {
+  Str8 result = {0};
+
+  for(int i = 0; i < arrlen(type_info_table); i++) {
+    Type_info *tinfo = type_info_table[i];
+    switch(tinfo->tag) {
+      case TYPE_INFO_TAG_VOID:
+      {
+      // HERE
+      } break;
+      case TYPE_INFO_TAG_INT:
+      {
+      } break;
+      case TYPE_INFO_TAG_CHAR:
+      {
+      } break;
+      case TYPE_INFO_TAG_FLOAT:
+      {
+      } break;
+      case TYPE_INFO_TAG_BOOL:
+      {
+      } break;
+      case TYPE_INFO_TAG_TYPE:
+      {
+      } break;
+      case TYPE_INFO_TAG_POINTER:
+      {
+      } break;
+      case TYPE_INFO_TAG_ARRAY:
+      {
+      } break;
+      case TYPE_INFO_TAG_STRING:
+      {
+      } break;
+      case TYPE_INFO_TAG_STRUCT:
+      {
+      } break;
+      case TYPE_INFO_TAG_ENUM:
+      {
+      } break;
+      case TYPE_INFO_TAG_PROC:
+      {
+      } break;
+      case TYPE_INFO_TAG_ANY:
+      {
+      } break;
+    }
+    COWABUNGA;
+  }
 
   return result;
 }
@@ -13661,7 +13780,8 @@ force_inline AST* arena_dup_ast(Arena *a, AST* ast) {
   return ptr;
 }
 
-force_inline AST* ast_copy(Arena *arena, AST *root) {
+force_inline AST*
+func ast_copy(Arena *arena, AST *root) {
   AST_block head = {
     .base = { .kind = AST_KIND_block },
     .next = NULL,
@@ -13960,8 +14080,10 @@ force_inline AST* ast_copy(Arena *arena, AST *root) {
           AST_call *ast_call = (AST_call*)ast;
           ast_call->callee = arena_dup_ast(arena, ast_call->callee);
           arrpush(next_list, (AST*)(ast_call->callee));
-          ast_call->params = (AST_param*)arena_dup_ast(arena, (AST*)(ast_call->params));
-          arrpush(next_list, (AST*)(ast_call->params));
+          if(ast_call->params) {
+            ast_call->params = (AST_param*)arena_dup_ast(arena, (AST*)(ast_call->params));
+            arrpush(next_list, (AST*)(ast_call->params));
+          }
         }
         break;
         case AST_KIND_proctype:
@@ -15421,7 +15543,9 @@ func job_runner(char *src, char *src_path) {
 
           handling_sym->generated_c_code = generated_c_code;
 
-          str8_list_append_str(global_scratch_allocator, &global_generated_c_code, generated_c_code);
+          if(generated_c_code.len > 0) {
+            str8_list_append_str(global_scratch_allocator, &global_generated_c_code, generated_c_code);
+          }
 
           job_die(jp);
 
@@ -17779,7 +17903,6 @@ void typecheck_expr(Job *jp) {
 
         jp->label_alloc = 1;
         jp->reg_alloc = 0;
-        //arrpush(jp->local_offset, 0);
 
         jp->cur_run_local_segment_size = 0;
         for(AST_param *p = call_to_run->params; p; p = p->next)
@@ -17788,7 +17911,6 @@ void typecheck_expr(Job *jp) {
         jp->cur_run_local_segment_size += proc_type->proc.param.types[i]->bytes;
         for(int i = 0; i < proc_type->proc.ret.n; ++i)
         jp->cur_run_local_segment_size += proc_type->proc.ret.types[i]->bytes;
-        //printf("jp->cur_run_local_segment_size %lu\n", jp->cur_run_local_segment_size);
 
         if(global_segment_offset > 0) {
           jp->interp.global_segment = realloc(jp->interp.global_segment, global_segment_offset);
@@ -17803,31 +17925,19 @@ void typecheck_expr(Job *jp) {
         jp->interp.local_segment = malloc(IR_LOCAL_SEGMENT_BYTES);
 
         // NOTE jfd: leaving this dirty for testing purposes
-        //memset(jp->interp.local_segment, 0, 1<<15);
+        // memset(jp->interp.local_segment, 0, 1<<15);
 
         for(int i = 0; i < arrlen(global_segment_data); ++i) {
           Sym *s = global_segment_data[i];
-          // printf("\n");
-          // print_sym(*s);
-          // printf("\n");
 
-          /*TODO important refactor needed, read below
+          /* TODO important refactor needed, read below
            *
            * The separation between Sym, Type and Value is starting to cause some ergonomics problems.
            * It would be a good idea to try and unify the things that fly around in the language in to
            * one Entity struct, like in a game engine.
            */
 
-          #if 1
-          Type *t = s->type;
-          Value *v = s->value;
-
-          serialize_value(jp, jp->interp.global_segment + s->segment_offset, v, t);
-          #else
-          if(s->initializer) {
-            serialize_ast_expr_to_memory(jp, jp->interp.global_segment + s->segment_offset, s->initializer);
-          }
-          #endif
+          serialize_ast_expr_to_memory(jp, jp->interp.global_segment + s->segment_offset, s->initializer);
 
         }
 
@@ -18152,7 +18262,8 @@ void typecheck_expr(Job *jp) {
   jp->expr_pos = pos;
 }
 
-void linearize_expr(Job *jp, AST *ast) {
+internal void
+func linearize_expr(Job *jp, AST *ast) {
   if(!ast) return;
 
   if(ast->kind == AST_KIND_expr) {
@@ -18274,7 +18385,8 @@ void linearize_expr(Job *jp, AST *ast) {
   }
 }
 
-Arr(AST*) ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
+internal Arr(AST*)
+func ir_linearize_expr(Arr(AST*) ir_expr, AST *ast) {
   if(!ast) return ir_expr;
 
   if(ast->kind == AST_KIND_expr) {
@@ -19441,10 +19553,17 @@ func typecheck_vardecl(Job *jp) {
     if(bind_type->kind == TYPE_KIND_STRUCT && bind_type->record.has_initialized_members)
     record_type->record.has_initialized_members = true;
 
+    // NOTE jfd 04/05/26: copypasta
+    AST *initializer_ast = 0;
+    if(ast->init) {
+      // TODO jfd 04/05/26: maybe use a different allocator
+      initializer_ast = ast_copy(global_scratch_allocator, ast->init);
+    }
+
     record_type->record.member.types[i] = bind_type;
     record_type->record.member.names[i] = name;
     record_type->record.member.values[i] = init_value;
-    record_type->record.member.initializer_exprs[i] = ast->init;
+    record_type->record.member.initializer_exprs[i] = initializer_ast;
     record_type->record.member.locs[i] = ast->base.loc;
 
     if(in_union) {
@@ -19457,6 +19576,14 @@ func typecheck_vardecl(Job *jp) {
     }
 
   } else {
+
+    // NOTE jfd 04/05/26: copypasta
+    AST *initializer_ast = 0;
+    if(ast->init) {
+      // TODO jfd 04/05/26: maybe use a different allocator
+      initializer_ast = ast_copy(global_scratch_allocator, ast->init);
+    }
+
     Sym sym = {
       .name = name,
       .loc = ast->base.loc,
@@ -19464,7 +19591,7 @@ func typecheck_vardecl(Job *jp) {
       .constant = ast->constant,
       .type = bind_type,
       .value = init_value,
-      .initializer = ast->init,
+      .initializer = initializer_ast,
     };
 
     if(is_top_level && init_value && init_value->kind == VALUE_KIND_NIL) {
@@ -19520,8 +19647,9 @@ void print_sym(Sym sym) {
 //
 // TODO jfd: output C
 // - Generate type info as C code
-// - serialize_ast_expr_to_memory()
 // - Generate indirect function calls
+// - Finish serialize_ast_expr_to_memory()
+
 // TODO jfd: procedures for interfacing with the compiler (e.g. add_source_file())
 
 // CANCELED (maybe next time...)
@@ -19576,8 +19704,7 @@ int main(int argc, char **argv) {
 
   char *preload_src = (char*)platform_read_entire_file(global_scratch_allocator, preload_path).s;
 
-  if(job_runner(preload_src, preload_path))
-  return 0;
+  if(job_runner(preload_src, preload_path)) return 0;
 
   type_String_view    = shget(global_scope, "_String_view")->value->val.type;
   type_Array_view     = shget(global_scope, "_Array_view")->value->val.type;
@@ -19593,6 +19720,14 @@ int main(int argc, char **argv) {
   (Type) { .kind = TYPE_KIND_POINTER, .pointer = { .to = type_Context } };
   sym_temporary_allocator = shget(global_scope, "__temporary_allocator");
 
+  Str8_list preload_generated_c_code_list = {0};
+  ASSERT(global_generated_c_code.first);
+  for(Str8_node *node = global_generated_c_code.first, *next = 0; node; node = next) {
+    next = node->next;
+    str8_list_append_node(preload_generated_c_code_list, node);
+  }
+  global_generated_c_code = (Str8_list){0};
+
   ASSERT(sizeof(Array_view) == type_Array_view->bytes);
   ASSERT(_Alignof(Array_view) == type_Array_view->align);
   ASSERT(sizeof(String_view) == type_String_view->bytes);
@@ -19604,8 +19739,7 @@ int main(int argc, char **argv) {
 
   char *basic_src = (char*)platform_read_entire_file(global_scratch_allocator, basic_path).s;
 
-  if(job_runner(basic_src, basic_path))
-  return 0;
+  if(job_runner(basic_src, basic_path)) return 0;
 
   char *test_src_file = (char*)platform_read_entire_file(global_scratch_allocator, path).s;
 
@@ -19647,6 +19781,8 @@ int main(int argc, char **argv) {
     c_string_segment_data_str
   );
 
+  Str8 c_type_info_segment_data = ir_gen_c_type_info_segment_data(global_scratch_allocator);
+
   Str8 c_main = str8_lit(
     "u8 __temp_storage_backing_buffer[4096];\n"
     "int main(void) {\n"
@@ -19667,6 +19803,9 @@ int main(int argc, char **argv) {
     "}\n"
   );
 
+  Str8 preload_generated_c_code = str8_list_join(string_arena, preload_generated_c_code_list, str8_lit("\n"));
+
+  str8_list_insert_first_str(global_scratch_allocator, &global_generated_c_code, preload_generated_c_code);
   str8_list_insert_first_str(global_scratch_allocator, &global_generated_c_code, c_string_segment_decl);
   str8_list_insert_first_str(global_scratch_allocator, &global_generated_c_code, c_preamble);
   str8_list_append_str(global_scratch_allocator, &global_generated_c_code, c_main);

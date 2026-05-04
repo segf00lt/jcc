@@ -11,6 +11,11 @@ TARGET_FPS :: 60;
 
 proc main() {
 
+    {
+        x := >test_ptr_to_int;
+        print("x = %\n", x);
+    }
+
     print("test_arr = %\n", test_arr);
     print("BRICK_COLS = %\nBRICK_ROWS = %\n", BRICK_COLS, BRICK_ROWS);
     print("WINDOW_WIDTH = %\nWINDOW_HEIGHT = %\n", WINDOW_WIDTH, WINDOW_HEIGHT);
@@ -198,7 +203,7 @@ test_arr: [12]int = [
 1, 2, 3, 4, 5, 6,
 ];
 
-//test_ptr_to_int := @test_int;
+test_ptr_to_int := @test_int;
 
 test_int: int = 117;
 

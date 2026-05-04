@@ -52,7 +52,11 @@ internal void
 func str8_list_append_str(Arena *a, Str8_list *list, Str8 str) {
   Str8_node *node = push_struct(a, Str8_node);
   node->str = str;
-  sll_queue_push(list->first, list->last, node);
+  Str8_node *first = list->first;
+  Str8_node *last = list->last;
+  sll_queue_push(first, last, node);
+  list->first = first;
+  list->last = last;
   list->count++;
   list->total_len += str.len;
 }

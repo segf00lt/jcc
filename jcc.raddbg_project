@@ -1,6 +1,7 @@
 // raddbg 0.9.24 project file
 
 recent_file: path: "jcc.c"
+recent_file: path: "pool.h"
 recent_file: path: "third_party/raylib/rcore.c"
 recent_file: path: "preload.c"
 recent_file: path: "third_party/dyncall-1.4/dyncall/dyncall_api.c"
@@ -23,7 +24,7 @@ target:
 debug_info:
 {
   path: "C:/Users/joaod/fun/jcc/jcc.pdb"
-  timestamp: 66211411552419
+  timestamp: 66213865422213
 }
 debug_info:
 {
@@ -67,16 +68,25 @@ type_view:
   type: Token
   expr: "(char)token"
 }
-type_view
-breakpoint:
+type_view:
 {
-  source_location: "jcc.c:5740:1"
-  hit_count: 0
-  condition: "irproc.procid == 13"
+  type: Str8_list
+  expr: "list(*first, next)"
 }
 breakpoint:
 {
-  source_location: "jcc.c:6130:1"
-  condition: "irproc.procid == 13"
+  source_location: "jcc.c:2487:1"
   hit_count: 0
+  enabled: 0
+}
+breakpoint:
+{
+  source_location: "jcc.c:19730:1"
+  hit_count: 0
+  enabled: 0
+}
+breakpoint:
+{
+  source_location: "jcc.c:19766:1"
+  hit_count: 1
 }
