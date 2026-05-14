@@ -91,6 +91,7 @@ proc main() {
     for live_bricks live_bricks[it_index] = it_index;
 
     for bricks {
+        //print("HERE\n");
         print("%\n", bricks[it_index]);
     }
 

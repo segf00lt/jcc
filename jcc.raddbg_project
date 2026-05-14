@@ -24,7 +24,7 @@ target:
 debug_info:
 {
   path: "C:/Users/joaod/fun/jcc/jcc.pdb"
-  timestamp: 66213865422213
+  timestamp: 66214745342678
 }
 debug_info:
 {
@@ -75,18 +75,13 @@ type_view:
 }
 breakpoint:
 {
-  source_location: "jcc.c:2487:1"
+  source_location: "jcc.c:1985:1"
   hit_count: 0
   enabled: 0
 }
 breakpoint:
 {
-  source_location: "jcc.c:19730:1"
+  source_location: "jcc.c:1975:1"
   hit_count: 0
   enabled: 0
-}
-breakpoint:
-{
-  source_location: "jcc.c:19766:1"
-  hit_count: 1
 }

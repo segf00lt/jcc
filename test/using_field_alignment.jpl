@@ -1,0 +1,31 @@
+#run main();
+
+struct Foo {
+  f: s32;
+  c: char;
+}
+
+struct A {
+  using Foo;
+  i: s32;
+}
+
+struct B {
+  f: s32;
+  c: char;
+  i: s32;
+}
+
+proc main() {
+  a: A;
+  b: B;
+
+  a_addr := cast(u64)cast(*void)@a;
+  b_addr := cast(u64)cast(*void)@b;
+
+  a_i_addr := cast(u64)cast(*void)@(a.i);
+  b_i_addr := cast(u64)cast(*void)@(b.i);
+
+  print("addr of a.i = %\naddr of b.i = %\n", a_i_addr - a_addr, b_i_addr - b_addr);
+
+}

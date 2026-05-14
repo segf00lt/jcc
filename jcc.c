@@ -1380,8 +1380,11 @@ u64                        global_segment_offset;
 Arr(Sym*)                  global_segment_data;
 u64                        bss_segment_offset;
 Arr(Sym*)                  bss_segment_data;
-u64                        string_segment_offset;
-Arr(char)                  string_segment_data;
+
+TYPEDEF_ARRAY(char);
+// TODO jfd 14/05/26: change all the stb arrays to my custom array type
+// char_array                string_segment_data;
+Arr(char)                string_segment_data;
 
 Map(int, IRproc)           proc_table;
 int                        procid_alloc;
@@ -1941,7 +1944,6 @@ func job_make_type_info(Job *jp, Type *t) {
     case TYPE_KIND_S64:
     case TYPE_KIND_INT:
     {
-      fprintf(stderr,"here making type info\n");
       Type_info_int *tinfo_int = arena_push(type_info_arena, sizeof(Type_info_int), alignof(Type_info_int));
       tinfo_int->base.tag = TYPE_INFO_TAG_INT;
       tinfo_int->bits = (u32)(builtin_type[t->kind].bytes << 3lu);
@@ -1966,7 +1968,9 @@ func job_make_type_info(Job *jp, Type *t) {
       Type_info_array *tinfo_array = arena_push(type_info_arena, sizeof(Type_info_array), alignof(Type_info_array));
       tinfo = (Type_info*)tinfo_array;
       written_to_table = true;
-      arrpush(type_info_table, tinfo);
+      ASSERT(tinfo);
+      // nocheckin
+      // arrpush(type_info_table, tinfo);
 
       tinfo_array->base.tag = TYPE_INFO_TAG_ARRAY;
       tinfo_array->array_of = job_make_type_info(jp, t->array.of);
@@ -1979,6 +1983,8 @@ func job_make_type_info(Job *jp, Type *t) {
         ASSERT(t->kind == TYPE_KIND_ARRAY_VIEW);
         tinfo_array->array_kind = 2;
       }
+      // nocheckin
+      arrpush(type_info_table, tinfo);
     }
     break;
     case TYPE_KIND_POINTER:
@@ -1986,6 +1992,7 @@ func job_make_type_info(Job *jp, Type *t) {
       Type_info_pointer *tinfo_pointer = arena_push(type_info_arena, sizeof(Type_info_pointer), alignof(Type_info_pointer));
       tinfo = (Type_info*)tinfo_pointer;
       written_to_table = true;
+      ASSERT(tinfo);
       arrpush(type_info_table, tinfo);
 
       tinfo_pointer->base.tag = TYPE_INFO_TAG_POINTER;
@@ -1994,16 +2001,31 @@ func job_make_type_info(Job *jp, Type *t) {
     case TYPE_KIND_STRUCT:
     case TYPE_KIND_UNION:
     {
+
+      // NOTE jfd 14/05/26: The problem was caused by the fact that there was a string_segment_offset variable that wasn't being
+      // incremented when we added data to string_segment_data. I changed it so that the length of string_segment_data is used where string_segment_offset was used before
+
+      // NOTE jfd: The old bug: "When we write the struct tinfo strings to string_segment_data it causes a pointer to become null in vsprint() procid 16, pc 295-300"
+
+      // HERE jfd 14/05/26: I was trying to make child types be created with a call to job_make_type_info() before the current type got put in the type_info_table, but when I did this
+      // with the structs, and only with the structs (see the other nocheckin above), it caused a crash due to bad pointer when trying to read type info in a call to vsprint().
+      // I also tried generating the C code for each entry in the type_info_table in reverse order but that doesn't really solve this ordering problem.
+
       Type_info_struct *tinfo_struct = arena_push(type_info_arena, sizeof(Type_info_struct), alignof(Type_info_struct));
       tinfo_struct->base.tag = TYPE_INFO_TAG_STRUCT;
+      tinfo = (Type_info*)tinfo_struct;
       written_to_table = true;
+      ASSERT(tinfo);
+      #define COWABUNGA_NOCHECKIN 0
+      #if !COWABUNGA_NOCHECKIN
       arrpush(type_info_table, tinfo);
+      #endif
 
       String_view s = {0};
 
       if(t->record.name) {
         s.len = strlen(t->record.name);
-        s.data = memcpy(arena_push(string_arena, s.len, 1), t->record.name, s.len);
+        s.data = memory_copy(arraddnptr(string_segment_data, s.len), t->record.name, s.len);
       }
       tinfo_struct->name = s;
 
@@ -2027,7 +2049,7 @@ func job_make_type_info(Job *jp, Type *t) {
         for(u64 j = 0; j < use_t->record.member.n; ++j) {
 
           s.len = strlen(use_t->record.member.names[j]);
-          s.data = memcpy(arena_push(string_arena, s.len, 1), use_t->record.member.names[j], s.len);
+          s.data = memory_copy(arraddnptr(string_segment_data, s.len), use_t->record.member.names[j], s.len);
           tinfo_struct_members[member_index].name = s;
           tinfo_struct_members[member_index].type = job_make_type_info(jp, use_t->record.member.types[j]);
           tinfo_struct_members[member_index].offset = use_t->record.member.offsets[j] + t->record.use.offsets[i];
@@ -2038,7 +2060,7 @@ func job_make_type_info(Job *jp, Type *t) {
 
       for(u64 i = 0; i < t->record.member.n; ++i) {
         s.len = strlen(t->record.member.names[i]);
-        s.data = memcpy(arena_push(string_arena, s.len, 1), t->record.member.names[i], s.len);
+        s.data = memory_copy(arraddnptr(string_segment_data, s.len), t->record.member.names[i], s.len);
         tinfo_struct_members[member_index].name = s;
         tinfo_struct_members[member_index].type = job_make_type_info(jp, t->record.member.types[i]);
         tinfo_struct_members[member_index].offset = t->record.member.offsets[i];
@@ -2049,6 +2071,10 @@ func job_make_type_info(Job *jp, Type *t) {
       ASSERT(member_index == members_count);
 
       tinfo = (Type_info*)tinfo_struct;
+      #if COWABUNGA_NOCHECKIN
+      arrpush(type_info_table, tinfo);
+      #endif
+
     }
     break;
     case TYPE_KIND_PROC:
@@ -2062,8 +2088,10 @@ func job_make_type_info(Job *jp, Type *t) {
   tinfo->bytes = t->bytes;
   tinfo->align = (u32)t->align;
 
-  if(!written_to_table)
-  arrpush(type_info_table, tinfo);
+  if(!written_to_table) {
+    ASSERT(tinfo);
+    arrpush(type_info_table, tinfo);
+  }
 
   return tinfo;
 }
@@ -4710,7 +4738,9 @@ AST* parse_call(Job *jp) {
     return NULL;
   }
 
-  AST_param head = { .base = { .kind = AST_KIND_param, .loc = lexer->loc }, };
+  AST_param head = {
+    .base = { .kind = AST_KIND_param, .loc = lexer->loc },
+  };
   AST_param *param = &head;
 
   int n_params = 0;
@@ -5640,6 +5670,16 @@ func ir_gen_c_record_declaration(Job *jp, Type *record_type) {
     record_type->record.name
   );
 
+  for(u64 i = 0; i < record_type->record.use.n; i++) {
+    Type *using_type = record_type->record.use.types[i];
+    ASSERT(TYPE_KIND_IS_RECORD(using_type->kind));
+    if(using_type->kind == TYPE_KIND_UNION) {
+      result = str8f(scratch, "%Sunion %s __using%lu;\n", result, using_type->record.name, i);
+    } else {
+      result = str8f(scratch, "%Sstruct %s __using%lu;\n", result, using_type->record.name, i);
+    }
+  }
+
   for(u64 i = 0; i < record_type->record.member.n; i++) {
     Type *member_type = record_type->record.member.types[i];
     char *member_name = record_type->record.member.names[i];
@@ -5776,52 +5816,135 @@ internal Str8
 func ir_gen_c_type_info_segment_data(Arena *arena) {
   Str8 result = {0};
 
-  for(int i = 0; i < arrlen(type_info_table); i++) {
+  Str8_list list = {0};
+  Arena_scope scope = arena_scope_begin(arena);
+
+  int n_types_in_table = arrlen(type_info_table);
+  // nocheckin
+  for(int i = 0; i < n_types_in_table; i++) {
+  // for(int i = n_types_in_table - 1; i >= 0; i--) {
+
     Type_info *tinfo = type_info_table[i];
+    ASSERT(tinfo);
+
     switch(tinfo->tag) {
+      case TYPE_INFO_TAG_TYPE:
       case TYPE_INFO_TAG_VOID:
+      case TYPE_INFO_TAG_STRING:
       {
-      // HERE
+        Str8 piece = str8f(arena,
+          "struct Type_info _type_info_%lx_backing_data = { .tag = %d, .align = %u, .bytes = %lu, };\n"
+          "struct Type_info *_type_info_%lx = &_type_info_%lx_backing_data;\n",
+          (u64)tinfo, tinfo->tag, tinfo->align, tinfo->bytes,
+          (u64)tinfo, (u64)tinfo
+        );
+        str8_list_append_str(arena, &list, piece);
       } break;
       case TYPE_INFO_TAG_INT:
       {
-      } break;
-      case TYPE_INFO_TAG_CHAR:
-      {
+        Type_info_int *tinfo_int = (Type_info_int*)tinfo;
+        Str8 piece = str8f(arena,
+          "struct Type_info_int _type_info_%lx_backing_data = { .__using0 = { .tag = %d, .align = %u, .bytes = %lu }, .bits = %u, .sign = %d };\n"
+          "struct Type_info_int *_type_info_%lx = &_type_info_%lx_backing_data;\n",
+          (u64)tinfo, tinfo->tag, tinfo->align, tinfo->bytes, tinfo_int->bits, tinfo_int->sign,
+          (u64)tinfo, (u64)tinfo
+        );
+        str8_list_append_str(arena, &list, piece);
       } break;
       case TYPE_INFO_TAG_FLOAT:
       {
+        Type_info_float *tinfo_float = (Type_info_float*)tinfo;
+        Str8 piece = str8f(arena,
+          "struct Type_info_float _type_info_%lx_backing_data = { .__using0 = { .tag = %d, .align = %u, .bytes = %lu }, .bits = %u, };\n"
+          "struct Type_info_float *_type_info_%lx = &_type_info_%lx_backing_data;\n",
+          (u64)tinfo, tinfo->tag, tinfo->align, tinfo->bytes, tinfo_float->bits,
+          (u64)tinfo, (u64)tinfo
+        );
+        str8_list_append_str(arena, &list, piece);
       } break;
+      case TYPE_INFO_TAG_CHAR:
       case TYPE_INFO_TAG_BOOL:
       {
-      } break;
-      case TYPE_INFO_TAG_TYPE:
-      {
+        // TODO jfd 05/05/26: make sure type info for char and bool actually works like this
+        Str8 piece = str8f(arena,
+          "struct Type_info _type_info_%lx_backing_data = { .tag = %d, .align = %u, .bytes = %lu };\n"
+          "struct Type_info *_type_info_%lx = &_type_info_%lx_backing_data;\n",
+          (u64)tinfo, tinfo->tag, tinfo->align, tinfo->bytes,
+          (u64)tinfo, (u64)tinfo
+        );
+        str8_list_append_str(arena, &list, piece);
       } break;
       case TYPE_INFO_TAG_POINTER:
       {
+        Type_info_pointer *tinfo_pointer = (Type_info_pointer*)tinfo;
+        Str8 piece = str8f(arena,
+          "struct Type_info_pointer _type_info_%lx_backing_data = { .__using0 = { .tag = %d, .align = %u, .bytes = %lu, }, .pointer_to = (struct Type_info*)&_type_info_%lx_backing_data, };\n"
+          "struct Type_info_pointer *_type_info_%lx = &_type_info_%lx_backing_data;\n",
+          (u64)tinfo, tinfo->tag, tinfo->align, tinfo->bytes, (u64)(tinfo_pointer->pointer_to),
+          (u64)tinfo, (u64)tinfo
+        );
+        str8_list_append_str(arena, &list, piece);
       } break;
       case TYPE_INFO_TAG_ARRAY:
       {
-      } break;
-      case TYPE_INFO_TAG_STRING:
-      {
+        Type_info_array *tinfo_array = (Type_info_array*)tinfo;
+        Str8 piece = str8f(arena,
+          "struct Type_info_array _type_info_%lx_backing_data = { .__using0 = { .tag = %d, .align = %u, .bytes = %lu, }, .array_of = (struct Type_info*)&_type_info_%lx_backing_data, .array_count = %lu, .array_kind = %d, };\n"
+          "struct Type_info_array *_type_info_%lx = &_type_info_%lx_backing_data;\n",
+          (u64)tinfo, tinfo->tag, tinfo->align, tinfo->bytes, (u64)(tinfo_array->array_of), tinfo_array->array_count, tinfo_array->array_kind,
+          (u64)tinfo, (u64)tinfo
+        );
+        str8_list_append_str(arena, &list, piece);
       } break;
       case TYPE_INFO_TAG_STRUCT:
       {
+        Str8 piece = {0};
+
+        Type_info_struct *tinfo_struct = (Type_info_struct*)tinfo;
+
+        Type_info_struct_member *members = (Type_info_struct_member*)(tinfo_struct->members.data);
+        u64 member_count = tinfo_struct->members.count;
+
+        piece = str8f(arena, "struct Type_info_struct_member _type_info_%lx_member_array[%lu] = {\n", (u64)tinfo, member_count);
+        str8_list_append_str(arena, &list, piece);
+        for(u64 i = 0; i < member_count; i++) {
+          piece = str8f(arena,
+            "{ .name = { .data = &string_segment[%lu], .len = %lu }, .type = (struct Type_info*)&_type_info_%lx_backing_data, .offset = %lu, },\n",
+            (u64)(members[i].name.data - string_segment_data), members[i].name.len, (u64)members[i].type, members[i].offset
+          );
+          str8_list_append_str(arena, &list, piece);
+        }
+        str8_list_append_str(arena, &list, str8f(arena, "};\n"));
+
+        piece = str8f(arena,
+          "struct Type_info_struct _type_info_%lx_backing_data = { .__using0 = { .tag = %d, .align = %u, .bytes = %lu, }, .name = { .data = &string_segment[%lu], .len = %lu }, .members = { .data = (u8*)_type_info_%lx_member_array, .count = %lu }, };\n"
+          "struct Type_info_struct *_type_info_%lx = &_type_info_%lx_backing_data;\n",
+          (u64)tinfo, tinfo->tag, tinfo->align, tinfo->bytes, (u64)(tinfo_struct->name.data - string_segment_data), tinfo_struct->name.len, (u64)tinfo, member_count,
+          (u64)tinfo, (u64)tinfo
+        );
+        str8_list_append_str(arena, &list, piece);
+
+        // UNIMPLEMENTED;
       } break;
       case TYPE_INFO_TAG_ENUM:
       {
+        UNIMPLEMENTED;
       } break;
       case TYPE_INFO_TAG_PROC:
       {
+        UNIMPLEMENTED;
       } break;
       case TYPE_INFO_TAG_ANY:
       {
+        UNIMPLEMENTED;
       } break;
     }
     COWABUNGA;
   }
+
+  arena_scope_end(scope);
+
+  result = str8_list_join(arena, list, str8_lit(""));
 
   return result;
 }
@@ -11469,9 +11592,8 @@ void ir_gen_expr(Job *jp, AST *ast) {
           if(atom_type->kind == TYPE_KIND_STRING) {
             Value *v = atom->value_annotation;
 
-            u64 string_offset = string_segment_offset;
+            u64 string_offset = arrlen(string_segment_data);
             char *s = arraddnptr(string_segment_data, v->val.str.len);
-            string_segment_offset += v->val.str.len;
 
             for(int i = 0; i < v->val.str.len; ++i)
             s[i] = v->val.str.data[i];
@@ -19768,7 +19890,7 @@ int main(int argc, char **argv) {
 
   {
     Str8_list list = {0};
-    for(u64 i = 0; i < string_segment_offset; i++) {
+    for(u64 i = 0; i < (u64)arrlen(string_segment_data); i++) {
       Str8 str = str8f(global_scratch_allocator, "0x%02x", string_segment_data[i]);
       str8_list_append_str(global_scratch_allocator, &list, str);
     }
@@ -19777,7 +19899,7 @@ int main(int argc, char **argv) {
 
   Str8 c_string_segment_decl = str8f(global_scratch_allocator,
     "u8 string_segment[%lu] = { %S };\n",
-    string_segment_offset,
+    (u64)arrlen(string_segment_data),
     c_string_segment_data_str
   );
 
@@ -19805,6 +19927,7 @@ int main(int argc, char **argv) {
 
   Str8 preload_generated_c_code = str8_list_join(string_arena, preload_generated_c_code_list, str8_lit("\n"));
 
+  str8_list_insert_first_str(global_scratch_allocator, &global_generated_c_code, c_type_info_segment_data);
   str8_list_insert_first_str(global_scratch_allocator, &global_generated_c_code, preload_generated_c_code);
   str8_list_insert_first_str(global_scratch_allocator, &global_generated_c_code, c_string_segment_decl);
   str8_list_insert_first_str(global_scratch_allocator, &global_generated_c_code, c_preamble);
